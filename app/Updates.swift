@@ -1,0 +1,329 @@
+import Foundation
+import CryptoKit
+
+enum UpdateError: LocalizedError {
+    case invalid(String)
+    var errorDescription: String? {
+        switch self { case .invalid(let message): return message }
+    }
+}
+
+struct AppVersion: Comparable {
+    let parts: [Int]
+    init(_ text: String) throws {
+        let fields = text.split(separator: ".", omittingEmptySubsequences: false)
+        guard (2...3).contains(fields.count),
+              fields.allSatisfy({ !$0.isEmpty && $0.allSatisfy(\.isNumber) && $0.count <= 6 }),
+              fields.allSatisfy({ $0.count == 1 || !$0.hasPrefix("0") }) else {
+            throw UpdateError.invalid("The release has an invalid version.")
+        }
+        parts = try fields.map {
+            guard let value = Int($0) else { throw UpdateError.invalid("Invalid version.") }
+            return value
+        } + Array(repeating: 0, count: 3 - fields.count)
+    }
+    static func < (lhs: Self, rhs: Self) -> Bool { lhs.parts.lexicographicallyPrecedes(rhs.parts) }
+}
+
+struct ReleaseAsset: Decodable {
+    var name: String
+    var size: Int64
+    var browser_download_url: String
+}
+struct GitHubRelease: Decodable {
+    var tag_name: String
+    var html_url: String
+    var body: String?
+    var draft: Bool
+    var prerelease: Bool
+    var assets: [ReleaseAsset]
+}
+struct UpdateAsset: Codable {
+    var architecture: String
+    var runtime: String = "bundled"
+    var filename: String
+    var url: String
+    var size: Int64
+    var sha256: String
+}
+struct UpdateManifest: Codable {
+    var schemaVersion: Int
+    var repository: String
+    var tag: String
+    var version: String
+    var build: Int
+    var minimumSystemVersion: String
+    var assets: [UpdateAsset]
+}
+struct AvailableUpdate {
+    var manifest: UpdateManifest
+    var asset: UpdateAsset
+    var notes: String
+    var releaseURL: URL
+}
+
+enum UpdatePolicy {
+    static let repository = "tm-henningnt/Igloo"
+    static let website = URL(string: "https://tm-henningnt.github.io/Igloo/")!
+    static let manifestName = "igloo-update.json"
+    static let api = URL(string: "https://api.github.com/repos/" + repository + "/releases/latest")!
+    static var architecture: String {
+        #if arch(arm64)
+        return "arm64"
+        #else
+        return "x86_64"
+        #endif
+    }
+    static func releaseURL(_ tag: String) -> String {
+        "https://github.com/" + repository + "/releases/tag/" + tag
+    }
+    static func filename(version: String, architecture: String, runtime: String) -> String {
+        "Igloo-" + version + "-" + architecture + (runtime == "system" ? "-system-python" : "") + ".zip"
+    }
+    static func assetURL(tag: String, filename: String) -> String {
+        "https://github.com/" + repository + "/releases/download/" + tag + "/" + filename
+    }
+    static func safeTransport(_ url: URL) -> Bool {
+        url.scheme == "https" && url.user == nil && url.password == nil &&
+        (url.port == nil || url.port == 443) &&
+        ["api.github.com", "github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com"].contains(url.host ?? "")
+    }
+    static func validate(_ manifest: UpdateManifest, release: GitHubRelease, architecture: String,
+                         currentVersion: String, currentBuild: Int, systemVersion: String, runtime: String = "bundled") throws -> AvailableUpdate? {
+        let version = try AppVersion(manifest.version)
+        guard manifest.schemaVersion == 1, manifest.repository == repository,
+              manifest.tag == "v" + manifest.version, release.tag_name == manifest.tag,
+              !release.draft, !release.prerelease, manifest.build > 0,
+              release.html_url == releaseURL(manifest.tag),
+              (try AppVersion(manifest.minimumSystemVersion)) <= (try AppVersion(systemVersion)),
+              !manifest.assets.isEmpty, manifest.assets.count <= 6 else {
+            throw UpdateError.invalid("This release is incomplete or requires a newer version of macOS.")
+        }
+        let architectures = manifest.assets.map { $0.architecture + "|" + $0.runtime }
+        guard Set(architectures).count == architectures.count else {
+            throw UpdateError.invalid("The release contains conflicting downloads.")
+        }
+        for asset in manifest.assets {
+            guard ["arm64", "x86_64", "universal"].contains(asset.architecture),
+                  ["bundled", "system"].contains(asset.runtime),
+                  asset.filename == filename(version: manifest.version, architecture: asset.architecture, runtime: asset.runtime),
+                  asset.url == assetURL(tag: manifest.tag, filename: asset.filename),
+                  asset.size > 0, asset.size <= 512 * 1024 * 1024,
+                  asset.sha256.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil,
+                  release.assets.filter({ $0.name == asset.filename && $0.size == asset.size &&
+                      $0.browser_download_url == asset.url }).count == 1 else {
+                throw UpdateError.invalid("The release download could not be verified.")
+            }
+        }
+        guard let selected = manifest.assets.first(where: { $0.architecture == architecture && $0.runtime == runtime }) ??
+                manifest.assets.first(where: { $0.architecture == "universal" && $0.runtime == runtime }) else {
+            throw UpdateError.invalid("This release has no download for your Mac.")
+        }
+        let installed = try AppVersion(currentVersion)
+        guard version > installed || version == installed && manifest.build > currentBuild else { return nil }
+        return AvailableUpdate(manifest: manifest, asset: selected,
+                               notes: String((release.body ?? "").prefix(30_000)),
+                               releaseURL: URL(string: release.html_url)!)
+    }
+    static func verify(file: URL, asset: UpdateAsset) throws {
+        let handle = try FileHandle(forReadingFrom: file)
+        defer { try? handle.close() }
+        var count: Int64 = 0
+        var hash = SHA256()
+        while let chunk = try handle.read(upToCount: 65_536), !chunk.isEmpty {
+            count += Int64(chunk.count)
+            guard count <= asset.size else { throw UpdateError.invalid("The download is larger than expected.") }
+            hash.update(data: chunk)
+        }
+        guard count == asset.size, hash.finalize().map({ String(format: "%02x", $0) }).joined() == asset.sha256 else {
+            throw UpdateError.invalid("The download failed its checksum check. Please try again.")
+        }
+    }
+}
+
+final class UpdateRedirects: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest,
+                    completionHandler: @escaping (URLRequest?) -> Void) {
+        completionHandler(request.url.map(UpdatePolicy.safeTransport) == true ? request : nil)
+    }
+}
+
+enum UpdateService {
+    static func session() -> URLSession {
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 30
+        config.timeoutIntervalForResource = 600
+        config.httpShouldSetCookies = false
+        config.urlCache = nil
+        return URLSession(configuration: config, delegate: UpdateRedirects(), delegateQueue: nil)
+    }
+    static func request(_ url: URL) -> URLRequest {
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData)
+        request.setValue("Igloo", forHTTPHeaderField: "User-Agent")
+        return request
+    }
+    static func data(_ url: URL, session: URLSession, maximum: Int) async throws -> Data? {
+        guard UpdatePolicy.safeTransport(url) else { throw UpdateError.invalid("Invalid update address.") }
+        let (stream, response) = try await session.bytes(for: request(url))
+        guard let response = response as? HTTPURLResponse else { throw UpdateError.invalid("No update response.") }
+        if response.statusCode == 404 && url == UpdatePolicy.api { return nil }
+        guard response.statusCode == 200 else {
+            throw UpdateError.invalid("GitHub could not serve the update. Please try again later.")
+        }
+        var data = Data()
+        for try await byte in stream {
+            try Task.checkCancellation()
+            guard data.count < maximum else { throw UpdateError.invalid("The update information is too large.") }
+            data.append(byte)
+        }
+        return data
+    }
+    static func check(version: String, build: Int, system: String, runtime: String) async throws -> AvailableUpdate? {
+        let session = session()
+        defer { session.invalidateAndCancel() }
+        guard let releaseData = try await data(UpdatePolicy.api, session: session, maximum: 1_048_576) else { return nil }
+        let release = try JSONDecoder().decode(GitHubRelease.self, from: releaseData)
+        guard !release.draft, !release.prerelease,
+              release.tag_name.range(of: "^v[0-9]+\\.[0-9]+(?:\\.[0-9]+)?$", options: .regularExpression) != nil,
+              release.html_url == UpdatePolicy.releaseURL(release.tag_name) else {
+            throw UpdateError.invalid("The published release could not be verified.")
+        }
+        let matches = release.assets.filter { $0.name == UpdatePolicy.manifestName }
+        guard matches.count == 1, let asset = matches.first, asset.size > 0, asset.size <= 65_536,
+              asset.browser_download_url == UpdatePolicy.assetURL(tag: release.tag_name, filename: UpdatePolicy.manifestName),
+              let url = URL(string: asset.browser_download_url),
+              let manifestData = try await data(url, session: session, maximum: 65_536) else {
+            throw UpdateError.invalid("This release does not include a complete update manifest.")
+        }
+        let manifest = try JSONDecoder().decode(UpdateManifest.self, from: manifestData)
+        return try UpdatePolicy.validate(manifest, release: release, architecture: UpdatePolicy.architecture,
+                                         currentVersion: version, currentBuild: build, systemVersion: system, runtime: runtime)
+    }
+    static func download(_ asset: UpdateAsset) async throws -> URL {
+        guard let url = URL(string: asset.url), UpdatePolicy.safeTransport(url) else {
+            throw UpdateError.invalid("Invalid download address.")
+        }
+        let session = session()
+        defer { session.invalidateAndCancel() }
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("Igloo-update-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false,
+                                                attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let staged = folder.appendingPathComponent(asset.filename)
+        FileManager.default.createFile(atPath: staged.path, contents: nil, attributes: [.posixPermissions: 0o600])
+        let handle = try FileHandle(forWritingTo: staged)
+        defer { try? handle.close() }
+        let (stream, response) = try await session.bytes(for: request(url))
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+            throw UpdateError.invalid("The release download is unavailable.")
+        }
+        var buffer = Data()
+        var count: Int64 = 0
+        for try await byte in stream {
+            try Task.checkCancellation()
+            count += 1
+            guard count <= asset.size else { throw UpdateError.invalid("The download is larger than expected.") }
+            buffer.append(byte)
+            if buffer.count == 65_536 { try handle.write(contentsOf: buffer); buffer.removeAll(keepingCapacity: true) }
+        }
+        if !buffer.isEmpty { try handle.write(contentsOf: buffer) }
+        try handle.synchronize()
+        try UpdatePolicy.verify(file: staged, asset: asset)
+        try Task.checkCancellation()
+        let downloads = try FileManager.default.url(for: .downloadsDirectory, in: .userDomainMask,
+                                                    appropriateFor: nil, create: true)
+        var destination = downloads.appendingPathComponent(asset.filename)
+        if FileManager.default.fileExists(atPath: destination.path) {
+            destination = downloads.appendingPathComponent(asset.filename.replacingOccurrences(of: ".zip", with: "-" + UUID().uuidString + ".zip"))
+        }
+        try FileManager.default.moveItem(at: staged, to: destination)
+        return destination
+    }
+}
+
+// MARK: - Interface
+import SwiftUI
+import AppKit
+
+@MainActor final class AppUpdater: ObservableObject {
+    @Published var status = "Check for a published Igloo release."
+    @Published var checking = false
+    @Published var downloading = false
+    @Published var available: AvailableUpdate?
+    @Published var downloaded: URL?
+    var downloadTask: Task<Void, Never>?
+    var demo = false
+    func check() async {
+        guard !checking, !downloading else { return }
+        checking = true
+        available = nil
+        downloaded = nil
+        status = "Checking GitHub releases…"
+        defer { checking = false }
+        if demo { status = "Update checks are disabled in the example catalog."; return }
+        do {
+            let info = Bundle.main.infoDictionary ?? [:]
+            available = try await UpdateService.check(version: info["CFBundleShortVersionString"] as? String ?? "0.0",
+                                                      build: Int(info["CFBundleVersion"] as? String ?? "") ?? 0,
+                                                      system: ProcessInfo.processInfo.operatingSystemVersionStringValue,
+                                                      runtime: info["IglooRuntime"] as? String ?? "bundled")
+            status = available == nil ? "No newer published release is available." : "A new version of Igloo is available."
+        } catch { status = error.localizedDescription }
+    }
+    func download() {
+        guard let update = available, !downloading else { return }
+        downloading = true
+        status = "Downloading and verifying Igloo…"
+        downloadTask = Task {
+            defer { downloading = false; downloadTask = nil }
+            do {
+                downloaded = try await UpdateService.download(update.asset)
+                status = "Download verified. Open the ZIP, quit Igloo, and move the new app to Applications."
+            } catch is CancellationError { status = "Download canceled." }
+            catch { status = error.localizedDescription }
+        }
+    }
+}
+extension ProcessInfo {
+    var operatingSystemVersionStringValue: String {
+        let v = operatingSystemVersion
+        return "\(v.majorVersion).\(v.minorVersion).\(v.patchVersion)"
+    }
+}
+struct UpdatesView: View {
+    @EnvironmentObject var updater: AppUpdater
+    @Environment(\.dismiss) private var dismiss
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("Igloo updates").font(.title2).fontWeight(.semibold)
+            Text(updater.status).font(.callout).textSelection(.enabled)
+            if updater.checking || updater.downloading { ProgressView().controlSize(.small) }
+            if let update = updater.available {
+                Text("Version \(update.manifest.version) · \(update.asset.architecture) · \(bytes(update.asset.size))")
+                Text(update.asset.runtime == "bundled" ? "Python included" : "Uses your installed Python")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.headline)
+                ScrollView { Text(update.notes.isEmpty ? "No release notes were provided." : update.notes)
+                    .frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled) }
+                    .frame(height: 180)
+                Link("Release on GitHub", destination: update.releaseURL)
+            }
+            Text("Updates come from published GitHub releases. Project files, settings, and local archives stay in place.")
+                .font(.caption).foregroundStyle(.secondary)
+            Divider()
+            HStack {
+                Button("Close") { dismiss() }.keyboardShortcut(.cancelAction)
+                Spacer()
+                if updater.downloading { Button("Cancel download") { updater.downloadTask?.cancel() } }
+                else if let downloaded = updater.downloaded {
+                    Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([downloaded]) }
+                        .buttonStyle(.borderedProminent)
+                } else if updater.available != nil {
+                    Button("Download update") { updater.download() }.buttonStyle(.borderedProminent)
+                }
+                Button("Check again") { Task { await updater.check() } }.disabled(updater.checking || updater.downloading)
+            }
+        }.padding(24).frame(width: 540)
+    }
+}

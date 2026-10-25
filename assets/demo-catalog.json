@@ -1,0 +1,509 @@
+{
+  "version": 1,
+  "generated": "2026-09-21T10:00:00+00:00",
+  "root": "/Users/demo/Projects",
+  "source": "Fictional example catalog",
+  "totalSize": 25769803774,
+  "freeSpace": 193273528320,
+  "projects": [
+    {
+      "id": "/Users/demo/Projects/Aurora Notes",
+      "name": "Aurora Notes",
+      "path": "/Users/demo/Projects/Aurora Notes",
+      "common": "/Users/demo/Projects/Aurora Notes/.git",
+      "category": "Examples",
+      "projectType": "Web app",
+      "detectedType": "Web app",
+      "languages": [
+        "TypeScript"
+      ],
+      "typeEvidence": [
+        "Example project metadata"
+      ],
+      "size": 8804682956,
+      "git": true,
+      "ageDays": 14,
+      "fileAgeDays": 14,
+      "lastCommit": "2026-09-20",
+      "remoteStatus": "Verified",
+      "verifiedAt": "2026-09-21",
+      "remotes": [
+        {
+          "name": "origin",
+          "url": "https://github.com/example/aurora notes.git",
+          "pushURL": "https://github.com/example/aurora notes.git"
+        }
+      ],
+      "active": true,
+      "activityKnown": true,
+      "processes": [
+        "Preview server"
+      ],
+      "branches": [
+        {
+          "name": "main",
+          "sha": "1111111111111111111111111111111111111111",
+          "upstream": "origin/main",
+          "tracking": "",
+          "date": "2026-09-20",
+          "uncovered": 0,
+          "privateHistory": false
+        },
+        {
+          "name": "feature/search",
+          "sha": "2222222222222222222222222222222222222222",
+          "upstream": "",
+          "tracking": "",
+          "date": "2026-09-20",
+          "uncovered": 3,
+          "privateHistory": false
+        }
+      ],
+      "worktrees": [
+        {
+          "path": "/Users/demo/Projects/Aurora Notes",
+          "branch": "main",
+          "exists": true,
+          "changes": 2,
+          "locked": false,
+          "prunable": ""
+        }
+      ],
+      "changes": [
+        {
+          "checkout": "/Users/demo/Projects/Aurora Notes",
+          "status": " M",
+          "path": "src/app.tsx"
+        },
+        {
+          "checkout": "/Users/demo/Projects/Aurora Notes",
+          "status": "??",
+          "path": "src/search.ts"
+        }
+      ],
+      "stashes": [
+        "3333333333333333333333333333333333333333"
+      ],
+      "refs": [],
+      "detachedHeads": [],
+      "localFiles": [
+        {
+          "path": "/Users/demo/Projects/Aurora Notes/.env.local",
+          "size": 512,
+          "template": false,
+          "tracked": false,
+          "ignored": true
+        }
+      ],
+      "ignoredFiles": [
+        {
+          "checkout": "/Users/demo/Projects/Aurora Notes",
+          "path": ".env.local"
+        },
+        {
+          "checkout": "/Users/demo/Projects/Aurora Notes",
+          "path": "node_modules/"
+        }
+      ],
+      "candidates": [
+        {
+          "id": "/Users/demo/Projects/Aurora Notes/node_modules",
+          "path": "/Users/demo/Projects/Aurora Notes/node_modules",
+          "kind": "node_modules",
+          "size": 3328599654,
+          "owner": "/Users/demo/Projects/Aurora Notes",
+          "eligible": false,
+          "reason": "Active session"
+        }
+      ],
+      "holds": [
+        "2 changed source entries",
+        "1 branch needs publication review",
+        "Local configuration to preserve"
+      ],
+      "uncovered": 1,
+      "unknown": 0,
+      "decision": "Keep",
+      "note": ""
+    },
+    {
+      "id": "/Users/demo/Projects/Paper Trail",
+      "name": "Paper Trail",
+      "path": "/Users/demo/Projects/Paper Trail",
+      "common": "/Users/demo/Projects/Paper Trail/.git",
+      "category": "Examples",
+      "projectType": "Website",
+      "detectedType": "Website",
+      "languages": [
+        "JavaScript"
+      ],
+      "typeEvidence": [
+        "Example project metadata"
+      ],
+      "size": 5153960755,
+      "git": true,
+      "ageDays": 110,
+      "fileAgeDays": 110,
+      "lastCommit": "2026-09-20",
+      "remoteStatus": "Verified",
+      "verifiedAt": "2026-09-21",
+      "remotes": [
+        {
+          "name": "origin",
+          "url": "https://github.com/example/paper trail.git",
+          "pushURL": "https://github.com/example/paper trail.git"
+        }
+      ],
+      "active": false,
+      "activityKnown": true,
+      "processes": [],
+      "branches": [
+        {
+          "name": "main",
+          "sha": "1111111111111111111111111111111111111111",
+          "upstream": "origin/main",
+          "tracking": "",
+          "date": "2026-09-20",
+          "uncovered": 0,
+          "privateHistory": false
+        }
+      ],
+      "worktrees": [
+        {
+          "path": "/Users/demo/Projects/Paper Trail",
+          "branch": "main",
+          "exists": true,
+          "changes": 0,
+          "locked": false,
+          "prunable": ""
+        }
+      ],
+      "changes": [],
+      "stashes": [],
+      "refs": [],
+      "detachedHeads": [],
+      "localFiles": [
+        {
+          "path": "/Users/demo/Projects/Paper Trail/.env.local",
+          "size": 512,
+          "template": false,
+          "tracked": false,
+          "ignored": true
+        }
+      ],
+      "ignoredFiles": [
+        {
+          "checkout": "/Users/demo/Projects/Paper Trail",
+          "path": ".env.local"
+        },
+        {
+          "checkout": "/Users/demo/Projects/Paper Trail",
+          "path": "node_modules/"
+        }
+      ],
+      "candidates": [
+        {
+          "id": "/Users/demo/Projects/Paper Trail/node_modules",
+          "path": "/Users/demo/Projects/Paper Trail/node_modules",
+          "kind": "node_modules",
+          "size": 3113851289,
+          "owner": "/Users/demo/Projects/Paper Trail",
+          "eligible": true,
+          "reason": "Ignored dependency; review custom edits"
+        }
+      ],
+      "holds": [
+        "Local configuration to preserve"
+      ],
+      "uncovered": 0,
+      "unknown": 0,
+      "decision": "Undecided",
+      "note": ""
+    },
+    {
+      "id": "/Users/demo/Projects/Stone Bridge",
+      "name": "Stone Bridge",
+      "path": "/Users/demo/Projects/Stone Bridge",
+      "common": "/Users/demo/Projects/Stone Bridge/.git",
+      "category": "Examples",
+      "projectType": "Native app",
+      "detectedType": "Native app",
+      "languages": [
+        "Swift"
+      ],
+      "typeEvidence": [
+        "Example project metadata"
+      ],
+      "size": 6549825126,
+      "git": true,
+      "ageDays": 72,
+      "fileAgeDays": 72,
+      "lastCommit": "2026-09-20",
+      "remoteStatus": "Verified",
+      "verifiedAt": "2026-09-21",
+      "remotes": [
+        {
+          "name": "origin",
+          "url": "https://github.com/example/stone bridge.git",
+          "pushURL": "https://github.com/example/stone bridge.git"
+        }
+      ],
+      "active": false,
+      "activityKnown": true,
+      "processes": [],
+      "branches": [
+        {
+          "name": "main",
+          "sha": "1111111111111111111111111111111111111111",
+          "upstream": "origin/main",
+          "tracking": "",
+          "date": "2026-09-20",
+          "uncovered": 0,
+          "privateHistory": false
+        }
+      ],
+      "worktrees": [
+        {
+          "path": "/Users/demo/Projects/Stone Bridge",
+          "branch": "main",
+          "exists": true,
+          "changes": 0,
+          "locked": false,
+          "prunable": ""
+        }
+      ],
+      "changes": [],
+      "stashes": [],
+      "refs": [],
+      "detachedHeads": [],
+      "localFiles": [
+        {
+          "path": "/Users/demo/Projects/Stone Bridge/.env.local",
+          "size": 512,
+          "template": false,
+          "tracked": false,
+          "ignored": true
+        }
+      ],
+      "ignoredFiles": [
+        {
+          "checkout": "/Users/demo/Projects/Stone Bridge",
+          "path": ".env.local"
+        },
+        {
+          "checkout": "/Users/demo/Projects/Stone Bridge",
+          "path": ".build/"
+        }
+      ],
+      "candidates": [
+        {
+          "id": "/Users/demo/Projects/Stone Bridge/.build",
+          "path": "/Users/demo/Projects/Stone Bridge/.build",
+          "kind": ".build",
+          "size": 1503238553,
+          "owner": "/Users/demo/Projects/Stone Bridge",
+          "eligible": false,
+          "reason": "Ignored dependency; review custom edits"
+        }
+      ],
+      "holds": [
+        "Local configuration to preserve"
+      ],
+      "uncovered": 0,
+      "unknown": 0,
+      "decision": "Undecided",
+      "note": ""
+    },
+    {
+      "id": "/Users/demo/Projects/Signal Lab",
+      "name": "Signal Lab",
+      "path": "/Users/demo/Projects/Signal Lab",
+      "common": "/Users/demo/Projects/Signal Lab/.git",
+      "category": "Examples",
+      "projectType": "Library / package",
+      "detectedType": "Library / package",
+      "languages": [
+        "Rust"
+      ],
+      "typeEvidence": [
+        "Example project metadata"
+      ],
+      "size": 3543348019,
+      "git": true,
+      "ageDays": 45,
+      "fileAgeDays": 45,
+      "lastCommit": "2026-09-20",
+      "remoteStatus": "Verified",
+      "verifiedAt": "2026-09-21",
+      "remotes": [
+        {
+          "name": "origin",
+          "url": "https://github.com/example/signal lab.git",
+          "pushURL": "https://github.com/example/signal lab.git"
+        }
+      ],
+      "active": false,
+      "activityKnown": true,
+      "processes": [],
+      "branches": [
+        {
+          "name": "main",
+          "sha": "1111111111111111111111111111111111111111",
+          "upstream": "origin/main",
+          "tracking": "",
+          "date": "2026-09-20",
+          "uncovered": 0,
+          "privateHistory": false
+        }
+      ],
+      "worktrees": [
+        {
+          "path": "/Users/demo/Projects/Signal Lab",
+          "branch": "main",
+          "exists": true,
+          "changes": 0,
+          "locked": false,
+          "prunable": ""
+        }
+      ],
+      "changes": [],
+      "stashes": [],
+      "refs": [],
+      "detachedHeads": [],
+      "localFiles": [
+        {
+          "path": "/Users/demo/Projects/Signal Lab/.env.local",
+          "size": 512,
+          "template": false,
+          "tracked": false,
+          "ignored": true
+        }
+      ],
+      "ignoredFiles": [
+        {
+          "checkout": "/Users/demo/Projects/Signal Lab",
+          "path": ".env.local"
+        },
+        {
+          "checkout": "/Users/demo/Projects/Signal Lab",
+          "path": "target/"
+        }
+      ],
+      "candidates": [
+        {
+          "id": "/Users/demo/Projects/Signal Lab/target",
+          "path": "/Users/demo/Projects/Signal Lab/target",
+          "kind": "target",
+          "size": 858993459,
+          "owner": "/Users/demo/Projects/Signal Lab",
+          "eligible": false,
+          "reason": "Ignored dependency; review custom edits"
+        }
+      ],
+      "holds": [
+        "Local configuration to preserve"
+      ],
+      "uncovered": 0,
+      "unknown": 0,
+      "decision": "Undecided",
+      "note": ""
+    },
+    {
+      "id": "/Users/demo/Projects/Harbor CLI",
+      "name": "Harbor CLI",
+      "path": "/Users/demo/Projects/Harbor CLI",
+      "common": "/Users/demo/Projects/Harbor CLI/.git",
+      "category": "Examples",
+      "projectType": "Command-line tool",
+      "detectedType": "Command-line tool",
+      "languages": [
+        "Python"
+      ],
+      "typeEvidence": [
+        "Example project metadata"
+      ],
+      "size": 1717986918,
+      "git": true,
+      "ageDays": 230,
+      "fileAgeDays": 230,
+      "lastCommit": "2026-09-20",
+      "remoteStatus": "Verified",
+      "verifiedAt": "2026-09-21",
+      "remotes": [
+        {
+          "name": "origin",
+          "url": "https://github.com/example/harbor cli.git",
+          "pushURL": "https://github.com/example/harbor cli.git"
+        }
+      ],
+      "active": false,
+      "activityKnown": true,
+      "processes": [],
+      "branches": [
+        {
+          "name": "main",
+          "sha": "1111111111111111111111111111111111111111",
+          "upstream": "origin/main",
+          "tracking": "",
+          "date": "2026-09-20",
+          "uncovered": 0,
+          "privateHistory": false
+        }
+      ],
+      "worktrees": [
+        {
+          "path": "/Users/demo/Projects/Harbor CLI",
+          "branch": "main",
+          "exists": true,
+          "changes": 0,
+          "locked": false,
+          "prunable": ""
+        }
+      ],
+      "changes": [],
+      "stashes": [],
+      "refs": [],
+      "detachedHeads": [],
+      "localFiles": [
+        {
+          "path": "/Users/demo/Projects/Harbor CLI/.env.local",
+          "size": 512,
+          "template": false,
+          "tracked": false,
+          "ignored": true
+        }
+      ],
+      "ignoredFiles": [
+        {
+          "checkout": "/Users/demo/Projects/Harbor CLI",
+          "path": ".env.local"
+        },
+        {
+          "checkout": "/Users/demo/Projects/Harbor CLI",
+          "path": ".venv/"
+        }
+      ],
+      "candidates": [
+        {
+          "id": "/Users/demo/Projects/Harbor CLI/.venv",
+          "path": "/Users/demo/Projects/Harbor CLI/.venv",
+          "kind": ".venv",
+          "size": 966367641,
+          "owner": "/Users/demo/Projects/Harbor CLI",
+          "eligible": true,
+          "reason": "Ignored dependency; review custom edits"
+        }
+      ],
+      "holds": [
+        "Local configuration to preserve"
+      ],
+      "uncovered": 0,
+      "unknown": 0,
+      "decision": "Undecided",
+      "note": ""
+    }
+  ],
+  "errors": [],
+  "history": [],
+  "archives": []
+}

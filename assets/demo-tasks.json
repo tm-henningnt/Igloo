@@ -1,0 +1,63 @@
+{
+  "tasks": [
+    {
+      "definition": {
+        "id": "weekly-cache-review",
+        "name": "Weekly cache review",
+        "root": "/Users/demo/Projects",
+        "vault": "/Users/demo/Project Recovery",
+        "mode": "review",
+        "rules": {
+          "cacheDays": 30,
+          "freezeDays": 180,
+          "ignoreActive": true,
+          "ageBasis": "git",
+          "cacheKinds": [
+            "node_modules",
+            ".venv",
+            "venv",
+            ".turbo",
+            "__pycache__",
+            ".pytest_cache",
+            ".mypy_cache",
+            ".ruff_cache",
+            ".next",
+            ".nuxt",
+            ".svelte-kit",
+            ".parcel-cache"
+          ]
+        },
+        "include": [],
+        "exclude": [
+          "/Users/demo/Projects/Aurora Notes"
+        ],
+        "projectTypes": [],
+        "maxProjects": 5,
+        "maxBytes": 10737418240,
+        "unattended": false
+      },
+      "schedule": {
+        "frequency": "weekly",
+        "time": "09:00",
+        "weekday": 0,
+        "loaded": true,
+        "stale": false
+      },
+      "lastRun": {
+        "id": "example-run",
+        "taskID": "weekly-cache-review",
+        "taskName": "Weekly cache review",
+        "started": "2026-09-21T09:00:00+00:00",
+        "status": "planned",
+        "message": "Plan saved. One cache candidate and one project held for freeze review.",
+        "planID": null,
+        "ready": 1,
+        "blocked": 1,
+        "cacheBytes": 3113851289
+      },
+      "compatible": true
+    }
+  ],
+  "cliPath": "/Users/demo/.local/bin/igloo",
+  "cliInstalled": true
+}

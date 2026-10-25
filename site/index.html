@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Igloo for macOS helps you find quiet projects, clean up dependencies, and freeze work safely for later.">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self'; style-src 'self'; script-src 'self'; connect-src https://api.github.com; base-uri 'none'; object-src 'none'">
+<title>Igloo — Make space. Keep your work.</title>
+<link rel="icon" href="assets/IglooIcon.png"><link rel="stylesheet" href="styles.css"><script src="app.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="masthead"><a class="brand" href="./"><img src="assets/IglooIcon.png" width="36" height="36" alt="">Igloo</a><nav aria-label="Main"><a href="#how-it-works">How it works</a><a href="#download">Download</a><a href="https://github.com/tm-henningnt/Igloo">GitHub</a></nav></header>
+<main id="main">
+<section class="hero" aria-label="Igloo for macOS">
+<img class="landscape" src="assets/README-header.png" width="1536" height="512" alt="Igloo. Make space. Keep your work. An icy landscape with a warm light in an igloo doorway.">
+<div class="introduction"><h1>A little room for<br>your next project.</h1><div><p>Projects pile up. Dependencies grow. Igloo helps you see what’s taking up space, clean up what you can rebuild, and preserve the work you want to return to.</p><a class="button" href="#download">Get Igloo for Mac <span aria-hidden="true">↓</span></a><p class="requirements">macOS 14 or later · Python included</p></div></div>
+</section>
+<figure class="overview">
+<div class="appearance-compare" data-appearance-comparison>
+  <img src="assets/overview-light.png" width="1890" height="1065" alt="Igloo’s project overview in light mode, showing fictional projects, Git details, and disk usage.">
+  <div class="appearance-dark"><img src="assets/overview.png" width="1890" height="1065" alt="The same Igloo project overview in dark mode."></div>
+  <span class="appearance-label light-label" aria-hidden="true">Light</span><span class="appearance-label dark-label" aria-hidden="true">Dark</span>
+  <span class="comparison-divider" aria-hidden="true"></span>
+  <span class="comparison-handle" aria-hidden="true"><svg viewBox="0 0 28 28" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m10 9-5 5 5 5m8-10 5 5-5 5M5 14h18"/></svg></span>
+  <input id="appearance-slider" type="range" min="0" max="100" value="50" aria-label="Compare light and dark mode" aria-describedby="appearance-help" aria-valuetext="50% light mode, 50% dark mode" disabled>
+</div>
+<figcaption><strong>At home in light or dark.</strong> <span id="appearance-help">Drag to compare, or focus the slider and use the arrow keys.</span> Screenshots show fictional projects.</figcaption>
+</figure>
+<section id="how-it-works" class="workflow">
+<div class="section-intro"><h2>Quiet projects.<br>Nothing forgotten.</h2><p>Keep recent work close. Clean up older projects. Freeze the ones that can wait. You set the ages and review the plan before Igloo gets to work.</p></div>
+<dl><div><dt>See what’s there</dt><dd>Explore disk use by age, project type, or technology. Check uncommitted files, unpushed branches, worktrees, and stashes before making room.</dd></div><div><dt>Clear the rebuildable</dt><dd>Remove old dependencies and caches with a preview first. Active projects stay out of the plan unless you include them.</dd></div><div><dt>Freeze. Thaw. Carry on.</dt><dd>Preserve local files in an archive, push reviewed source, and remove the checkout after verification. Thaw a frozen project or clone another repository when you’re ready.</dd></div></dl>
+</section>
+<section class="explorer"><div><h2>Find the space<br>worth saving.</h2><p>Sunburst, icicle, and Marimekko charts make large folders easier to spot. Follow the warm-to-cold age colors, filter the view, and open a project for a closer look.</p></div><img src="assets/space-explorer.png" width="1440" height="900" loading="lazy" alt="Space Explorer showing project sizes and warm-to-cold age colors."></section>
+<section class="automation"><div><h2>A routine you can keep.</h2><p>Save your rules as tasks. Run them from the app or the <code>igloo</code> CLI, then schedule daily or weekly reviews. Allow automatic cache cleanup when you’re happy with the scope and limits; freezing stays held for review.</p><a href="https://github.com/tm-henningnt/Igloo/blob/main/docs/tasks.md">Read the CLI and scheduling guide →</a></div><pre aria-label="CLI example"><code>igloo create weekly-review \
+  --cache-days 45 --freeze-days 180
+igloo plan weekly-review</code></pre></section>
+<section id="download" class="download"><div><h2>Make some space.</h2><p>Open the DMG, drag Igloo to Applications, then choose your projects folder in Settings. Your first scan changes nothing.</p><p>This release is not notarized. If macOS blocks the first launch, try opening Igloo, then approve it in <strong>System Settings → Privacy &amp; Security → Open Anyway</strong>. <a href="https://support.apple.com/en-us/102445">Apple’s instructions</a>.</p><p id="release-status" role="status">Release downloads will appear here when the first public release is ready.</p></div><div class="download-options"><a id="download-standard" class="button" href="https://github.com/tm-henningnt/Igloo/releases">View releases on GitHub <span aria-hidden="true">↗</span></a><p>The standard app includes its own Python runtime for Igloo. It doesn’t change your other Python installations.</p><details><summary>Already maintain Python?</summary><p>The smaller system-Python build needs Python 3.11 or later. Select your interpreter in Settings. In-app updates keep your chosen build.</p><a id="download-system" href="https://github.com/tm-henningnt/Igloo/releases">View system-Python releases →</a></details><noscript><p>JavaScript is only used to find the latest download. All downloads are available on the GitHub releases page.</p></noscript></div></section>
+<aside class="recovery"><p>Frozen local files stay on your Mac. Keep a separate backup of the recovery archives: they aren’t uploaded to GitHub or encrypted. Reinstall dependencies after thawing.</p></aside>
+</main>
+<footer><p>Igloo · Made by Henning Naarlien-Tolpinrud</p><div><a href="https://github.com/tm-henningnt/Igloo/blob/main/docs/guide.md">User guide</a><a href="https://github.com/tm-henningnt/Igloo">Source &amp; issues</a><a href="https://github.com/tm-henningnt/Igloo/releases">Releases</a><a href="https://github.com/tm-henningnt/Igloo/blob/main/LICENSE">License</a></div></footer>
+</body></html>
