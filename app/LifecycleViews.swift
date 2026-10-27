@@ -12,18 +12,20 @@ struct PlanView: View {
             VStack(alignment: .leading, spacing: 14) {
             LifecycleControls(project: project)
             Divider()
-            Toggle("Hold", isOn: $hold)
+            Toggle("Hold", isOn: $hold).accessibilityIdentifier("detail.hold")
             Text("The wizard and tasks never propose cleanup or freezing for this project.").font(.callout).foregroundStyle(.secondary)
             Text("Preservation notes").font(.headline)
             TextEditor(text: $note).font(.body).frame(minHeight: 140).border(Color.secondary.opacity(0.25))
                 .accessibilityLabel("Preservation notes")
-            Text("Before removing a whole checkout: preserve local changes and stashes, review branch and tag history, archive important ignored files, then verify the backup. Keep active sessions intact.")
+                .accessibilityIdentifier("detail.preservationNotes")
+            Text("Before removing a whole checkout: preserve local changes and stashes, review branch and tag history, archive important ignored files, then verify the backup. Leave active sessions untouched.")
                 .font(.callout).foregroundStyle(.secondary)
             }.padding(18).frame(maxWidth: .infinity, alignment: .leading)
             }
             Divider()
             HStack {
                 Button("Export project report…") { store.export(project) }
+                    .accessibilityIdentifier("detail.exportProjectReport")
                 Spacer()
                 Button("Save") {
                     store.invoke(["hold", project.id, hold ? "true" : "false"], as: Reply.self) { _ in
@@ -31,6 +33,7 @@ struct PlanView: View {
                     }
                 }
                     .buttonStyle(.borderedProminent).disabled(store.busy)
+                    .accessibilityIdentifier("detail.savePreservation")
             }.padding(12).background(.bar)
         }
     }
@@ -43,14 +46,35 @@ struct LifecycleControls: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
             Text("Git setup & freezing").font(.headline)
-            HStack {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
+                    Button("Connect remote…") { store.remoteSetup = project }
+                        .accessibilityIdentifier("detail.connectRemote")
+                    Button("Commit selected files…") { store.commitSetup = project }
+                        .disabled(project.changes.isEmpty)
+                        .accessibilityIdentifier("detail.commitSelectedFiles")
+                    Button("Preserve…") { selectedMode = .preserve }
+                        .help(project.git ? "Preserve this project; its checkout stays in place." : "Igloo can preserve Git projects only.")
+                        .accessibilityIdentifier("detail.preserve")
+                    Button("Freeze…") { selectedMode = .freeze }
+                        .help(project.git ? "Freeze this project after verification." : "Igloo can preserve Git projects only.")
+                        .accessibilityIdentifier("detail.freeze")
+                }.fixedSize(horizontal: true, vertical: false)
+                LazyVGrid(columns: [GridItem(.flexible(), alignment: .leading),
+                                    GridItem(.flexible(), alignment: .leading)],
+                          alignment: .leading, spacing: 8) {
                 Button("Connect remote…") { store.remoteSetup = project }
+                    .accessibilityIdentifier("detail.connectRemote")
                 Button("Commit selected files…") { store.commitSetup = project }
                     .disabled(project.changes.isEmpty)
+                    .accessibilityIdentifier("detail.commitSelectedFiles")
                 Button("Preserve…") { selectedMode = .preserve }
-                    .help(project.git ? "Preserve this project and keep its checkout." : "Igloo can preserve Git projects only.")
+                    .help(project.git ? "Preserve this project; its checkout stays in place." : "Igloo can preserve Git projects only.")
+                    .accessibilityIdentifier("detail.preserve")
                 Button("Freeze…") { selectedMode = .freeze }
                     .help(project.git ? "Freeze this project after verification." : "Igloo can preserve Git projects only.")
+                    .accessibilityIdentifier("detail.freeze")
+                }.frame(maxWidth: .infinity, alignment: .leading)
             }.disabled(store.busy || !project.git)
             Text(store.busy ? "Working…" : (project.git ? "Preserve keeps the checkout. Freeze removes it after verification." : "Igloo can preserve Git projects only."))
                 .font(.caption).foregroundStyle(.secondary)
@@ -324,27 +348,32 @@ struct FreezeSetupView: View {
                     Text(result.message).font(.callout)
                 }
                 ScrollView { OutcomeSummaryView(outcome: result.outcome) }.frame(maxHeight: 220)
-                HStack { Spacer(); Button("Done") { close(); if !store.isDemo { store.load() } }.keyboardShortcut(.cancelAction) }
+                HStack {
+                    Spacer()
+                    Button("Done") { close(); if !store.isDemo { store.load() } }
+                        .keyboardShortcut(.cancelAction).accessibilityIdentifier("freeze.done")
+                }
             } else if let review = plan ?? captureReview {
                 if review.held { Text("This project is on Hold").foregroundStyle(.orange) }
                 Text("Publish to: " + review.destination).font(.callout).textSelection(.enabled)
                 Picker("Review topic", selection: $reviewTopic) {
-                    Text("Git history").tag("Git history"); Text("Keep locally").tag("Keep locally")
+                    Text("Git history").tag("Git history"); Text("Local recovery").tag("Local recovery")
                     Text("Reinstall or rebuild").tag("Reinstall or rebuild"); Text("Checkouts").tag("Checkouts")
-                }.labelsHidden().pickerStyle(.segmented)
+                }.labelsHidden().pickerStyle(.segmented).accessibilityIdentifier("freeze.reviewTopic")
                 Group {
                     if reviewTopic == "Git history" {
-                        List {
-                            Section("Publish these ordinary branches and tags") {
-                                ForEach(review.publish) { ref in Text(ref.ref + "\n" + ref.sha).textSelection(.enabled) }
-                            }
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Publish these ordinary branches and tags").font(.headline)
+                            ForEach(review.publish) { ref in Text(ref.ref + "\n" + ref.sha).textSelection(.enabled) }
                             if !review.localRefs.isEmpty {
-                                Section("Preserve privately in local Git recovery") {
-                                    ForEach(review.localRefs) { ref in Text(ref.ref).textSelection(.enabled) }
-                                }
+                                Divider()
+                                Text("Preserve privately in local Git recovery").font(.headline)
+                                ForEach(review.localRefs) { ref in Text(ref.ref).textSelection(.enabled) }
                             }
-                        }
-                    } else if reviewTopic == "Keep locally" {
+                        }.frame(maxWidth: .infinity, alignment: .leading)
+                    }.frame(maxHeight: 210)
+                    } else if reviewTopic == "Local recovery" {
                         List(review.localFiles, id: \.self) { Text($0).textSelection(.enabled) }
                     } else if reviewTopic == "Reinstall or rebuild" {
                         List(review.excluded, id: \.self) { Text($0).textSelection(.enabled) }
@@ -352,20 +381,24 @@ struct FreezeSetupView: View {
                         List(review.checkouts, id: \.self) { Text($0).textSelection(.enabled) }
                     }
                 }.font(.caption).frame(maxWidth: .infinity, maxHeight: .infinity)
-                ScrollView { OutcomeSummaryView(outcome: review.outcome) }.frame(maxHeight: 220)
+                    ScrollView { OutcomeSummaryView(outcome: review.outcome) }.frame(maxHeight: 180)
                 Text(review.message).font(.caption).foregroundStyle(.secondary)
                 HStack {
                     Button("Back") { plan = nil; refreshBlockers() }.disabled(store.busy)
+                        .accessibilityIdentifier("freeze.back")
                     Spacer()
                     Button(review.outcome.actionLabel(preservedProjects: review.mode == "preserve" ? 1 : nil)) {
                         executeReview(review)
                     }.buttonStyle(.borderedProminent).disabled(store.busy)
+                        .accessibilityIdentifier("freeze.accept")
                 }
             } else {
-                Picker("Action", selection: $mode) { Text("Preserve").tag("preserve"); Text("Freeze").tag("freeze") }.pickerStyle(.segmented)
+                Picker("Action", selection: $mode) { Text("Preserve").tag("preserve"); Text("Freeze").tag("freeze") }
+                    .pickerStyle(.segmented).accessibilityIdentifier("freeze.actionMode")
                 Text(project.path).font(.caption).textSelection(.enabled)
                 if currentProject.hold == true { Text("This project is on Hold").foregroundStyle(.orange) }
                 Text("Requirements").font(.headline).accessibilityAddTraits(.isHeader)
+                    .accessibilityIdentifier("freeze.requirements")
                 if let blockers = shownBlockers {
                     if blockers.isEmpty { Text("No blockers found.") }
                     ForEach(blockers) { blocker in
@@ -374,11 +407,19 @@ struct FreezeSetupView: View {
                                 .accessibilityElement(children: .combine)
                                 .accessibilityLabel(Text(blocker.message))
                             if blocker.code == "no-files" {
-                                Button("Open in Finder") { NSWorkspace.shared.open(URL(fileURLWithPath: project.path)) }.disabled(store.isDemo)
-                                Button("Open Terminal") { store.terminal(project.path) }.disabled(store.isDemo)
+                                Button("Open in Finder") { NSWorkspace.shared.open(URL(fileURLWithPath: project.path)) }
+                                    .disabled(store.isDemo).accessibilityIdentifier("freeze.openFinder")
+                                Button("Open Terminal") { store.terminal(project.path) }
+                                    .disabled(store.isDemo).accessibilityIdentifier("freeze.openTerminal")
                             }
-                            if blocker.fix == "connect-remote" { Button("Connect remote…") { fixingRemote = true }.disabled(store.isDemo) }
-                            if blocker.fix == "commit" { Button("Commit selected files…") { fixingCommit = true }.disabled(store.isDemo) }
+                            if blocker.fix == "connect-remote" {
+                                Button("Connect remote…") { fixingRemote = true }
+                                    .disabled(store.isDemo).accessibilityIdentifier("freeze.fixRemote")
+                            }
+                            if blocker.fix == "commit" {
+                                Button("Commit selected files…") { fixingCommit = true }
+                                    .disabled(store.isDemo).accessibilityIdentifier("freeze.fixCommit")
+                            }
                         }.font(.callout)
                             .accessibilityElement(children: .contain)
                             .accessibilityLabel(Text("Requirement: " + blocker.message))
@@ -386,7 +427,10 @@ struct FreezeSetupView: View {
                 } else if store.busy {
                     Text("Checking requirements…").foregroundStyle(.secondary)
                 } else {
-                    HStack { Text("Requirements could not be checked."); Button("Try again") { refreshBlockers() } }
+                    HStack {
+                        Text("Requirements could not be checked.")
+                        Button("Try again") { refreshBlockers() }.accessibilityIdentifier("freeze.tryAgain")
+                    }
                 }
                 if !currentProject.remotes.isEmpty {
                     Picker("Publish destination", selection: $remote) {
@@ -396,10 +440,12 @@ struct FreezeSetupView: View {
                 Spacer()
                 HStack {
                     Button("Cancel", role: .cancel) { close() }
+                        .accessibilityIdentifier("freeze.cancel")
                     Spacer()
                     Button("Build review…") {
                         buildReview()
                     }.buttonStyle(.borderedProminent).disabled(store.busy || shownBlockers == nil || !(shownBlockers?.isEmpty ?? false) || remote.isEmpty)
+                        .accessibilityIdentifier("freeze.buildReview")
                 }
             }
         }.padding(24).frame(width: sheetWidth(900), height: 690)
@@ -480,39 +526,64 @@ struct FrozenProjectsView: View {
         refreshBackupWhenIdle = true
         store.invoke([command], as: FreezerBackupStatus.self) { backup = $0 }
     }
-    @ViewBuilder private func archiveTable(_ archives: [FrozenArchive]) -> some View {
+    @ViewBuilder private func archiveTable(_ archives: [FrozenArchive], emptyTitle: String, emptyDescription: String) -> some View {
         if sheetWidth(1080) < 850 {
             Table(archives, selection: $selected) {
                 TableColumn("Project", value: \.name).width(min: 140)
                 TableColumn("State") { Text(archiveStateLabel($0.state)) }.width(90)
                 TableColumn("Backup") { archive in
-                    Text(shownBackup?.archives.first(where: { $0.id == archive.id })?.description ?? "Backup status unavailable")
-                        .lineLimit(1).help(shownBackup?.archives.first(where: { $0.id == archive.id })?.reason ?? "")
+                    backupCell(for: archive)
                 }.width(min: 150)
+            }.overlay {
+                if archives.isEmpty { emptyArchiveState(title: emptyTitle, description: emptyDescription) }
             }
         } else {
             Table(archives, selection: $selected) {
                 TableColumn("Project", value: \.name).width(min: 170)
                 TableColumn("State") { Text(archiveStateLabel($0.state)) }.width(120)
                 TableColumn("Backup") { archive in
-                    Text(shownBackup?.archives.first(where: { $0.id == archive.id })?.description ?? "Backup status unavailable")
-                        .lineLimit(1).help(shownBackup?.archives.first(where: { $0.id == archive.id })?.reason ?? "")
+                    backupCell(for: archive)
                 }.width(min: 170)
                 TableColumn("Created") { Text(shortDate($0.created)) }.width(100)
                 TableColumn("Git destination") { Text($0.destination).lineLimit(1).truncationMode(.middle).help($0.destination) }.width(min: 250)
+            }.overlay {
+                if archives.isEmpty { emptyArchiveState(title: emptyTitle, description: emptyDescription) }
             }
         }
+    }
+    @ViewBuilder private func backupCell(for archive: FrozenArchive) -> some View {
+        let value = shownBackup?.archives.first(where: { $0.id == archive.id })
+        let description = value?.description ?? "Backup status unavailable"
+        if value?.backedUp != true {
+            let reason = value?.reason ?? "Backup status unavailable"
+            Label {
+                Text(description).lineLimit(1).truncationMode(.tail)
+            } icon: {
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+            }
+            .help(([description, reason].filter { !$0.isEmpty }).joined(separator: "\n"))
+        } else {
+            Text(description).lineLimit(1).truncationMode(.tail).help(description)
+        }
+    }
+    private func emptyArchiveState(title: String, description: String) -> some View {
+        ContentUnavailableView(title, systemImage: "snowflake", description: Text(description))
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Freezer").font(.title2).fontWeight(.semibold)
             Text("Preserved").font(.headline)
-            archiveTable((store.snapshot?.archives ?? []).filter { $0.state == "ready" })
+            archiveTable((store.snapshot?.archives ?? []).filter { $0.state == "ready" },
+                         emptyTitle: "No preserved projects yet",
+                         emptyDescription: "Projects appear here after Preserve completes.")
             Text("Frozen").font(.headline)
-            archiveTable((store.snapshot?.archives ?? []).filter { $0.state == "frozen" })
+            archiveTable((store.snapshot?.archives ?? []).filter { $0.state == "frozen" },
+                         emptyTitle: "No frozen projects",
+                         emptyDescription: "Projects appear here after Freeze completes.")
             if !(store.snapshot?.archives ?? []).filter({ !["ready", "frozen"].contains($0.state) }).isEmpty {
                 Text("Other states").font(.headline)
-                archiveTable((store.snapshot?.archives ?? []).filter { !["ready", "frozen"].contains($0.state) })
+                archiveTable((store.snapshot?.archives ?? []).filter { !["ready", "frozen"].contains($0.state) },
+                             emptyTitle: "No other Freezer entries", emptyDescription: "")
             }
             if let record = archive {
                 Text(record.message).font(.callout)
@@ -537,29 +608,38 @@ struct FrozenProjectsView: View {
                             Button("Remove from backup…") { removeBackup = copy; confirmBackupRemove = true }
                                 .disabled(store.busy || store.isDemo)
                                 .accessibilityLabel(Text("Remove backup copy " + copy.copyID))
+                                .accessibilityIdentifier("shelf.removeBackupCopy")
                         }.font(.caption)
                     }
                 }.frame(maxHeight: 90)
             }
             HStack {
-                Button("Back up now") { runBackup("backup-run") }.disabled(store.busy || store.isDemo || shownBackup?.configured != true)
-                Button("Verify backup") { runBackup("backup-verify") }.disabled(store.busy || store.isDemo || shownBackup?.configured != true)
+            Button("Back up now") { runBackup("backup-run") }.disabled(store.busy || store.isDemo || shownBackup?.configured != true)
+                .accessibilityIdentifier("shelf.backUpNow")
+            Button("Verify backup") { runBackup("backup-verify") }.disabled(store.busy || store.isDemo || shownBackup?.configured != true)
+                .accessibilityIdentifier("shelf.verifyBackup")
             }
             HStack {
                 Button("Done") { store.vaultShown = false }.keyboardShortcut(.cancelAction)
+                    .accessibilityIdentifier("shelf.done")
                 Button("Show archive") { if let a = archive { store.reveal(a.archiveLocation) } }.disabled(archive == nil)
+                    .accessibilityIdentifier("shelf.showArchive")
                 if let leftovers = archive?.leftovers, !leftovers.isEmpty {
                     Button("Show recovery copies") {
                         NSWorkspace.shared.activateFileViewerSelecting(leftovers.map { URL(fileURLWithPath: $0) })
                     }
+                    .accessibilityIdentifier("shelf.showRecoveryCopies")
                 }
                 Spacer()
                 Button("Freeze…") { removeConfirm = true }
                     .disabled(store.busy || store.isDemo || archive?.state != "ready")
+                    .accessibilityIdentifier("shelf.freeze")
                 Button("Offline recovery…") { offline = true; restoreConfirm = true }
                     .disabled(store.busy || store.isDemo || !recoverable)
+                    .accessibilityIdentifier("shelf.offlineRecovery")
                 Button("Thaw from remote…") { offline = false; restoreConfirm = true }
                     .buttonStyle(.borderedProminent).disabled(store.busy || store.isDemo || !recoverable)
+                    .accessibilityIdentifier("shelf.thawRemote")
             }
         }.padding(24).frame(width: sheetWidth(1080), height: 650)
             .onAppear { loadBackup() }

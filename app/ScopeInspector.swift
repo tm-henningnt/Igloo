@@ -48,7 +48,7 @@ struct ScopeInspector: View {
                     Text("Selected project").tag("Selected project")
                 }.labelsHidden()
                 Text(basis == "Selected project" ? store.selected?.name ?? "No project selected" :
-                     "\(projects.count) projects · " + store.filter)
+                     noun(projects.count, "project") + " · " + store.filter)
                     .font(.caption).foregroundStyle(.secondary).lineLimit(2)
                 Picker("Break down by", selection: $dimension) {
                     ForEach(["Project type", "Technology", "Age", "Activity", "Folder type"], id: \.self) { Text($0) }
@@ -101,6 +101,7 @@ struct ScopeInspector: View {
                     fact("Active", "\(projects.filter(\.active).count)")
                     fact("Quiet", "\(projects.filter { !$0.active && ($0.ageDays ?? -1) >= store.quietDays }.count)")
                     fact("Needs preservation", "\(projects.filter(\.needsPreservation).count)")
+                        .help("Counts projects with local work not verified on their remote, including uncommitted changes, stashes, uncovered branches, detached commits, unverified refs and local files. Non-Git folders are included because their contents are not on a remote.")
                     fact("Uncommitted work", "\(projects.filter { !$0.changes.isEmpty }.count)")
                 }
                 Button("Open full Space Explorer") {

@@ -65,7 +65,7 @@ struct CleanupWizardView: View {
         case "cleanup": return "Clean caches"
         case "archive": return "Preserve"
         case "freeze": return "Freeze"
-        default: return "Keep"
+        default: return "Leave unchanged"
         }
     }
     func encoded<T: Encodable>(_ value: T) -> String {
@@ -78,8 +78,9 @@ struct CleanupWizardView: View {
         let preserved = plan.rows.filter { $0.status == "ready" && $0.action == "archive" }.count
         return outcome.actionLabel(preservedProjects: preserved)
     }
+    private var compactReview: Bool { sheetWidth(1120) < 1000 }
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Text("Cleanup wizard").font(.title2).fontWeight(.semibold)
                 Spacer()
@@ -97,7 +98,7 @@ struct CleanupWizardView: View {
                     store.load()
                 }.disabled(store.busy).keyboardShortcut(.cancelAction)
             }
-        }.padding(24).frame(width: sheetWidth(1120), height: sheetWidth(1120) < 1000 ? 700 : 780)
+        }.padding(24).frame(width: sheetWidth(1120), height: compactReview ? 700 : 780)
             .interactiveDismissDisabled(store.busy)
             .sheet(isPresented: $taskEditorShown) { TasksView(initialRules: rules).environmentObject(store) }
             .onAppear {
@@ -130,7 +131,7 @@ struct CleanupWizardView: View {
                     Stepper("Freeze age", value: $rules.freezeDays, in: 2...3650).labelsHidden().fixedSize()
                 }
             }.frame(maxWidth: .infinity, alignment: .leading)
-            Text("Under \(rules.cacheDays) days: keep. From \(rules.cacheDays) to \(max(rules.cacheDays, rules.freezeDays - 1)) days: clean selected cache types. At \(rules.freezeDays) days and older: propose freezing instead.")
+            Text("Under \(rules.cacheDays) days: leave unchanged. From \(rules.cacheDays) to \(max(rules.cacheDays, rules.freezeDays - 1)) days: clean selected cache types. At \(rules.freezeDays) days and older: propose freezing instead.")
                 .font(.callout)
             Text("Cache types to clean").font(.headline)
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 200), alignment: .leading)], alignment: .leading, spacing: 12) {
@@ -166,9 +167,9 @@ struct CleanupWizardView: View {
             Text("These are suggestions. Change any action before preparing the exact review. Nothing has been cleaned, pushed or frozen.")
                 .font(.callout).foregroundStyle(.secondary)
             HStack {
-                Text("\(proposals.filter { $0.action != "keep" }.count) actions · \(proposals.filter { $0.action == "keep" }.count) kept")
+                Text("\(proposals.filter { $0.action != "keep" }.count) actions · \(proposals.filter { $0.action == "keep" }.count) unchanged")
                 Spacer()
-                Button("Keep all") { for i in proposals.indices { proposals[i].action = "keep" } }
+                Button("Leave all unchanged") { for i in proposals.indices { proposals[i].action = "keep" } }
             }.font(.callout)
             List {
                 ForEach($proposals) { $row in
@@ -213,7 +214,7 @@ struct CleanupWizardView: View {
         }
     }
     var reviewStep: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: compactReview ? 6 : 10) {
             Text(plan?.message ?? "").font(.callout).foregroundStyle(.secondary)
             if plan?.status == "running" {
                 Text("This batch was interrupted. Inspect recorded results, archives and Trash history; start a fresh review for remaining work. It will not run twice.")
@@ -234,7 +235,8 @@ struct CleanupWizardView: View {
                         Text(row.message).font(.callout)
                         Picker("Details", selection: $reviewTopic) {
                             ForEach(["Summary", "Publication", "Local recovery", "Omissions & paths"], id: \.self) { Text($0) }
-                        }.pickerStyle(.segmented)
+                        }.labelsHidden().pickerStyle(.segmented)
+                            .accessibilityIdentifier("wizard.reviewTopic")
                         ScrollView {
                             details(row).frame(maxWidth: .infinity, alignment: .leading)
                         }
@@ -242,9 +244,10 @@ struct CleanupWizardView: View {
                         ContentUnavailableView("Choose an action", systemImage: "list.bullet.clipboard")
                     }
                 }.padding(.leading, 16).frame(minWidth: 400, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            }
+            }.frame(minHeight: compactReview ? 190 : 260, maxHeight: compactReview ? 250 : 360)
             if let outcome = plan?.outcome {
-                ScrollView { OutcomeSummaryView(outcome: outcome) }.frame(maxHeight: 220)
+                ScrollView { OutcomeSummaryView(outcome: outcome) }
+                    .frame(maxHeight: compactReview ? 150 : 220)
             }
             if phase == 2 {
                 Text("Acceptance covers every ready row. Cache folders move to Trash. Freeze archives local files and Git metadata, pushes only the listed ordinary refs, verifies recovery and the remote, then removes the listed checkouts. Private recovery stays on this Mac and is not encrypted. Blocked rows will not run. Review expires after ten minutes.")
@@ -292,12 +295,12 @@ struct CleanupWizardView: View {
                 } else if reviewTopic == "Publication" {
                     Text("Publish these ordinary branches/tags").font(.headline)
                     ForEach(freeze.publish) { ref in Text(ref.ref + "\n" + ref.sha).font(.caption).textSelection(.enabled) }
-                    Text("Keep these refs privately").font(.headline)
+                    Text("Preserve these refs locally").font(.headline)
                     ForEach(freeze.localRefs) { ref in Text(ref.ref).font(.caption) }
                 } else if reviewTopic == "Local recovery" {
                     ForEach(freeze.localFiles, id: \.self) { Text($0).font(.caption).textSelection(.enabled) }
                 } else {
-                    Text(row.action == "freeze" ? "Remove these checkouts after verification" : "Keep these checkouts").font(.headline)
+                    Text(row.action == "freeze" ? "Remove these checkouts after verification" : "Leave these checkouts in place").font(.headline)
                     ForEach(freeze.checkouts, id: \.self) { Text($0).font(.caption).textSelection(.enabled) }
                     Text("Omit these rebuild folders from recovery").font(.headline)
                     ForEach(freeze.excluded, id: \.self) { Text($0).font(.caption).textSelection(.enabled) }

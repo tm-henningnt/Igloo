@@ -30,7 +30,7 @@ struct AboutView: View {
             .flatMap { NSImage(contentsOf: $0) } ?? NSImage(named: NSImage.applicationIconName)!
     }
     private var runtimeDescription: String {
-        Bundle.main.infoDictionary?["IglooRuntime"] as? String == "system" ? "System Python" : "Python included"
+        Bundle.main.infoDictionary?["IglooRuntime"] as? String == "system" ? "Uses the Python installed on this Mac" : "Python included"
     }
     var body: some View {
         VStack(spacing: 0) {

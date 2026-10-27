@@ -220,7 +220,7 @@ struct SpaceView: View {
             }.controlSize(.small)
             HStack {
                 Text(bytes(total)).font(.title).monospacedDigit()
-                Text("in \(grouped.count) projects").foregroundStyle(.secondary)
+                Text("in " + noun(grouped.count, "project")).foregroundStyle(.secondary)
                 Toggle("Cleanup candidates only", isOn: $cleanupOnly).toggleStyle(.checkbox)
                 Spacer()
                 Button("Reset filters") {
@@ -232,7 +232,7 @@ struct SpaceView: View {
                 VStack(alignment: .leading, spacing: 12) {
                     if total == 0 {
                         ContentUnavailableView("No measured space matches", systemImage: "chart.pie",
-                            description: Text("Adjust the filters or run Analyse Projects."))
+                            description: Text("Adjust the filters or run Analyze Projects."))
                     } else {
                         chart.frame(maxWidth: .infinity, maxHeight: .infinity)
                     }

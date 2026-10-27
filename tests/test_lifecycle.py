@@ -607,7 +607,7 @@ class LifecycleTests(unittest.TestCase):
         def file_changed(identifier):
             (self.repo / ".env").write_text("new work after review")
             return original(identifier)
-        for failure, reason in ((verify_failure, "verification failed"), (process_open, "Close it"),
+        for failure, reason in ((verify_failure, "verification failed"), (process_open, "Close the terminals"),
                                 (file_changed, "changed")):
             with self.subTest(failure=failure.__name__):
                 review = life.preview_freeze(str(self.repo), "origin", "freeze")
@@ -892,7 +892,7 @@ class LifecycleTests(unittest.TestCase):
 
     def test_organizer_source_stays_protected_from_freeze(self):
         self.init_organizer_source_fixture()
-        with self.assertRaisesRegex(o.Refusal, "protected"):
+        with self.assertRaisesRegex(o.Refusal, "does not freeze its own source"):
             life.preview_freeze(str(self.app), "origin")
 
     def test_organizer_source_stays_protected_from_cache_cleanup(self):

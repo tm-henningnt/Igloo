@@ -97,13 +97,16 @@ struct ProjectBlockerBadges: View {
     var body: some View {
         HStack(spacing: 5) {
             if let first = blockers.first {
-                Text("Blocked: " + label(first.code) + (blockers.count > 1 ? " +\(blockers.count - 1)" : ""))
-                    .lineLimit(1).truncationMode(.tail)
-                    .help(blockers.map(\.message).joined(separator: "\n"))
-                    .accessibilityElement(children: .combine)
-                    .accessibilityLabel(Text("Blocked: " + blockers.map(\.message).joined(separator: " ")))
+                HStack(spacing: 4) {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange).accessibilityHidden(true)
+                    Text("Blocked: " + label(first.code) + (blockers.count > 1 ? " +\(blockers.count - 1)" : ""))
+                        .lineLimit(1).truncationMode(.tail)
+                        .help(blockers.map(\.message).joined(separator: "\n"))
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel(Text("Blocked: " + blockers.map(\.message).joined(separator: " ")))
             }
             if held { Text("On hold").fixedSize().accessibilityLabel(Text("On hold")) }
-        }.font(.caption).foregroundStyle(.orange)
+        }.font(.caption)
     }
 }

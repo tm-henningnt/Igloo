@@ -137,7 +137,7 @@ enum UpdatePolicy {
             hash.update(data: chunk)
         }
         guard count == asset.size, hash.finalize().map({ String(format: "%02x", $0) }).joined() == asset.sha256 else {
-            throw UpdateError.invalid("The download failed its checksum check. Please try again.")
+            throw UpdateError.invalid("The download failed its checksum check. Try again.")
         }
     }
 }
@@ -174,18 +174,18 @@ enum UpdateService {
                     formatter.locale = Locale(identifier: "en_US_POSIX")
                     formatter.calendar = Calendar(identifier: .gregorian)
                     formatter.timeZone = TimeZone(secondsFromGMT: 0)!
-                    formatter.dateFormat = "MMM d, yyyy 'at' HH:mm 'UTC'"
+                    formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss'Z'"
                     let reset = formatter.string(from: Date(timeIntervalSince1970: seconds))
                     return .invalid("GitHub's update request limit has been reached. Try again after " + reset + ".")
                 }
-                return .invalid("GitHub's update request limit has been reached. Please try again later.")
+                return .invalid("GitHub's update request limit has been reached. Try again later.")
             }
-            return .invalid("GitHub denied this update request. Please try again later.")
+            return .invalid("GitHub denied this update request. Try again later.")
         }
         if (500...599).contains(response.statusCode) {
-            return .invalid("GitHub is having trouble serving updates. Please try again later.")
+            return .invalid("GitHub is having trouble serving updates. Try again later.")
         }
-        return .invalid("GitHub could not serve the update. Please try again later.")
+        return .invalid("GitHub could not serve the update. Try again later.")
     }
     static func transportError(_ error: URLError) -> Error {
         switch error.code {
@@ -199,7 +199,7 @@ enum UpdateService {
     }
     static func decode<T: Decodable>(_ type: T.Type, data: Data) throws -> T {
         do { return try JSONDecoder().decode(type, from: data) }
-        catch is DecodingError { throw UpdateError.invalid("The update information is invalid. Please try again later.") }
+        catch is DecodingError { throw UpdateError.invalid("The update information is invalid. Try again later.") }
     }
     static func data(_ url: URL, session: URLSession, maximum: Int) async throws -> Data? {
         do {
@@ -288,6 +288,65 @@ enum UpdateService {
     }
 }
 
+enum ReleaseNotesMarkup {
+    enum Kind: Equatable {
+        case heading(Int)
+        case bullet
+        case paragraph
+    }
+
+    struct Block {
+        let kind: Kind
+        let text: AttributedString
+    }
+
+    static func parse(_ markdown: String) -> [Block] {
+        var blocks: [Block] = []
+        var paragraph: [String] = []
+
+        func flushParagraph() {
+            guard !paragraph.isEmpty else { return }
+            blocks.append(Block(kind: .paragraph, text: inline(paragraph.joined(separator: "\n"))))
+            paragraph.removeAll(keepingCapacity: true)
+        }
+
+        for rawLine in markdown.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = String(rawLine).trimmingCharacters(in: .whitespaces)
+            guard !line.isEmpty else {
+                flushParagraph()
+                continue
+            }
+
+            let headingLevel = line.prefix(while: { $0 == "#" }).count
+            if (1...6).contains(headingLevel), line.dropFirst(headingLevel).first == " " {
+                flushParagraph()
+                let content = String(line.dropFirst(headingLevel + 1))
+                blocks.append(Block(kind: .heading(headingLevel), text: inline(content)))
+            } else if line.hasPrefix("- ") || line.hasPrefix("* ") || line.hasPrefix("• ") {
+                flushParagraph()
+                blocks.append(Block(kind: .bullet, text: inline(String(line.dropFirst(2)))))
+            } else {
+                paragraph.append(line)
+            }
+        }
+        flushParagraph()
+        return blocks
+    }
+
+    private static func inline(_ source: String) -> AttributedString {
+        var result = (try? AttributedString(markdown: source,
+            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(source)
+        let unsafeLinkRanges = result.runs.compactMap { run -> Range<AttributedString.Index>? in
+            guard let link = run.link else { return nil }
+            guard link.scheme?.lowercased() == "https", link.host?.isEmpty == false,
+                  link.user == nil, link.password == nil else { return run.range }
+            return nil
+        }
+        for range in unsafeLinkRanges { result[range].link = nil }
+        return result
+    }
+}
+
 // MARK: - Interface
 import SwiftUI
 import AppKit
@@ -303,6 +362,27 @@ import AppKit
     var downloadTask: Task<Void, Never>?
     var demo = false
     static let demoFailureNames = ["quota", "quota-no-reset", "forbidden", "offline", "timeout", "server", "malformed", "cancelled-download", "digest-mismatch"]
+    static func demoMarkdownUpdate() -> AppUpdater {
+        let tag = "v0.2.1"
+        let filename = UpdatePolicy.filename(version: "0.2.1", architecture: "universal", runtime: "bundled")
+        let manifest = UpdateManifest(schemaVersion: 1, repository: UpdatePolicy.repository, tag: tag,
+                                      version: "0.2.1", build: 15, minimumSystemVersion: "14.0", assets: [])
+        let asset = UpdateAsset(architecture: "universal", filename: filename,
+                                url: UpdatePolicy.assetURL(tag: tag, filename: filename), size: 128_000, sha256: "")
+        let notes = """
+        # Igloo 0.2.1
+
+        - **Updated:** Release notes now use readable headings, bullets, and emphasis.
+        - Review [the release guide](https://example.com/updates) for the change list.
+        - [This non-HTTPS link](http://example.com/updates) is displayed as text.
+        """
+        let updater = AppUpdater()
+        updater.demo = true
+        updater.status = "A new version of Igloo is available."
+        updater.available = AvailableUpdate(manifest: manifest, asset: asset, notes: notes,
+                                            releaseURL: URL(string: UpdatePolicy.releaseURL(tag))!)
+        return updater
+    }
     static func demoFailure(_ name: String) -> AppUpdater? {
         guard demoFailureNames.contains(name) else { return nil }
         let updater = AppUpdater()
@@ -318,9 +398,9 @@ import AppKit
         case "offline": updater.status = UpdateService.transportError(URLError(.notConnectedToInternet)).localizedDescription
         case "timeout": updater.status = UpdateService.transportError(URLError(.timedOut)).localizedDescription
         case "server": updater.status = UpdateService.responseError(response(503, [:])).localizedDescription
-        case "malformed": updater.status = "The update information is invalid. Please try again later."
+        case "malformed": updater.status = "The update information is invalid. Try again later."
         case "cancelled-download": updater.status = "Download canceled."
-        default: updater.status = "The download failed its checksum check. Please try again."
+        default: updater.status = "The download failed its checksum check. Try again."
         }
         return updater
     }
@@ -381,17 +461,28 @@ struct UpdatesView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text("Igloo updates").font(.title2).fontWeight(.semibold)
-            Text(updater.status).font(.callout).textSelection(.enabled)
+            if updater.failed {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange).accessibilityHidden(true)
+                    Text(updater.status).font(.callout).textSelection(.enabled)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel(Text(updater.status))
+            } else {
+                Text(updater.status).font(.callout).textSelection(.enabled)
+            }
             if let url = updater.failureReleaseURL { Link("View releases on GitHub", destination: url) }
             if updater.checking || updater.downloading { ProgressView().controlSize(.small) }
             if let update = updater.available {
                 Text("Version \(update.manifest.version) · \(update.asset.architecture) · \(bytes(update.asset.size))")
                 Text(update.asset.runtime == "bundled" ? "Python included" : "Uses your installed Python")
                     .font(.caption).foregroundStyle(.secondary)
-                    .font(.headline)
-                ScrollView { Text(update.notes.isEmpty ? "No release notes were provided." : update.notes)
-                    .frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled) }
-                    .frame(height: 180)
+                ScrollView {
+                    ReleaseNotesView(markdown: update.notes.isEmpty ? "No release notes were provided." : update.notes)
+                }
+                .frame(height: 180)
+                .accessibilityIdentifier("updates.releaseNotes")
                 Link("Release on GitHub", destination: update.releaseURL)
             }
             Text("Updates come from published GitHub releases. Project files, settings, and local archives stay in place.")
@@ -399,6 +490,7 @@ struct UpdatesView: View {
             Divider()
             HStack {
                 Button("Close") { dismiss() }.keyboardShortcut(.cancelAction)
+                    .accessibilityIdentifier("updates.close")
                 Spacer()
                 if updater.downloading { Button("Cancel download") { updater.downloadTask?.cancel() } }
                 else if let downloaded = updater.downloaded {
@@ -406,9 +498,39 @@ struct UpdatesView: View {
                         .buttonStyle(.borderedProminent)
                 } else if updater.available != nil {
                     Button("Download update") { updater.download() }.buttonStyle(.borderedProminent)
+                        .disabled(updater.demo)
+                        .accessibilityIdentifier("updates.download")
                 }
-                Button("Check again") { Task { await updater.check() } }.disabled(updater.checking || updater.downloading)
+                Button("Check again") { Task { await updater.check() } }
+                    .disabled(updater.checking || updater.downloading)
+                    .accessibilityIdentifier("updates.checkAgain")
             }
         }.padding(24).frame(width: 540)
+    }
+}
+
+
+private struct ReleaseNotesView: View {
+    let markdown: String
+    private var blocks: [ReleaseNotesMarkup.Block] { ReleaseNotesMarkup.parse(markdown) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
+                switch block.kind {
+                case .heading(let level):
+                    Text(block.text)
+                        .font(level == 1 ? .title3 : .headline)
+                        .textSelection(.enabled)
+                case .bullet:
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text("•").accessibilityHidden(true)
+                        Text(block.text).textSelection(.enabled)
+                    }.font(.callout)
+                case .paragraph:
+                    Text(block.text).font(.callout).textSelection(.enabled)
+                }
+            }
+        }.frame(maxWidth: .infinity, alignment: .leading)
     }
 }

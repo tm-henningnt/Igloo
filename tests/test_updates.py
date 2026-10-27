@@ -127,13 +127,13 @@ struct ReleaseFixture {
 }
 
 @main struct TransportChecks {
-    static let quota = "GitHub's update request limit has been reached. Try again after Oct 28, 2026 at 00:00 UTC."
-    static let quotaUnknown = "GitHub's update request limit has been reached. Please try again later."
-    static let forbiddenMessage = "GitHub denied this update request. Please try again later."
+    static let quota = "GitHub's update request limit has been reached. Try again after 2026-10-28T00:00:00Z."
+    static let quotaUnknown = "GitHub's update request limit has been reached. Try again later."
+    static let forbiddenMessage = "GitHub denied this update request. Try again later."
     static let offlineMessage = "You appear to be offline. Check your internet connection and try again."
     static let timeoutMessage = "The update request timed out. Check your connection and try again."
-    static let serverMessage = "GitHub is having trouble serving updates. Please try again later."
-    static let malformedMessage = "The update information is invalid. Please try again later."
+    static let serverMessage = "GitHub is having trouble serving updates. Try again later."
+    static let malformedMessage = "The update information is invalid. Try again later."
 
     static func failure(_ operation: () async throws -> Void) async -> Error {
         do { try await operation() }
@@ -193,7 +193,7 @@ struct ReleaseFixture {
             let expected = ["quota": quota, "quota-no-reset": quotaUnknown, "forbidden": forbiddenMessage,
                             "offline": offlineMessage, "timeout": timeoutMessage, "server": serverMessage,
                             "malformed": malformedMessage, "cancelled-download": "Download canceled.",
-                            "digest-mismatch": "The download failed its checksum check. Please try again."]
+                            "digest-mismatch": "The download failed its checksum check. Try again."]
             for (name, message) in expected {
                 guard let updater = AppUpdater.demoFailure(name) else { fatalError("Missing demo state") }
                 precondition(updater.status == message)
@@ -201,6 +201,25 @@ struct ReleaseFixture {
                 precondition(updater.failureReleaseURL?.absoluteString == "https://github.com/tm-henningnt/Igloo/releases")
             }
             precondition(AppUpdater.demoFailure("unknown") == nil)
+            FixtureProtocol.assertRequests([])
+        case "markdown-notes":
+            let notes = """
+            # Release highlights
+
+            - **Bold change** and `inline code`
+            - [Secure link](https://example.com/releases)
+            - [Plain unsafe link](http://example.com/releases)
+            """
+            let blocks = ReleaseNotesMarkup.parse(notes)
+            precondition(blocks.map(\.kind) == [.heading(1), .bullet, .bullet, .bullet])
+            precondition(String(blocks[0].text.characters) == "Release highlights")
+            precondition(String(blocks[1].text.characters).contains("Bold change"))
+            precondition(blocks[1].text.runs.contains {
+                $0.inlinePresentationIntent?.contains(.stronglyEmphasized) == true
+            })
+            precondition(blocks[2].text.runs.compactMap(\.link) == [URL(string: "https://example.com/releases")!])
+            precondition(String(blocks[3].text.characters) == "Plain unsafe link")
+            precondition(blocks[3].text.runs.allSatisfy { $0.link == nil })
             FixtureProtocol.assertRequests([])
         case "no-release":
             FixtureProtocol.configure([UpdatePolicy.api.absoluteString: .response(404, [:], Data())])
@@ -288,7 +307,7 @@ struct ReleaseFixture {
             if scenario == "cancelled-download" {
                 precondition(updater.status == "Download canceled.")
             } else {
-                precondition(updater.status == "The download failed its checksum check. Please try again.")
+                precondition(updater.status == "The download failed its checksum check. Try again.")
             }
             precondition(!updater.downloading && updater.downloadTask == nil && updater.downloaded == nil)
             precondition(updater.failed)
@@ -332,6 +351,9 @@ class UpdateTransportTests(unittest.TestCase):
 
     def test_demo_failure_states_match_user_messages(self):
         self.run_fixture("demo-states")
+
+    def test_markdown_notes_format_blocks_and_only_link_https(self):
+        self.run_fixture("markdown-notes")
 
     def test_no_release_404_returns_none(self):
         self.run_fixture("no-release")

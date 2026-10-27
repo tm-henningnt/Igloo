@@ -32,7 +32,7 @@ You choose the rules and review the proposed changes. Scheduled cleanup needs yo
 
 You'll need macOS 14 or later, Git, and the GitHub CLI (`gh`) for GitHub features. The standard app includes its own private Python runtime.
 
-Open the DMG and drag Igloo to Applications, open **Settings**, and choose your projects folder. Then click **Analyse Projects**. A scan gives you a starting point without changing your projects.
+Open the DMG and drag Igloo to Applications, open **Settings**, and choose your projects folder. Then click **Analyze Projects**. A scan gives you a starting point without changing your projects.
 
 This release is not notarized or signed with Apple Developer ID. If macOS blocks the first launch, try opening Igloo, then go to **System Settings → Privacy & Security → Open Anyway** to approve this app. See [Apple’s instructions](https://support.apple.com/en-us/102445).
 

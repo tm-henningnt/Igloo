@@ -137,7 +137,7 @@ struct CleanupReview: View {
             Text("Review cleanup · " + URL(fileURLWithPath: plan.items.first?.owner ?? plan.items.first?.path ?? "Project").lastPathComponent)
                 .font(.title2).fontWeight(.semibold)
             if let outcome = plan.outcome { ScrollView { OutcomeSummaryView(outcome: outcome) }.frame(maxHeight: 120) }
-            Text("\(plan.items.count) directories · \(bytes(plan.totalSize)) to move to Trash")
+            Text(noun(plan.items.count, "directory", "directories") + " · \(bytes(plan.totalSize)) to move to Trash")
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     ForEach(plan.items) { item in
@@ -148,7 +148,7 @@ struct CleanupReview: View {
                     }
                     if !plan.blocked.isEmpty {
                         Divider()
-                        Text("Held for review").font(.headline)
+                        Text("Not run").font(.headline)
                         ForEach(plan.blocked) { item in
                             VStack(alignment: .leading, spacing: 3) {
                                 Text(item.path).font(.callout)
@@ -180,13 +180,19 @@ struct PushReview: View {
     @LocalState var reviewed = false
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Publish one branch").font(.title2).fontWeight(.semibold)
+            Text("Push one branch").font(.title2).fontWeight(.semibold)
             Text(request.branch.name).font(.headline).textSelection(.enabled)
-            Text("Destination: \(request.remote.pushURL)\nRef: refs/heads/\(request.branch.name)\nCommit: \(request.branch.sha)")
-                .font(.callout).textSelection(.enabled)
-            Text("This publishes the selected committed history. Review it for private data first. Other branches, tags, stashes and uncommitted files are excluded. A rejected push will stop; the app never force-pushes.")
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Destination: \(request.remote.pushURL)\nRef: refs/heads/\(request.branch.name)")
+                HStack(spacing: 4) {
+                    Text("Commit:")
+                    Text(String(request.branch.sha.prefix(7))).help(request.branch.sha)
+                }
+            }.font(.callout).textSelection(.enabled)
+            Text("A push makes this branch visible on the remote. Igloo cannot undo it, and the local checkout stays unchanged. Review the committed history for private data first. Other branches, tags, stashes and uncommitted files are excluded. A rejected push stops; Igloo never force-pushes.")
                 .font(.callout).foregroundStyle(.secondary)
-            Toggle("I have reviewed this branch and destination for publication.", isOn: $reviewed)
+            Toggle("I reviewed this branch and remote destination.", isOn: $reviewed)
+            Text("Select this checkbox to enable Push this branch.").font(.caption).foregroundStyle(.secondary)
             HStack {
                 Button("Cancel", role: .cancel) { store.pushRequest = nil }
                 Spacer()

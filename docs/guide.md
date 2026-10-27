@@ -1,6 +1,6 @@
 # Using Igloo
 
-Start by choosing your projects folder in **Settings**, then click **Analyse Projects**. Igloo looks for projects and Git repositories, checks their local state, and estimates how much disk space they use. Scanning does not change project files.
+Start by choosing your projects folder in **Settings**, then click **Analyze Projects**. Igloo looks for projects and Git repositories, checks their local state, and estimates how much disk space they use. Scanning does not change project files.
 
 ## First launch
 
@@ -18,7 +18,7 @@ The scope panel on the right follows your current filters. Open **Space Explorer
 
 Open a project's **Cleanup** tab, select the folders you want to remove, and review the proposed changes. Igloo rechecks the selection before moving it to Trash. Use **Trash & restore history** if you need to restore it.
 
-Check for custom changes before removing dependencies you normally regenerate. Active projects and folders containing tracked files or local configuration can be held for review.
+Check for custom changes before removing dependencies you normally regenerate. Active projects and folders containing tracked files or local configuration can stop cleanup and require review.
 
 For a larger cleanup, open **Cleanup wizard**:
 
@@ -28,9 +28,9 @@ For a larger cleanup, open **Cleanup wizard**:
 4. Review the folders, Git destinations, local archives, and checkout removals.
 5. Accept the review to run its ready actions.
 
-Projects younger than the first threshold stay as they are. Between thresholds, Igloo proposes cache cleanup. Past the second threshold, it proposes freezing instead. Active sessions and unknown age or activity are protected by default.
+Projects younger than the first threshold stay as they are. Between thresholds, Igloo proposes cache cleanup. Past the second threshold, it proposes Freeze for your Review. Active sessions and unknown age or activity stay unchanged by default. Igloo checks again for terminals, agents, and applications using a project before it prepares or runs cleanup or Freeze; close them first.
 
-The results show what completed and what was held or failed. If something changes during the run, inspect the result and make a fresh review for the remaining work.
+The results show what completed, stopped, or failed. If something changes during the run, inspect the result and make a fresh Review for the remaining work.
 
 ## Preserve work before putting a project away
 
@@ -71,7 +71,7 @@ Existing destination files are never overwritten. Reinstall dependencies afterwa
 
 Open **GitHub repositories** to browse your account or an organization. You can hide repositories already cloned locally, select several, and review their destination folders before cloning. Existing folders are left untouched.
 
-Run **Analyse Projects** afterward to add the clones to your project list.
+Run **Analyze Projects** afterward to add the clones to your project list.
 
 ## Repeat the routine
 
@@ -81,13 +81,13 @@ See [Tasks, CLI, and scheduling](tasks.md) for examples.
 
 ## Updating Igloo
 
-Choose **Igloo → Check for Updates** from the app menu or About screen. Igloo checks published releases, shows the release notes, and downloads the version for your Mac and runtime choice.
+Choose **Igloo → Check for Updates** from the app menu or About screen. Igloo checks published releases, shows formatted release notes, and downloads the version for your Mac and runtime choice. Only HTTPS links in release notes open.
 
 If a check or download fails, the update window explains the problem and links to the published releases. If GitHub's request limit is exhausted, wait until the displayed UTC reset time, when available, before trying again. For an offline connection or timeout, check your connection; for a denied request or server error, try again later. Igloo does not retry automatically.
 
 After the checksum has been verified, choose **Show in Finder**. Open the ZIP, quit Igloo, and move the new app into Applications. Your projects, settings, and local archives stay where they are. If you use the CLI, choose **Tasks → Reinstall CLI** after updating.
 
-The standard app keeps its own Python inside the app bundle and leaves your system Python and PATH alone. The optional system-Python build uses Python 3.11 or later from your Mac; its path can be changed in Settings.
+The standard app keeps its own Python inside the app bundle and leaves your system Python and PATH alone. The optional System Python build uses the Python installed on your Mac (Python 3.11 or later); its path can be changed in Settings.
 
 ## Settings and backups
 

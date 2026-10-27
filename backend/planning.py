@@ -252,7 +252,7 @@ def execute(identifier):
     try:
         O.scan()
     except Exception:
-        plan["message"] += " Catalog refresh failed; run Analyse Projects. Action results are preserved."
+        plan["message"] += " Catalog refresh failed; run Analyze Projects. Action results are preserved."
         persist(plan)
     return plan
 

@@ -724,7 +724,7 @@ def execute_cleanup(plan_id):
                               held=[{"path": r["path"], "reason": r["message"]} for r in results if not r["ok"]]
                                    + [{"path": b["path"], "reason": b["reason"]} for b in plan["blocked"]])
     return {"results": results, "outcome": outcome,
-            "message": "Trash keeps these files until you empty it. Reanalyse to update disk estimates."}
+            "message": "Trash keeps these files until you empty it. Reanalyze to update disk estimates."}
 
 
 def age_seconds(value):
@@ -927,7 +927,7 @@ def main():
             return 1
         except Exception as e:
             # Do not echo credentials, file contents or arbitrary subprocess output.
-            result = {"error": "The action could not complete. Existing snapshot and project files were preserved. Check permissions and reanalyse."}
+            result = {"error": "The action could not complete. Existing snapshot and project files were preserved. Check permissions and reanalyze."}
             if hasattr(e, "outcome"):
                 result["outcome"] = e.outcome
             print(json.dumps(result))

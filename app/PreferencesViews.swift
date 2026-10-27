@@ -224,7 +224,7 @@ struct AppSettingsView: View {
                         try valid.write()
                         draft = valid; store.preferences = valid; store.quietDays = valid.quietDays
                         store.selection = nil; store.load()
-                        message = "Saved. Run Analyse Projects after changing workspaces."
+                        message = "Saved. Run Analyze Projects after changing workspaces."
                     } catch { message = error.localizedDescription }
                 }.buttonStyle(.borderedProminent).disabled(store.busy || store.isDemo)
             }
@@ -310,7 +310,7 @@ struct RemoteRepositoriesView: View {
     @LocalState var search = ""
     @LocalState var hideLocal = true
     @LocalState var parent = ""
-    @LocalState var message = "Choose an account or organization."
+    @LocalState var message = ""
     @LocalState var plan: CloneReview?
     @LocalState var confirmed = false
     @LocalState var results: [ActionResult] = []
@@ -347,35 +347,46 @@ struct RemoteRepositoriesView: View {
                     }.buttonStyle(.borderedProminent).disabled(store.busy || !confirmed)
                 }
             } else {
-                HStack {
-                    TextField("GitHub account or organization", text: $owner)
-                    if !owners.isEmpty {
-                        Menu("My accounts") { ForEach(owners, id: \.self) { value in Button(value) { owner = value } } }
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        TextField("GitHub account or organization", text: $owner)
+                        if !owners.isEmpty {
+                            Menu("My accounts") { ForEach(owners, id: \.self) { value in Button(value) { owner = value } } }
+                        }
+                        Button("Load repositories") { loadRepositories() }.disabled(store.busy || owner.isEmpty)
                     }
-                    Button("Load repositories") { loadRepositories() }.disabled(store.busy || owner.isEmpty)
+                    Text("Choose an account or organization.").font(.caption).foregroundStyle(.secondary)
                 }
                 HStack {
                     TextField("Search repositories", text: $search)
                     Toggle("Hide already cloned", isOn: $hideLocal)
+                        .help("This filter hides repositories that already have a local clone. Turn it off to show them.")
                 }
                 Table(visible, selection: $selected) {
                     TableColumn("Repository", value: \.slug).width(min: 240)
                     TableColumn("Visibility") { Text($0.isPrivate ? "Private" : "Public") }.width(90)
                     TableColumn("Local state") { Text($0.alreadyLocal ? "Already cloned" : $0.archived ? "Archived remote" : "Not cloned here") }.width(130)
                     TableColumn("Description", value: \.description).width(min: 250)
+                }.overlay {
+                    if visible.isEmpty {
+                        ContentUnavailableView(emptyTitle, systemImage: "network",
+                                               description: Text(emptyDescription))
+                    }
                 }
-                HStack {
-                    TextField("Clone into", text: $parent)
-                    Button("Choose…") {
-                        let panel = NSOpenPanel()
-                        panel.canChooseDirectories = true; panel.canChooseFiles = false
-                        panel.directoryURL = URL(fileURLWithPath: parent)
-                        if panel.runModal() == .OK, let url = panel.url { parent = url.path }
+                LabeledContent("Clone folder") {
+                    HStack {
+                        TextField("Local parent folder", text: $parent)
+                        Button("Choose…") {
+                            let panel = NSOpenPanel()
+                            panel.canChooseDirectories = true; panel.canChooseFiles = false
+                            panel.directoryURL = URL(fileURLWithPath: parent)
+                            if panel.runModal() == .OK, let url = panel.url { parent = url.path }
+                        }
                     }
                 }
                 Text(message).font(.caption).foregroundStyle(.secondary)
                 if !results.isEmpty {
-                    Text(results.map { ($0.ok ? "Cloned: " : "Held: ") + $0.path }.joined(separator: "\n")).font(.caption).lineLimit(4)
+                    Text(results.map { ($0.ok ? "Cloned: " : "Not cloned: ") + $0.path }.joined(separator: "\n")).font(.caption).lineLimit(4)
                 }
                 HStack {
                     Button("Done") { store.repositoriesShown = false }.keyboardShortcut(.cancelAction)
@@ -385,6 +396,7 @@ struct RemoteRepositoriesView: View {
                         let slugs = visible.filter { selected.contains($0.id) }.map(\.slug)
                         store.invoke(["clone-preview", parent] + slugs, as: CloneReview.self) { plan = $0 }
                     }.buttonStyle(.borderedProminent).disabled(store.busy || selected.isEmpty)
+                        .help("\(selected.count) selected. Select one or more repositories to enable this review.")
                 }
             }
         }.padding(24).frame(width: sheetWidth(1120), height: 720)
@@ -398,6 +410,20 @@ struct RemoteRepositoriesView: View {
                     if !owner.isEmpty { loadRepositories() }
                 }
             }
+    }
+    private var emptyTitle: String {
+        if repositories.isEmpty { return "No repositories loaded" }
+        if !search.isEmpty { return "No matching repositories" }
+        if hideLocal { return "All repositories are already cloned" }
+        return "No repositories found"
+    }
+    private var emptyDescription: String {
+        if repositories.isEmpty {
+            return owner.isEmpty ? "Choose an account or organization, then load its repositories." : "Choose Load repositories to see this account or organization's repositories."
+        }
+        if !search.isEmpty { return "Clear the search field to see the loaded repositories." }
+        if hideLocal { return "Turn off Hide already cloned to show these repositories." }
+        return "Load repositories for another account or organization."
     }
     private func loadRepositories() {
         store.invoke(["github-repos", owner], as: RepositoryListing.self) { listing in

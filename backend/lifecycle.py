@@ -31,8 +31,8 @@ BLOCKERS = {
     "no-files": ("Add files to this project, then commit them.", None),
     "no-commit": ("Make an initial commit before freezing this project.", "commit"),
     "changed-source": ("Commit or resolve changed/untracked source first. Ignored local-only files will be preserved separately.", "commit"),
-    "open-processes": ("A process still has files open in this project. Close it before freezing.", None),
-    "own-source": ("The running Igloo app is protected from freezing. Its Git setup and source commits are available.", None),
+    "open-processes": ("A process still has files open in this project. Close the terminals, editors and agents that use it. Active sessions lists them. Then check again.", None),
+    "own-source": ("Igloo does not freeze its own source folder, because the running app uses it. Git setup and source commits stay available.", None),
 }
 
 
@@ -1554,10 +1554,10 @@ def execute_clones(identifier):
                 journal.append({"slug": item["slug"], "path": str(target), "at": O.now()})
                 O.save(O.STATE / "clones.json", journal)
             except (OSError, ValueError):
-                note += ". Local index update failed; run Analyse Projects."
+                note += ". Local index update failed; run Analyze Projects."
             results.append({"path": str(target), "ok": True, "message": note})
         except (O.Refusal, OSError):
             results.append({"path": item["path"], "ok": False,
                             "message": "Not cloned. Check access or a destination conflict; existing folders were preserved."})
     good = sum(r["ok"] for r in results)
-    return {"clones": results, "message": f"Cloned {good} of {len(results)} repositories. Run Analyse Projects to index the new checkouts."}
+    return {"clones": results, "message": f"Cloned {good} of {len(results)} repositories. Run Analyze Projects to index the new checkouts."}

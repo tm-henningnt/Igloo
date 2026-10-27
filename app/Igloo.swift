@@ -97,13 +97,19 @@ struct PushRequest: Identifiable {
 }
 func bytes(_ value: Int64) -> String {
     if value == 0 { return "0 bytes" }
-    return ByteCountFormatter.string(fromByteCount: value, countStyle: .binary)
+    if value < 1_048_576 { return ByteCountFormatter.string(fromByteCount: value, countStyle: .binary) }
+    let units = ["MB", "GB", "TB", "PB"]
+    var size = Double(value) / 1_048_576
+    var unit = 0
+    while size >= 1024 && unit < units.count - 1 { size /= 1024; unit += 1 }
+    return size.formatted(.number.precision(.fractionLength(1))) + " " + units[unit]
 }
 
 func sheetWidth(_ preferred: CGFloat) -> CGFloat {
     let hostWidth = DemoCapture.options?.size?.width ?? NSApp.mainWindow?.contentLayoutRect.width ?? preferred
     return min(preferred, max(620, hostWidth - 40))
 }
+func noun(_ count: Int, _ one: String, _ many: String? = nil) -> String { "\(count) " + (count == 1 ? one : many ?? one + "s") }
 func shortDate(_ value: String) -> String { value.isEmpty ? "Unknown" : String(value.prefix(10)) }
 func relative(_ path: String, to root: String) -> String {
     path.hasPrefix(root + "/") ? String(path.dropFirst(root.count + 1)) : path
@@ -272,15 +278,15 @@ final class OrganizerStore: ObservableObject {
             self.smokeIfRequested()
         }
     }
-    func analyse() {
+    func analyze() {
         invoke(["scan"], as: Reply.self) { _ in self.load() }
     }
     func action(_ args: [String]) {
         invoke(args, as: Reply.self) { reply in
             let failures = reply.results?.filter { !$0.ok } ?? []
             let moved = reply.results?.filter { $0.ok }.count ?? 0
-            var lines = failures.prefix(5).map { "Held: \($0.path)\n\($0.message)" }
-            if reply.results != nil { lines.insert("\(moved) directories moved; \(failures.count) held. Full move records are in History.", at: 0) }
+            var lines = failures.prefix(5).map { "Could not move: \($0.path)\n\($0.message)" }
+            if reply.results != nil { lines.insert("\(moved) directories moved; \(failures.count) could not be moved. Full move records are in History.", at: 0) }
             let message = ([reply.message].compactMap { $0 } + lines).joined(separator: "\n\n")
             self.load()
             if !message.isEmpty {
@@ -390,7 +396,7 @@ struct OrganizerView: View {
                 Divider()
             VStack(spacing: 0) {
                 HStack {
-                    Text("\(store.visible.count) projects").foregroundStyle(.secondary).lineLimit(1)
+                    Text(noun(store.visible.count, "project")).foregroundStyle(.secondary).lineLimit(1)
                     Spacer()
                     Picker("Sort", selection: $store.order) {
                         Text("Largest first").tag("Largest first")
@@ -422,7 +428,7 @@ struct OrganizerView: View {
                     if store.visible.isEmpty {
                         ContentUnavailableView(store.snapshot?.projects.isEmpty == false ? "No matching projects" : "Start with an analysis",
                                                systemImage: "folder.badge.questionmark",
-                                               description: Text("Analyse Projects discovers folders, branches, worktrees and cleanup opportunities."))
+                                               description: Text("Analyze Projects discovers folders, branches, worktrees and cleanup opportunities."))
                     }
                 }
             }
@@ -459,7 +465,7 @@ struct OrganizerView: View {
                     }
             }
             ToolbarItem(placement: .primaryAction) {
-                Button { store.analyse() } label: { Label("Analyse Projects", systemImage: "arrow.triangle.2.circlepath") }
+                Button { store.analyze() } label: { Label("Analyze Projects", systemImage: "arrow.triangle.2.circlepath") }
                     .keyboardShortcut("r", modifiers: [.command, .shift]).disabled(store.busy)
             }
         }
@@ -479,7 +485,7 @@ struct OrganizerView: View {
                                 alert.runModal()
                             }.buttonStyle(.link)
                         }
-                        Text("\(bytes(snapshot.totalSize)) cataloged · \(bytes(snapshot.freeSpace)) free").monospacedDigit().lineLimit(1)
+                        Text((snapshot.projects.isEmpty ? "No projects cataloged" : "\(bytes(snapshot.totalSize)) cataloged") + " · \(bytes(snapshot.freeSpace)) free").monospacedDigit().lineLimit(1)
                     }
                     Divider().frame(height: 16)
                     Button {
@@ -519,7 +525,28 @@ struct OrganizerView: View {
 }
 
 struct ProjectRow: View {
+    @EnvironmentObject var store: OrganizerStore
     let project: Project
+    private var duplicateName: Bool {
+        (store.snapshot?.projects.filter { $0.name == project.name }.count ?? 0) > 1
+    }
+    private var subtitle: String {
+        let metadata = project.kind + (project.technologyText.isEmpty ? "" : " · " + project.technologyText)
+        guard duplicateName else { return metadata }
+        let folder = URL(fileURLWithPath: project.path).lastPathComponent
+        return metadata + (folder.isEmpty ? "" : " · " + folder)
+    }
+    private var preservationHint: String? {
+        guard project.needsPreservation, (project.blockers ?? []).isEmpty else { return nil }
+        if !project.changes.isEmpty { return "Uncommitted changes" }
+        if !project.stashes.isEmpty { return "Git stashes" }
+        if project.localFiles.contains(where: { !$0.template }) { return "Local files" }
+        if project.unknown == 0 && project.refs.contains(where: { !$0.verified }) { return "Unverified refs" }
+        if (project.detachedHeads ?? []).contains(where: { $0.uncovered == nil || ($0.uncovered ?? 0) > 0 }) {
+            return "Detached commits to review"
+        }
+        return nil
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(alignment: .firstTextBaseline) {
@@ -527,14 +554,22 @@ struct ProjectRow: View {
                 Spacer(minLength: 8)
                 Text(bytes(project.size)).monospacedDigit().foregroundStyle(.secondary).font(.callout)
             }
-            Text(project.kind + (project.technologyText.isEmpty ? "" : " · " + project.technologyText))
-                .font(.caption).foregroundStyle(.secondary).lineLimit(1).help(project.category + " · " + project.technologyText)
+            Text(subtitle)
+                .font(.caption).foregroundStyle(.secondary).lineLimit(2).help(project.path)
             HStack(spacing: 8) {
                 if project.active { Label("Active", systemImage: "bolt.fill") }
                 else if let days = project.ageDays { Text("\(days)d since Git activity") }
-                if project.uncovered > 0 { Text("\(project.uncovered) branches to review").foregroundStyle(.orange) }
+                if project.uncovered > 0 {
+                    HStack(spacing: 4) {
+                        Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.orange).accessibilityHidden(true)
+                        Text(noun(project.uncovered, "branch", "branches") + " to review")
+                    }
+                }
                 else if project.unknown > 0 { Text("Unverified history").foregroundStyle(.secondary) }
                 else if !project.git { Text("Local folder") }
+                if let preservationHint {
+                    Label(preservationHint, systemImage: "tray.full")
+                }
                 Spacer(minLength: 0)
             }.font(.caption).lineLimit(1)
             ProjectBlockerBadges(blockers: project.blockers ?? [], held: project.hold == true)
@@ -579,6 +614,7 @@ struct ProjectDetail: View {
                     Text("Cleanup").tag("Cleanup")
                     Text("Preservation").tag("Review plan")
                 }.pickerStyle(.segmented).controlSize(.small).labelsHidden().padding(10)
+                    .accessibilityIdentifier("detail.tabs")
                 Divider()
                 GeometryReader { pane in
                     Group {
@@ -652,7 +688,7 @@ struct ProjectDetail: View {
                     .keyboardShortcut("?", modifiers: [.command])
             }
             CommandGroup(after: .newItem) {
-                Button("Analyse Projects") { store.analyse() }.keyboardShortcut("r", modifiers: [.command, .shift]).disabled(store.busy)
+                Button("Analyze Projects") { store.analyze() }.keyboardShortcut("r", modifiers: [.command, .shift]).disabled(store.busy)
                 Button("Trash & Restore History") { store.historyShown = true }
             }
         }
@@ -708,29 +744,29 @@ struct AppHelpView: View {
                 if topic == "Getting started" {
 
                     VStack(alignment: .leading, spacing: 18) {
-                        helpSection("Analyse your projects", "Analyse Projects discovers repositories and linked worktrees, measures folders and checks configured remotes. It reads project metadata and filenames without changing checkouts. Source dates and observed process activity are estimates of use.")
+                        helpSection("Analyze your projects", "Analyze Projects discovers repositories and linked worktrees, measures folders and checks configured remotes. It reads project metadata and filenames without changing checkouts. Source dates and observed process activity are estimates of use.")
                         helpSection("Settings and installation", "The app bundles its backend and can be copied to Applications. Settings lets you choose the workspace root, archive and state locations, clone folder, quiet threshold, GitHub owner default and installed tool paths. Python, Git and gh remain local prerequisites.")
-                        helpSection("Tasks, CLI and schedules", "Tasks saves reusable rules, project scopes, cache types and per-run limits. Review-only is the default. Review now scans afresh and records an exact review; cleanup tasks can apply a reviewed cache selection. Install CLI adds ~/.local/bin/igloo with create, review, run, apply, history, schedule and unschedule commands. Scheduled cache execution requires the saved unattended permission. Changing rules invalidates a schedule until it is re-enabled. Tasks never commit, push, freeze or remove project checkouts. Past the freeze threshold, projects are held for wizard review. Daily and weekly schedules use user LaunchAgents, local time, and only run while logged in. Busy runs skip and are recorded; source code is not required after CLI installation.")
-                        helpSection("Cleanup wizard", "Choose Git activity or source-file modification age, a cache threshold and a later freeze threshold. Recent projects are kept, middle-aged projects get cache cleanup, and older projects get freezing instead. Change any project action to override age suggestions. Running-process checks always remain. Prepare and review the exact folders, refs and recovery data, then accept once to run all ready actions, including verified checkout removal for full freezes. Blockers and changed state stop individual rows; results are saved locally. Source-file age ignores dependencies, Git metadata and generated/review folders.")
+                        helpSection("Tasks and schedules", "Tasks save reusable cleanup rules for selected projects. Start with a Review that lists the exact folders before anything changes. You can run a reviewed cache cleanup or schedule one after giving permission. Past the freeze threshold, the wizard suggests Freeze and waits for your Review. Tasks do not commit or push source, Freeze projects, or remove their checkouts. If you change the rules, enable the schedule again. Daily and weekly schedules run while you are logged in; busy runs are skipped and recorded. Install the optional Terminal tool from Tasks if you want to run a saved task from Terminal.")
+                        helpSection("Cleanup wizard", "Choose Git activity or source-file modification age, a cache threshold and a later freeze threshold. Recent projects remain unchanged, middle-aged projects get cache cleanup, and older projects are proposed for Freeze. Change any project action to override age suggestions. Before it prepares or runs cleanup or Freeze, Igloo checks again for terminals, agents and applications using each project. Close them first. Review the exact folders, refs and recovery data, then accept once to run every ready action, including verified checkout removal for Freeze. Blocked rows do not run; results are saved locally. Source-file age ignores dependencies, Git metadata and generated/review folders.")
                         helpSection("Explore space", "Space explorer offers sunburst, icicle and Marimekko views of project sizes and measured dependency/build types. Filter projects by age, detected activity or type, and color by type, activity or age. Select a segment to focus a project; Open project returns to its cleanup and preservation tools. Other project files is the unclassified remainder, not a claim that data is safe to delete.")
-                        helpSection("Browse GitHub", "GitHub repositories lets you browse your account or an organization, search, hide existing local clones, select several repositories and clone them into a chosen project folder. Existing paths are never overwritten. Run Analyse Projects afterward to index them.")
+                        helpSection("Browse GitHub", "GitHub repositories lets you browse your account or an organization, search, hide existing local clones, select several repositories and clone them into a chosen project folder. Existing paths are never overwritten. Run Analyze Projects afterward to index them.")
                         helpSection("Project types and technology", "Analysis suggests project purpose separately from technology using bounded filenames and package metadata. Overview lets you correct the project type or reset it to Automatic. Catalog search and the type filter use these labels. Space explorer groups, colors and filters by project purpose, technology, age and activity. Complete technology combinations keep aggregate sizes from being counted more than once.")
                         helpSection("Current scope", "Show scope / Hide scope at the bottom-right toggles the visualization beside your work (Option-Command-I). It follows your current filters or the selected project. Choose a breakdown or open the full Space Explorer with this scope. Narrow windows retain the icon rail; the navigation button opens full labels in a popover when there is not room to expand.")
                         helpSection("Choose what to review", "The sidebar groups project views, review filters, tools and recovery. Its toolbar button collapses it to an icon rail. Quiet projects shows its age threshold below the project views. Needs preservation highlights local history, changed files, stashes and local data. Cleanup opportunities lists ignored dependencies and tool caches.")
                         helpSection("Connect GitHub", "Open a project’s Preservation tab. Connect an existing remote, or create a private GitHub repository. Your gh login supplies the personal-account default; you can explicitly choose an organization. Local folder labels never choose the GitHub owner or visibility.")
                         helpSection("Commit and publish", "Commit selected files lets you review a specific checkout and file selection. Other staged files must be reviewed too. Environment, key and data filenames stay local. Git → Branches can push one reviewed commit and destination; it never force-pushes.")
                         helpSection("Clean caches", "Select exact directories in Cleanup and review a fresh preview. Active sessions, tracked files, nested repositories and local configuration can stop cleanup. Moves go to Trash and can be restored from Trash & restore history. Space is freed when Trash is emptied separately.")
-                    }.frame(maxWidth: .infinity, alignment: .leading).padding(18)
+                    }.frame(maxWidth: .infinity, alignment: .leading).padding(18).padding(.bottom, 30)
                 } else if topic == "Freeze & thaw" {
 
                     VStack(alignment: .leading, spacing: 18) {
-                        helpSection("Prepare a project", "Commit reviewed source changes, then close its shells, agents and applications. Ignored local files such as .env files and databases can remain. All registered worktrees are reviewed together.")
+                        helpSection("Prepare a project", "Commit reviewed source changes, then close its shells, agents and applications. Igloo checks for them again before cleanup or Freeze. Ignored local files such as .env files and databases can remain. All registered worktrees are reviewed together.")
                         helpSection("Requirements and Hold", "The project list shows a badge when a quick check finds a blocker. Open Preservation and choose Preserve or Freeze to see the Requirements checklist and available fixes. Both need a remote. Hold excludes a project from wizard and task proposals; manual actions remain available and show a warning.")
                         helpSection("Preserve", "Preserve reviews ordinary branches and tags, local-only files and rebuild folders. It stores local files and Git recovery in the Freezer, tests reconstruction, pushes the reviewed refs and verifies them remotely. Private refs, stashes and reflogs stay in local recovery, and the checkout remains.")
                         helpSection("Freeze", "Build a Review and inspect its outcome summary for recovery sets, refs, checkout removals and estimated space. Accept once to Preserve, verify recovery and the remote, then remove the reviewed checkouts. A small project marker and the Freezer copy remain. If removal cannot finish, the result explains why and the preserved archive stays available.")
                         helpSection("Thaw later", "Freezer offers remote thawing and offline recovery. Remote thawing clones the remote and restores the frozen source state, local files and Git/worktree metadata. It does not overwrite occupied paths. Reinstall dependencies, then pull newer remote changes when ready.")
                         helpSection("Recover interruptions", "If removal or restoration is interrupted, use the same archive’s recovery action again. Already restored files are checked before continuing. Possible post-interruption edits or recovery copies are preserved for review.")
-                    }.frame(maxWidth: .infinity, alignment: .leading).padding(18)
+                    }.frame(maxWidth: .infinity, alignment: .leading).padding(18).padding(.bottom, 30)
                 } else if topic == "Safety & storage" {
 
                     VStack(alignment: .leading, spacing: 18) {
@@ -738,10 +774,10 @@ struct AppHelpView: View {
                         helpSection("Freezer backup", "When a backup folder is configured, Igloo copies recovery there after Preserve and checks its checksums. In Freezer, Back up now retries missing copies and Verify backup checks existing copies. Backups are only added automatically; use Remove from backup for copies no longer in the Freezer.")
                         helpSection("Updates", "Check for Updates shows release notes and downloads a verified update for your runtime. If a check or download fails, the window explains the problem and links to releases. For a request limit, wait until the displayed UTC reset time when available.")
                         helpSection("App state", "Runtime state is stored in the configured state folder, normally ~/.igloo. Preferences live in ~/.config/igloo/config.json. Keep the Trash journal while you may need restoration. The app’s own source can use Git setup and commits; it is protected from cache cleanup and freezing.")
-                        helpSection("What is omitted", "Only reviewed ignored dependency and rebuild folders without tracked content are omitted. Recognized local configuration inside those folders is kept. Custom dependency edits need your review. External symlink targets remain external; the archive preserves the link, not its target.")
+                        helpSection("What is omitted", "Only reviewed ignored dependency and rebuild folders without tracked content are omitted. Igloo preserves recognized local configuration inside those folders. Custom dependency edits need your review. External symlink targets remain external; the archive preserves the link, not its target.")
                         helpSection("What checks mean", "Unverified branch coverage may need Fetch & verify to download current remote metadata. Fetch does not switch branches or prune refs. Hash checks and recovery tests protect against changed or corrupt archives; they do not certify that committed history is free of private data.")
                         helpSection("When an action stops", "Leave source and archive copies in place. Resolve the reported active process, changed files, remote access or destination conflict, then create a fresh review or resume recovery. The app never empties Trash or force-pushes.")
-                    }.frame(maxWidth: .infinity, alignment: .leading).padding(18)
+                    }.frame(maxWidth: .infinity, alignment: .leading).padding(18).padding(.bottom, 30)
                 }
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
             HStack {

@@ -49,7 +49,6 @@ enum DemoCatalog {
 // Demo-only capture uses the existing smoke path; it never reads the real catalog.
 import AppKit
 import SwiftUI
-import ApplicationServices
 import CoreGraphics
 import Darwin
 
@@ -62,7 +61,7 @@ enum DemoCapture {
     static let extraSheetViews: Set<String> = ["freeze-review", "preserve-review", "freeze-result", "freeze-failure", "freeze-hold",
         "freeze-no-remote", "freeze-no-files", "freeze-no-commit", "freeze-own-source", "freeze-process",
         "cleanup-review", "cleanup-hold", "wizard-review", "task-review", "settings", "settings-cloud"]
-    static let updateViews = AppUpdater.demoFailureNames.map { "update-" + $0 }
+    static let updateViews = AppUpdater.demoFailureNames.map { "update-" + $0 } + ["update-markdown"]
     static let sheetViews = extraSheetViews.union(["freeze", "shelf"]).union(updateViews)
     struct Options {
         let folder: URL?
@@ -96,7 +95,7 @@ enum DemoCapture {
         let scope = value("--demo-scope", default: "shown")
         let rail = value("--demo-rail", default: "full")
         let data = value("--demo-data", default: "normal")
-        let updateViews = ["quota", "quota-no-reset", "forbidden", "offline", "timeout", "server", "malformed", "cancelled-download", "digest-mismatch"].map { "update-" + $0 }
+        let updateViews = AppUpdater.demoFailureNames.map { "update-" + $0 } + ["update-markdown"]
         guard (Set(["overview", "git", "worktrees", "local-files", "cleanup", "plan", "freeze", "shelf", "hold"] + updateViews).union(extraSheetViews)).contains(view),
               ["shown", "hidden"].contains(scope), ["compact", "full"].contains(rail),
               ["normal", "long", "empty"].contains(data),
@@ -153,6 +152,8 @@ enum DemoCapture {
             return AnyView(TaskPlanReview(plan: plan, allowApply: true, completed: {}).environmentObject(store))
         case "settings", "settings-cloud":
             return AnyView(AppSettingsView().environmentObject(store))
+        case "update-markdown":
+            return AnyView(UpdatesView().environmentObject(AppUpdater.demoMarkdownUpdate()))
         case let updateView where updateView.hasPrefix("update-"):
             guard let updater = AppUpdater.demoFailure(String(updateView.dropFirst("update-".count))) else {
                 return AnyView(Text("Demo update state unavailable"))
@@ -184,15 +185,14 @@ enum DemoCapture {
         if options.folder != nil {
             DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { fail("Capture timed out") }
         }
-        let accessibilityDeadline = Date().addingTimeInterval(3)
         var configured = false
-        var postedAccessibility = false
+        var accessibilityPostedAt: Date?
         var lastSize = NSSize.zero
         var stable = 0
-        func poll() {
+        @MainActor func poll() {
             guard Date() < deadline else { fail("Window did not become ready") }
             guard let window = NSApp.windows.first(where: { $0.contentView != nil && $0.parent == nil }) else {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: poll); return
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { poll() }; return
             }
             if !configured {
                 if let size = options.size { window.setContentSize(size) }
@@ -215,29 +215,44 @@ enum DemoCapture {
             }
             let target = sheetViews.contains(options.view) ? window.attachedSheet : window
             guard let target, let view = target.contentView, view.bounds.width > 0, view.bounds.height > 0 else {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: poll); return
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { poll() }; return
             }
             view.layoutSubtreeIfNeeded()
             let size = view.bounds.size
             stable = size == lastSize ? stable + 1 : 0
             lastSize = size
-            guard stable >= 3 else { DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: poll); return }
-            if !postedAccessibility {
-                NSAccessibility.post(element: target, notification: .layoutChanged)
-                postedAccessibility = true
+            guard stable >= 3 else { DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { poll() }; return }
+            if accessibilityPostedAt == nil {
+                for candidate in NSApp.windows where candidate.contentView != nil {
+                    NSAccessibility.post(element: candidate, notification: .layoutChanged)
+                    if let content = candidate.contentView {
+                        NSAccessibility.post(element: content, notification: .layoutChanged)
+                    }
+                    if let sheet = candidate.attachedSheet {
+                        NSAccessibility.post(element: sheet, notification: .layoutChanged)
+                    }
+                }
+                accessibilityPostedAt = Date()
             }
-            // Keep every visited element alive for the duration of a traversal;
-            // otherwise short-lived bridge objects may reuse an identity.
-            var visited: [ObjectIdentifier: NSObject] = [:]
-            let appKitTree = accessibilityTree(target, visited: &visited, depth: 0)
-            // Query the system AX server off the main thread so it can ask
-            // this process for SwiftUI accessibility elements.
-            DispatchQueue.global(qos: .userInitiated).async {
-                let systemTree = systemAccessibilityTree()
-                DispatchQueue.main.async {
-            let tree: [String: Any] = ["role": "AXCapture", "children": [appKitTree, systemTree].filter { !$0.isEmpty }]
-            if !hasExpectedControls(tree, view: options.view) && Date() < accessibilityDeadline {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: poll); return
+            guard let postedAt = accessibilityPostedAt, Date().timeIntervalSince(postedAt) >= 0.7 else {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { poll() }; return
+            }
+            var candidates = NSApp.windows.filter { $0.contentView != nil }
+            for candidate in candidates {
+                if let sheet = candidate.attachedSheet, !candidates.contains(where: { $0 === sheet }) {
+                    candidates.append(sheet)
+                }
+            }
+            let trees = candidates.map { candidate -> [String: Any] in
+                candidate.contentView?.layoutSubtreeIfNeeded()
+                var visited: [ObjectIdentifier: NSObject] = [:]
+                var node = accessibilityTree(candidate, window: candidate, visited: &visited, depth: 0)
+                node["windowKind"] = candidate === window ? "window" : (candidate === window.attachedSheet ? "sheet" : "other")
+                return node
+            }
+            let tree: [String: Any] = ["role": "AXCapture", "label": "", "enabled": NSNull(), "frame": NSNull(), "children": trees]
+            if !hasExpectedControls(tree, view: options.view) && Date().timeIntervalSince(postedAt) < 3 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { poll() }; return
             }
             // Render the SwiftUI roots offscreen. This omits native window
             // chrome and may omit AppKit-hosted controls; visual review is
@@ -287,10 +302,8 @@ enum DemoCapture {
             } else {
                 Darwin.exit(0)
             }
-                }
-            }
         }
-        DispatchQueue.main.async(execute: poll)
+        DispatchQueue.main.async { poll() }
     }
 
     private static func windowMetadata(_ window: NSWindow, kind: String) -> [String: Any] {
@@ -336,96 +349,121 @@ enum DemoCapture {
         try file.write(contentsOf: data)
     }
 
-    // Query our own process through the system AX interface without prompting
-    // for access. Some SwiftUI elements are exposed through this interface
-    // but not through an in-process NSView accessibility walk.
-    private static func systemAccessibilityTree() -> [String: Any] {
-        let app = AXUIElementCreateApplication(getpid())
-        AXUIElementSetMessagingTimeout(app, 2)
-        var visited: [AXUIElement] = []
-        func attribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
-            var value: CFTypeRef?
-            guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success else { return nil }
-            return value
-        }
-        func walk(_ element: AXUIElement, _ depth: Int) -> [String: Any] {
-            guard depth < 50, !visited.contains(where: { CFEqual($0, element) }) else { return [:] }
-            visited.append(element)
-            var node: [String: Any] = [:]
-            for (key, name) in [("role", "AXRole"), ("title", "AXTitle"), ("label", "AXDescription"), ("value", "AXValue")] {
-                if let value = attribute(element, name) as? String, !value.isEmpty { node[key] = value }
-            }
-            if let value = attribute(element, "AXPosition"), CFGetTypeID(value) == AXValueGetTypeID() {
-                var point = CGPoint.zero
-                if AXValueGetValue(value as! AXValue, .cgPoint, &point) { node["position"] = [point.x, point.y] }
-            }
-            if let value = attribute(element, "AXSize"), CFGetTypeID(value) == AXValueGetTypeID() {
-                var size = CGSize.zero
-                if AXValueGetValue(value as! AXValue, .cgSize, &size) { node["size"] = [size.width, size.height] }
-            }
-            var elements = (attribute(element, "AXChildren") as? [AXUIElement]) ?? []
-            if depth == 0 { elements += (attribute(element, "AXWindows") as? [AXUIElement]) ?? [] }
-            node["children"] = elements.map { walk($0, depth + 1) }.filter { !$0.isEmpty }
-            return node
-        }
-        return walk(app, 0)
-    }
-
     private static func hasExpectedControls(_ tree: [String: Any], view: String) -> Bool {
-        let expected: [String]
+        let expectedLabels: [String]
         switch view {
-        case "plan": expected = ["Preservation", "Connect remote", "Freeze", "Hold"]
-        case "freeze": expected = ["Requirements", "Cancel", "Build review"]
-        case "freeze-no-files": expected = ["Add files to this project", "Open in Finder", "Open Terminal"]
-        case "freeze-hold": expected = ["This project is on Hold", "Requirements"]
-        case "freeze-review", "preserve-review": expected = ["Expected outcome", "Git history"]
-        case "freeze-result", "freeze-failure": expected = ["Outcome", "Done"]
-        case "cleanup-review": expected = ["Review cleanup", "Expected outcome"]
-        case "cleanup-hold": expected = ["Review cleanup", "This project is on Hold"]
-        case "wizard-review": expected = ["Expected outcome", "Review"]
-        case "task-review": expected = ["Review task actions", "Expected outcome"]
-        case "settings": expected = ["Igloo Settings", "Freezer backup folder"]
-        case "settings-cloud": expected = ["Confirm cloud backup"]
-        case "shelf": expected = ["Done", "Show archive", "Thaw from remote"]
+        case "plan": expectedLabels = ["Preservation", "Connect remote", "Freeze", "Hold"]
+        case "freeze": expectedLabels = ["Requirements", "Cancel", "Build review"]
+        case "freeze-no-files": expectedLabels = ["Add files to this project", "Open in Finder", "Open Terminal"]
+        case "freeze-hold": expectedLabels = ["This project is on Hold", "Requirements"]
+        case "freeze-review", "preserve-review": expectedLabels = ["Expected outcome", "Git history"]
+        case "freeze-result", "freeze-failure": expectedLabels = ["Outcome", "Done"]
+        case "cleanup-review": expectedLabels = ["Review cleanup", "Expected outcome"]
+        case "cleanup-hold": expectedLabels = ["Review cleanup", "This project is on Hold"]
+        case "wizard-review": expectedLabels = ["Expected outcome", "Review"]
+        case "task-review": expectedLabels = ["Review task actions", "Expected outcome"]
+        case "settings": expectedLabels = ["Igloo Settings", "Freezer backup folder"]
+        case "settings-cloud": expectedLabels = ["Confirm cloud backup"]
+        case "shelf": expectedLabels = ["Done", "Show archive", "Thaw from remote"]
+        case "update-markdown": expectedLabels = []
         default: return true
+        }
+        let expectedIdentifiers: [String]
+        switch view {
+        case "plan":
+            expectedIdentifiers = ["detail.connectRemote", "detail.commitSelectedFiles", "detail.preserve",
+                                  "detail.freeze", "detail.hold", "detail.preservationNotes",
+                                  "detail.exportProjectReport", "detail.savePreservation"]
+        case "freeze": expectedIdentifiers = ["freeze.cancel", "freeze.buildReview"]
+        case "shelf":
+            expectedIdentifiers = ["shelf.backUpNow", "shelf.verifyBackup", "shelf.done", "shelf.showArchive",
+                                   "shelf.freeze", "shelf.offlineRecovery", "shelf.thawRemote"]
+        case "update-markdown": expectedIdentifiers = ["updates.releaseNotes"]
+        default: expectedIdentifiers = []
         }
         func labels(_ node: [String: Any]) -> [String] {
             let own = ["title", "label", "value"].compactMap { node[$0] as? String }
             return own + ((node["children"] as? [[String: Any]]) ?? []).flatMap { labels($0) }
         }
+        func identifiers(_ node: [String: Any]) -> [String] {
+            let own = [node["identifier"] as? String].compactMap { $0 }
+            return own + ((node["children"] as? [[String: Any]]) ?? []).flatMap { identifiers($0) }
+        }
         let values = labels(tree).map { $0.lowercased() }
-        return expected.allSatisfy { name in values.contains { $0.contains(name.lowercased()) } }
+        let hasLabels = expectedLabels.allSatisfy { name in values.contains { $0.contains(name.lowercased()) } }
+        let ids = identifiers(tree)
+        return hasLabels && expectedIdentifiers.allSatisfy(ids.contains)
     }
 
-    private static func accessibilityTree(_ object: NSObject, visited: inout [ObjectIdentifier: NSObject], depth: Int) -> [String: Any] {
+    private static func accessibilityTree(_ object: NSObject, window: NSWindow,
+                                          visited: inout [ObjectIdentifier: NSObject], depth: Int) -> [String: Any] {
         let identity = ObjectIdentifier(object)
-        guard depth < 50, visited[identity] == nil else { return [:] }
+        guard depth < 100, visited[identity] == nil else { return [:] }
         visited[identity] = object
         func attribute(_ name: String) -> AnyObject? {
             let selector = NSSelectorFromString("accessibilityAttributeValue:")
             if object.responds(to: selector), let value = object.perform(selector, with: name)?.takeUnretainedValue() { return value }
             let names = ["AXRole": "accessibilityRole", "AXTitle": "accessibilityTitle", "AXDescription": "accessibilityLabel",
-                         "AXValue": "accessibilityValue", "AXChildren": "accessibilityChildren"]
+                         "AXValue": "accessibilityValue", "AXHelp": "accessibilityHelp",
+                         "AXRoleDescription": "accessibilityRoleDescription", "AXIdentifier": "accessibilityIdentifier",
+                         "AXChildren": "accessibilityChildren"]
             guard let method = names[name] else { return nil }
             let fallback = NSSelectorFromString(method)
             guard object.responds(to: fallback) else { return nil }
             return object.perform(fallback)?.takeUnretainedValue()
         }
-        var result: [String: Any] = [:]
-        for (key, attributeName) in [("role", "AXRole"), ("title", "AXTitle"), ("label", "AXDescription"), ("value", "AXValue")] {
-            if let value = attribute(attributeName) as? String, !value.isEmpty { result[key] = value }
+        func enabled() -> Bool? {
+            if let number = attribute("AXEnabled") as? NSNumber { return number.boolValue }
+            if let control = object as? NSControl { return control.isEnabled }
+            let selector = NSSelectorFromString("isAccessibilityEnabled")
+            guard object.responds(to: selector) else { return nil }
+            typealias Method = @convention(c) (AnyObject, Selector) -> Bool
+            return unsafeBitCast(object.method(for: selector), to: Method.self)(object, selector)
         }
-        if let value = attribute("AXPosition") as? NSValue {
-            let point = value.pointValue
-            result["position"] = [point.x, point.y]
+        func screenFrame() -> NSRect? {
+            if let position = attribute("AXPosition") as? NSValue,
+               let size = attribute("AXSize") as? NSValue {
+                return NSRect(origin: position.pointValue, size: size.sizeValue)
+            }
+            if let view = object as? NSView {
+                let viewFrame = view.convert(view.bounds, to: nil)
+                return view.window?.convertToScreen(viewFrame) ?? viewFrame
+            }
+            if let candidate = object as? NSWindow { return candidate.frame }
+            return nil
         }
-        if let value = attribute("AXSize") as? NSValue {
-            let size = value.sizeValue
-            result["size"] = [size.width, size.height]
+
+        let nativeTitle = (object as? NSButton)?.title ?? ""
+        let attributedTitle = (object as? NSButton)?.attributedTitle.string ?? ""
+        let axTitle = attribute("AXTitle") as? String ?? ""
+        let title = [axTitle, nativeTitle, attributedTitle].first(where: { !$0.isEmpty }) ?? ""
+        let axLabel = attribute("AXDescription") as? String ?? ""
+        var frame: Any = NSNull()
+        if let screen = screenFrame(), screen.origin.x.isFinite, screen.origin.y.isFinite,
+           screen.width.isFinite, screen.height.isFinite {
+            let local = window.convertFromScreen(screen)
+            frame = ["x": local.origin.x, "y": local.origin.y, "width": local.width, "height": local.height]
         }
-        if let children = attribute("AXChildren") as? [NSObject] {
-            result["children"] = children.map { accessibilityTree($0, visited: &visited, depth: depth + 1) }.filter { !$0.isEmpty }
+
+        var result: [String: Any] = ["role": attribute("AXRole") as? String ?? "",
+                                     "title": title, "label": axLabel.isEmpty ? title : axLabel,
+                                     "enabled": enabled() as Any? ?? NSNull(), "frame": frame,
+                                     "class": NSStringFromClass(type(of: object))]
+        for (key, name) in [("value", "AXValue"), ("help", "AXHelp"),
+                            ("roleDescription", "AXRoleDescription"), ("identifier", "AXIdentifier")] {
+            if let value = attribute(name) as? String, !value.isEmpty { result[key] = value }
+            else if key == "value", let value = attribute(name) as? NSNumber { result[key] = value }
         }
+        if !nativeTitle.isEmpty { result["nativeTitle"] = nativeTitle }
+        if !attributedTitle.isEmpty { result["attributedTitle"] = attributedTitle }
+        if let value = (object as? NSControl)?.stringValue, !value.isEmpty { result["stringValue"] = value }
+
+        var children = (attribute("AXChildren") as? [NSObject]) ?? []
+        if let view = object as? NSView { children.append(contentsOf: view.subviews) }
+        if let candidate = object as? NSWindow, let content = candidate.contentView { children.append(content) }
+        result["children"] = children.map {
+            accessibilityTree($0, window: window, visited: &visited, depth: depth + 1)
+        }.filter { !$0.isEmpty }
         return result
     }
 }

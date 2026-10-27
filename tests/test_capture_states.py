@@ -133,7 +133,7 @@ class CaptureStatesTests(unittest.TestCase):
     def test_matrix_covers_required_states(self):
         scenarios = capture.scenarios()
         self.assertEqual({s["appearance"] for s in scenarios}, {"light", "dark"})
-        self.assertTrue({"850x700", "1100x700", "1440x900"}.issubset({s["size"] for s in scenarios}))
+        self.assertTrue({"850x700", "1100x700", "1300x700", "1440x900"}.issubset({s["size"] for s in scenarios}))
         self.assertTrue({"overview", "git", "worktrees", "local-files", "cleanup", "plan", "freeze", "shelf"}.issubset({s["view"] for s in scenarios}))
         self.assertEqual({s["scope"] for s in scenarios}, {"shown", "hidden"})
         self.assertEqual({s["rail"] for s in scenarios}, {"compact", "full"})
@@ -187,10 +187,31 @@ class CaptureStatesTests(unittest.TestCase):
 
     def test_update_failure_scenarios_cover_both_appearances(self):
         expected = {"quota", "quota-no-reset", "forbidden", "offline", "timeout", "server", "malformed", "cancelled-download", "digest-mismatch"}
-        captures = [row for row in capture.scenarios() if row["view"].startswith("update-")]
+        captures = [row for row in capture.scenarios()
+                    if row["view"].startswith("update-") and row["view"] != "update-markdown"]
         self.assertEqual({row["view"].removeprefix("update-") for row in captures}, expected)
         for failure in expected:
-            self.assertEqual({row["appearance"] for row in captures if row["view"] == "update-" + failure}, {"light", "dark"})
+            states = [row for row in captures if row["view"] == "update-" + failure]
+            self.assertEqual({row["appearance"] for row in states}, {"light", "dark"})
+            self.assertEqual({row["size"] for row in states}, {"850x700", "1440x900"})
+
+    def test_markdown_update_sheet_covers_minimum_and_default_sizes(self):
+        captures = [row for row in capture.scenarios() if row["view"] == "update-markdown"]
+        self.assertEqual({(row["appearance"], row["size"]) for row in captures},
+                         {(appearance, size) for appearance in ("light", "dark")
+                          for size in ("850x700", "1440x900")})
+
+    def test_preservation_detail_covers_scope_minimum_and_default_sizes(self):
+        captures = [row for row in capture.scenarios() if row["view"] == "plan" and row["scope"] == "shown"]
+        self.assertTrue({(appearance, size) for appearance in ("light", "dark")
+                         for size in ("1300x700", "1440x900")}.issubset(
+                             {(row["appearance"], row["size"]) for row in captures}))
+
+    def test_overview_covers_scope_visible_minimum_and_default_sizes(self):
+        captures = [row for row in capture.scenarios() if row["view"] == "overview" and row["scope"] == "shown"]
+        self.assertTrue({(appearance, size) for appearance in ("light", "dark")
+                         for size in ("1300x700", "1440x900")}.issubset(
+                             {(row["appearance"], row["size"]) for row in captures}))
 
 
     def test_new_review_accessibility_reports_missing_controls(self):
@@ -200,6 +221,49 @@ class CaptureStatesTests(unittest.TestCase):
         for view, label in expected.items():
             with self.subTest(view=view):
                 self.assertIn(label, capture.accessibility_missing({"role": "AXSheet"}, {"view": view}))
+
+    def test_named_controls_require_identifiers_enabled_state_and_frame(self):
+        requirements = {
+            "plan": ["detail.connectRemote", "detail.commitSelectedFiles", "detail.preserve",
+                      "detail.freeze", "detail.hold", "detail.preservationNotes",
+                      "detail.exportProjectReport", "detail.savePreservation"],
+            "freeze": ["freeze.cancel", "freeze.buildReview"],
+            "shelf": ["shelf.backUpNow", "shelf.verifyBackup", "shelf.done", "shelf.showArchive",
+                      "shelf.freeze", "shelf.offlineRecovery", "shelf.thawRemote"],
+        }
+        for view, identifiers in requirements.items():
+            with self.subTest(view=view):
+                tree = {"role": "AXCapture", "children": [{
+                    "role": "AXWindow", "windowKind": "sheet" if view != "plan" else "window",
+                    "children": [{"role": {"detail.hold": "AXCheckBox",
+                                             "detail.preservationNotes": "AXTextArea"}.get(identifier, "AXButton"),
+                                  "identifier": identifier, "label": identifier,
+                                  "enabled": True,
+                                  "frame": {"x": 1, "y": 2, "width": 40, "height": 20}}
+                                 for identifier in identifiers]
+                }]}
+                self.assertEqual(capture.accessibility_control_issues(tree, {"view": view}), [])
+                node = tree["children"][0]["children"][-1]
+                node["identifier"] = "wrong.identifier"
+                self.assertIn(identifiers[-1], capture.accessibility_control_issues(tree, {"view": view}))
+                node["identifier"] = identifiers[-1]
+                node["role"] = "AXTextField"
+                self.assertIn(identifiers[-1], capture.accessibility_control_issues(tree, {"view": view}))
+                node["role"] = "AXButton"
+                node["enabled"] = None
+                self.assertIn(identifiers[-1], capture.accessibility_control_issues(tree, {"view": view}))
+                node["enabled"] = True
+                del node["frame"]
+                self.assertIn(identifiers[-1], capture.accessibility_control_issues(tree, {"view": view}))
+        self.assertIsNone(capture.accessibility_control_issues({"children": []}, {"view": "overview"}))
+
+    def test_accessibility_dump_counts_each_captured_window_tree(self):
+        tree = {"role": "AXCapture", "children": [
+            {"role": "AXWindow", "windowKind": "window", "children": [{"role": "AXButton"}]},
+            {"role": "AXWindow", "windowKind": "sheet", "children": [{"role": "AXButton"}, {"role": "AXButton"}]},
+        ]}
+        self.assertEqual(capture.accessibility_node_counts(tree),
+                         {"total": 5, "windows": {"window": 2, "sheet": 3}})
 
     def test_empty_repository_checklist_capture_exists_in_both_appearances_and_sizes(self):
         cases = [row for row in capture.scenarios() if row["view"] == "freeze-no-files"]
@@ -272,7 +336,7 @@ class CaptureStatesTests(unittest.TestCase):
                 capture.validate_result(folder, scenario)
 
     def test_capture_rejects_wrong_content_size(self):
-        scenario = next(s for s in capture.scenarios() if s["size"] == "850x700")
+        scenario = next(s for s in capture.scenarios() if s["size"] == "850x700" and not capture.has_sheet_image(s["view"]))
         with tempfile.TemporaryDirectory() as temp:
             folder = Path(temp)
             (folder / "window.png").write_bytes(sample_png())
@@ -284,7 +348,7 @@ class CaptureStatesTests(unittest.TestCase):
                 capture.validate_result(folder, scenario)
 
     def test_capture_accepts_the_reported_clamped_size(self):
-        scenario = next(s for s in capture.scenarios() if s["size"] == "850x700")
+        scenario = next(s for s in capture.scenarios() if s["size"] == "850x700" and not capture.has_sheet_image(s["view"]))
         with tempfile.TemporaryDirectory() as temp:
             folder = Path(temp)
             (folder / "window.png").write_bytes(sample_png())

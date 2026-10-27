@@ -132,7 +132,7 @@
         },
         {
           "code": "open-processes",
-          "message": "A process still has files open in this project. Close it before freezing.",
+          "message": "A process still has files open in this project. Close the terminals, editors and agents that use it. Active sessions lists them. Then check again.",
           "fix": null
         }
       ],
@@ -333,7 +333,7 @@
         },
         {
           "code": "own-source",
-          "message": "The running Igloo app is protected from freezing. Its Git setup and source commits are available.",
+          "message": "Igloo does not freeze its own source folder, because the running app uses it. Git setup and source commits stay available.",
           "fix": null
         }
       ],

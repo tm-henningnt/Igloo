@@ -21,6 +21,7 @@ SHEET_VIEWS = {"freeze", "shelf", "freeze-review", "preserve-review", "freeze-re
 UPDATE_FAILURES = ("quota", "quota-no-reset", "forbidden", "offline", "timeout", "server", "malformed",
                    "cancelled-download", "digest-mismatch")
 SHEET_VIEWS.update("update-" + name for name in UPDATE_FAILURES)
+SHEET_VIEWS.add("update-markdown")
 
 
 def has_sheet_image(view):
@@ -32,12 +33,17 @@ def scenarios():
     for appearance in ("light", "dark"):
         cases = [(view, "1440x900", "shown", "full", "normal") for view in
                  ("overview", "git", "worktrees", "local-files", "cleanup", "plan", "freeze", "shelf")]
-        cases += [("update-" + name, "1440x900", "shown", "full", "normal") for name in
-                  ("quota", "quota-no-reset", "forbidden", "offline", "timeout", "server", "malformed", "cancelled-download", "digest-mismatch")]
+        update_scope = {"850x700": ("hidden", "compact"), "1440x900": ("shown", "full")}
+        cases += [("update-" + name, size, *update_scope[size], "normal")
+                  for name in UPDATE_FAILURES for size in ("850x700", "1440x900")]
+        cases += [("update-markdown", size, "hidden", "compact", "normal")
+                  for size in ("850x700", "1440x900")]
         cases += [("overview", "850x700", "hidden", "compact", "normal"),
                   ("plan", "850x700", "hidden", "compact", "normal"),
                   ("overview", "1100x700", "shown", "compact", "normal"),
                   ("plan", "1100x700", "shown", "compact", "normal"),
+                  ("overview", "1300x700", "shown", "full", "normal"),
+                  ("plan", "1300x700", "shown", "full", "normal"),
                   ("overview", "1440x900", "hidden", "compact", "long"),
                   ("overview", "1440x900", "shown", "full", "empty")]
         # Project-row badges need every rail/scope combination at both sizes,
@@ -52,7 +58,8 @@ def scenarios():
         added_views = sorted(SHEET_VIEWS | {"hold"})
         cases += [(view, "1440x900", "shown", "full", "normal") for view in added_views
                   if view not in {"freeze", "shelf"} and not view.startswith("update-")]
-        cases += [(view, "850x700", "hidden", "compact", "normal") for view in added_views]
+        cases += [(view, "850x700", "hidden", "compact", "normal") for view in added_views
+                  if not view.startswith("update-")]
         for view, size, scope, rail, data in cases:
             name = "-".join((appearance, view, size, scope, rail, data))
             rows.append(dict(name=name, appearance=appearance, view=view, size=size, scope=scope, rail=rail, data=data))
@@ -317,6 +324,66 @@ def accessibility_missing(tree, scenario):
     return [name for name in required if not any(name.casefold() in value for value in values)]
 
 
+def accessibility_control_issues(tree, scenario):
+    """Return missing control issues, or None when the view has no control contract."""
+    required = {
+        "plan": [
+            ("detail.connectRemote", "AXButton"), ("detail.commitSelectedFiles", "AXButton"),
+            ("detail.preserve", "AXButton"), ("detail.freeze", "AXButton"),
+            ("detail.hold", "AXCheckBox"), ("detail.preservationNotes", "AXTextArea"),
+            ("detail.exportProjectReport", "AXButton"), ("detail.savePreservation", "AXButton"),
+        ],
+        "freeze": [("freeze.cancel", "AXButton"), ("freeze.buildReview", "AXButton")],
+        "shelf": [
+            ("shelf.backUpNow", "AXButton"), ("shelf.verifyBackup", "AXButton"),
+            ("shelf.done", "AXButton"), ("shelf.showArchive", "AXButton"),
+            ("shelf.freeze", "AXButton"), ("shelf.offlineRecovery", "AXButton"),
+            ("shelf.thawRemote", "AXButton"),
+        ],
+    }.get(scenario["view"], [])
+    if not required:
+        return None
+
+    def nodes(node):
+        if isinstance(node, dict):
+            yield node
+            for child in node.get("children", []):
+                yield from nodes(child)
+
+    captured = list(nodes(tree))
+
+    def valid(node, identifier, role):
+        if node.get("identifier") != identifier or node.get("role") != role:
+            return False
+        if type(node.get("enabled")) is not bool:
+            return False
+        if not any(isinstance(node.get(key), str) and node[key].strip()
+                   for key in ("label", "title")):
+            return False
+        frame = node.get("frame")
+        return (isinstance(frame, dict)
+                and all(type(frame.get(key)) in (int, float) and math.isfinite(frame[key])
+                        for key in ("x", "y", "width", "height"))
+                and frame["width"] > 0 and frame["height"] > 0)
+
+    return [identifier for identifier, role in required
+            if not any(valid(node, identifier, role) for node in captured)]
+
+
+def accessibility_node_counts(tree):
+    """Count nodes under each captured native window, excluding the wrapper root."""
+    def count(node):
+        if not isinstance(node, dict):
+            return 0
+        return 1 + sum(count(child) for child in node.get("children", []))
+
+    windows = {}
+    for root in tree.get("children", []):
+        kind = root.get("windowKind", "other") if isinstance(root, dict) else "other"
+        windows[kind] = windows.get(kind, 0) + count(root)
+    return {"total": sum(windows.values()), "windows": windows}
+
+
 def validate_result(folder, scenario):
     try:
         mode = folder.lstat().st_mode
@@ -356,6 +423,8 @@ def validate_result(folder, scenario):
     if abs(actual_width - expected_width) > 0.5 or abs(actual_height - expected_height) > 0.5:
         raise ValueError(f"Capture size mismatch: requested {width}x{height}, actual {actual_width}x{actual_height}, expected {expected_width}x{expected_height}")
     result["accessibilityMissing"] = accessibility_missing(result["tree"], scenario)
+    result["accessibilityControlIssues"] = accessibility_control_issues(result["tree"], scenario)
+    result["accessibilityNodeCounts"] = accessibility_node_counts(result["tree"])
     return result
 
 
@@ -392,6 +461,8 @@ def validate_sheet_result(folder, scenario):
     if abs(width - expected_width) > 0.5 or abs(height - expected_height) > 0.5:
         raise ValueError("Capture size mismatch")
     result["accessibilityMissing"] = accessibility_missing(result["tree"], scenario)
+    result["accessibilityControlIssues"] = accessibility_control_issues(result["tree"], scenario)
+    result["accessibilityNodeCounts"] = accessibility_node_counts(result["tree"])
     return result
 
 
@@ -461,7 +532,12 @@ def main():
             expected_width, expected_height = expected_size(scenario)
             missing = result.get("accessibilityMissing", [])
             detail = ", ".join(missing) if missing else "completeness not independently established"
-            print(f"PARTIAL {scenario['name']}: PID {result['pid']}; requested {width}x{height}, actual {result['actualWidth']}x{result['actualHeight']}, expected {expected_width}x{expected_height}; AX {detail}; PNG needs visual review", flush=True)
+            control_issues = result.get("accessibilityControlIssues", [])
+            controls = ("not configured for this view" if control_issues is None else
+                        (", ".join(control_issues) if control_issues else "none"))
+            counts = result.get("accessibilityNodeCounts", {})
+            windows = ", ".join(f"{kind}={count}" for kind, count in sorted(counts.get("windows", {}).items()))
+            print(f"PARTIAL {scenario['name']}: PID {result['pid']}; requested {width}x{height}, actual {result['actualWidth']}x{result['actualHeight']}, expected {expected_width}x{expected_height}; AX labels {detail}; named controls missing {controls}; AX nodes {counts.get('total', 0)} [{windows}]; PNG needs visual review", flush=True)
         except (OSError, ValueError, subprocess.SubprocessError) as error:
             pid = started_pid(folder)
             detail = f"; PID {pid} may still be running (not stopped)" if pid is not None else ""
@@ -471,7 +547,12 @@ def main():
                     sheet = validate_sheet_result(folder, scenario)
                     missing = sheet.get("accessibilityMissing", [])
                     ax = ", ".join(missing) if missing else "completeness not independently established"
-                    print(f"PARTIAL {scenario['name']} sheet: PID {sheet['pid']}; AX {ax}; PNG needs visual review", flush=True)
+                    control_issues = sheet.get("accessibilityControlIssues", [])
+                    controls = ("not configured for this view" if control_issues is None else
+                                (", ".join(control_issues) if control_issues else "none"))
+                    counts = sheet.get("accessibilityNodeCounts", {})
+                    windows = ", ".join(f"{kind}={count}" for kind, count in sorted(counts.get("windows", {}).items()))
+                    print(f"PARTIAL {scenario['name']} sheet: PID {sheet['pid']}; AX labels {ax}; named controls missing {controls}; AX nodes {counts.get('total', 0)} [{windows}]; PNG needs visual review", flush=True)
                 except (OSError, ValueError) as sheet_error:
                     print(f"OPEN {scenario['name']} sheet: {sheet_error}", flush=True)
             failed = True

@@ -27,8 +27,10 @@ struct FilePathCell: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(fileName(path)).lineLimit(1).truncationMode(.middle)
-            Text(relative(path, to: base)).font(.caption).foregroundStyle(.secondary)
-                .lineLimit(1).truncationMode(.middle)
+            if relative(path, to: base) != fileName(path) {
+                Text(relative(path, to: base)).font(.caption).foregroundStyle(.secondary)
+                    .lineLimit(1).truncationMode(.middle)
+            }
         }.padding(.vertical, 3).help(path)
     }
 }
@@ -126,7 +128,7 @@ struct OverviewView: View {
                     if !project.technologyText.isEmpty {
                         LabeledContent("Technology", value: project.technologyText).font(.callout)
                     }
-                    Text((project.typeEvidence ?? ["Run Analyse Projects to detect the project type."]).joined(separator: " · ") +
+                    Text((project.typeEvidence ?? ["Run Analyze Projects to detect the project type."]).joined(separator: " · ") +
                          ((project.detectedType ?? project.kind) != project.kind ? " · Manually chosen; automatic type: " + (project.detectedType ?? "Unclassified") : " · Best-effort suggestion; you can change it."))
                         .font(.caption).foregroundStyle(.secondary)
                 }
@@ -256,7 +258,7 @@ struct BranchesView: View {
                     ForEach(["All branches", "Needs review", "Covered remotely", "Private history"], id: \.self) { Text($0) }
                 }.labelsHidden().frame(maxWidth: 185)
             }
-            Text("\(rows.count) of \(project.branches.count) branches · \(project.uncovered) uncovered · \(project.unknown) unverified")
+            Text("\(rows.count) of " + noun(project.branches.count, "branch", "branches") + " · \(project.uncovered) uncovered · \(project.unknown) unverified")
                 .font(.caption).foregroundStyle(.secondary)
             Table(rows, selection: $selected) {
                 TableColumn("Branch") { row in
@@ -372,7 +374,7 @@ struct WorktreesView: View {
                 DetailSearch(prompt: "Find a worktree or branch", text: $search)
                 Picker("State", selection: $scope) { ForEach(["All worktrees", "Changed", "Missing", "Locked"], id: \.self) { Text($0) } }.labelsHidden().frame(maxWidth: 160)
             }
-            Text("\(rows.count) of \(project.worktrees.count) registered worktrees").font(.caption).foregroundStyle(.secondary)
+            Text("\(rows.count) of " + noun(project.worktrees.count, "registered worktree")).font(.caption).foregroundStyle(.secondary)
             Table(rows, selection: $selected) {
                 TableColumn("Checkout") { FilePathCell(path: $0.path, base: store.root.path) }.width(min: 190)
                 TableColumn("Branch") { Text($0.branch).lineLimit(1).truncationMode(.middle).help($0.branch) }.width(min: 120)
@@ -382,7 +384,9 @@ struct WorktreesView: View {
             }
             if let tree = tree { Text(tree.path).font(.caption).textSelection(.enabled) }
             HStack {
-                Text("*Clean covers tracked/untracked state. Ignored files can still need preservation.").font(.caption).foregroundStyle(.secondary)
+                if rows.contains(where: { $0.exists && !$0.locked && $0.changes == 0 }) {
+                    Text("*Clean covers tracked/untracked state. Ignored files can still need preservation.").font(.caption).foregroundStyle(.secondary)
+                }
                 Spacer()
                 Button("Show selected") { if let t = tree { store.reveal(t.path) } }.disabled(tree?.exists != true)
             }
@@ -479,7 +483,7 @@ struct CleanupView: View {
                 Picker("Eligibility", selection: $scope) { ForEach(["All folders", "Eligible", "Held for review"], id: \.self) { Text($0) } }.labelsHidden().frame(maxWidth: 175)
             }
             HStack {
-                Text("\(rows.count) folders · \(bytes(project.cleanupSize)) eligible").font(.caption).foregroundStyle(.secondary)
+                Text(noun(rows.count, "folder") + " · \(bytes(project.cleanupSize)) eligible").font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Button("Select visible eligible") { selected.formUnion(rows.filter(\.eligible).map(\.id)) }.disabled(store.busy)
                 if !selected.isEmpty { Button("Clear") { selected = [] } }

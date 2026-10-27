@@ -51,6 +51,7 @@
     "public-files.json",
     "release-notes/0.1.0.md",
     "release-notes/0.2.0.md",
+    "release-notes/0.2.1.md",
     "release.json",
     "scripts/build_favicons.py",
     "scripts/build_icon.py",
