@@ -24,7 +24,7 @@ fi
 BUILD_TMP="$(mktemp -d)"
 trap 'rm -rf -- "$BUILD_TMP"' EXIT
 SDK_PATH="$(xcrun --sdk macosx --show-sdk-path)"
-SOURCES=(app/Igloo.swift app/PreferencesViews.swift app/SpaceViews.swift app/WizardViews.swift app/AboutView.swift app/DetailViews.swift app/NavigationViews.swift app/TasksView.swift app/DemoCatalog.swift app/ScopeInspector.swift app/Updates.swift)
+SOURCES=(app/Igloo.swift app/LifecycleViews.swift app/ReviewViews.swift app/PreferencesViews.swift app/SpaceViews.swift app/WizardViews.swift app/AboutView.swift app/DetailViews.swift app/NavigationViews.swift app/TasksView.swift app/DemoCatalog.swift app/ScopeInspector.swift app/Updates.swift)
 for TARGET_ARCH in arm64 x86_64; do
   if [[ "$BUILD_ARCH" == "$TARGET_ARCH" || "$BUILD_ARCH" == universal ]]; then
     /usr/bin/swiftc -swift-version 5 -O -parse-as-library -sdk "$SDK_PATH" -target "$TARGET_ARCH-apple-macos14.0" "${SOURCES[@]}" -o "$BUILD_TMP/Igloo-$TARGET_ARCH" -framework SwiftUI -framework AppKit
@@ -35,11 +35,14 @@ if [[ "$BUILD_ARCH" == universal ]]; then
 else
   cp "$BUILD_TMP/Igloo-$BUILD_ARCH" "$APP_BUNDLE/Contents/MacOS/Igloo"
 fi
-"$IGLOO_PYTHON" -c 'from pathlib import Path; import json,plistlib,sys,re
+"$IGLOO_PYTHON" -c 'from pathlib import Path; import json,os,plistlib,sys,re
 r=json.loads(Path("release.json").read_text())
 if not re.fullmatch(r"(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})(\.(0|[1-9][0-9]{0,5}))?",r["version"]) or type(r["build"]) is not int or r["build"]<1:raise SystemExit("Invalid release metadata")
+release=os.environ.get("IGLOO_RELEASE_BUILD") == "1"
+name="Igloo" if release else "Igloo Dev"
+identifier="local.igloo" if release else "local.igloo.dev"
 Path(sys.argv[1]).write_bytes(plistlib.dumps({
-"CFBundleName":"Igloo","CFBundleDisplayName":"Igloo","CFBundleIdentifier":"local.igloo",
+"CFBundleName":name,"CFBundleDisplayName":name,"CFBundleIdentifier":identifier,
 "CFBundleVersion":str(r["build"]),"CFBundleShortVersionString":r["version"],
 "IglooRuntime":sys.argv[2],"CFBundleExecutable":"Igloo","CFBundleIconFile":"AppIcon.icns","CFBundlePackageType":"APPL",
 "LSMinimumSystemVersion":r["minimumSystemVersion"],"NSHighResolutionCapable":True

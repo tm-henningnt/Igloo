@@ -17,14 +17,25 @@ function releaseDownloads(release) {
   }
   return downloads.bundled ? { version, ...downloads } : null;
 }
+function showReleaseFallback(noRelease = false) {
+  document.getElementById("release-status").textContent = noRelease
+    ? "No public release is available yet. View releases on GitHub."
+    : "Release downloads are temporarily unavailable. View releases on GitHub.";
+  const standard = document.getElementById("download-standard");
+  standard.href = releases;
+  standard.textContent = "View releases on GitHub ↗";
+  const system = document.getElementById("download-system");
+  system.href = releases;
+  system.textContent = "View system-Python releases →";
+}
 async function showDownloads() {
   try {
     const response = await fetch("https://api.github.com/repos/" + repository + "/releases/latest", {
       headers: { Accept: "application/vnd.github+json" }, credentials: "omit", signal: AbortSignal.timeout(8000)
     });
-    if (!response.ok) return;
+    if (!response.ok) { showReleaseFallback(response.status === 404); return; }
     const data = releaseDownloads(await response.json());
-    if (!data) return;
+    if (!data) { showReleaseFallback(); return; }
     const standard = document.getElementById("download-standard");
     standard.href = data.bundled;
     standard.textContent = "Download Igloo " + data.version + " for Mac ↓";
@@ -35,7 +46,7 @@ async function showDownloads() {
       system.textContent = "Download " + data.version + " · system Python →";
     }
   } catch {
-    // Static release links remain usable when the API is unavailable.
+    showReleaseFallback();
   }
 }
 function setupAppearanceComparison() {

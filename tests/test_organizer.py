@@ -1,7 +1,9 @@
 import importlib.util
+import io
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -64,6 +66,84 @@ class GuardTests(unittest.TestCase):
 
     def test_ignored_dependency_is_valid(self):
         self.assertEqual(self.validate()["path"], str(self.cache))
+
+    def test_physical_size_accepts_serialized_paths_without_following_symlinks(self):
+        # Lifecycle manifests round-trip checkout roots through JSON strings.
+        location = self.root / "roots.json"
+        o.save(location, [str(self.repo)])
+        roots = o.load(location)
+        self.assertEqual(o.physical_size(roots[0]), o.physical_size(self.repo))
+        link = self.root / "project-link"
+        link.symlink_to(self.repo, target_is_directory=True)
+        self.assertEqual(o.physical_size(str(link)), 0)
+        self.assertEqual(o.physical_size(link), 0)
+
+    def test_snapshot_process_scan_reads_only_working_directories(self):
+        result = subprocess.CompletedProcess([], 0, stdout="pfixture\ncFixture\nn" + str(self.repo) + "\n", stderr="")
+        with patch.object(o.subprocess, "run", return_value=result) as observed:
+            rows = o.process_cwds()
+        command = observed.call_args.args[0]
+        self.assertIn("-a", command)
+        self.assertEqual(command[command.index("-d") + 1], "cwd")
+        self.assertNotIn("+D", command)
+        self.assertEqual(rows, [{"pid": "fixture", "command": "Fixture", "path": str(self.repo)}])
+
+    def test_unknown_snapshot_activity_does_not_claim_an_open_process(self):
+        state = o.git_state(str(self.repo))
+        project = o.project_record([state], o.observe_files(self.root), None, live=False)
+        self.assertFalse(project["activityKnown"])
+        self.assertFalse(project["active"])
+        self.assertNotIn("open-processes", [b["code"] for b in project["blockers"]])
+
+    def test_old_decisions_migrate_once_to_hold_and_keep_notes(self):
+        old = {name: {"decision": name, "note": "Note for " + name, "at": "saved time"}
+               for name in ("Keep", "Undecided", "Review", "Archive", "Retire")}
+        o.save(o.STATE / "decisions.json", old)
+        migrated = o.project_settings()
+        for name, row in migrated.items():
+            self.assertEqual(row, {"hold": name == "Keep", "note": "Note for " + name, "at": "saved time"})
+        with patch.object(o, "save", side_effect=AssertionError("must migrate only once")):
+            self.assertEqual(o.project_settings(), migrated)
+
+    def test_hold_and_note_commands_preserve_each_other(self):
+        o.save(o.STATE / "snapshot.json", {"root": str(self.root), "projects": [
+            {"id": str(self.repo), "path": str(self.repo), "git": True, "decision": "Keep", "candidates": []}]})
+        o.set_hold(str(self.repo), "true")
+        o.set_note(str(self.repo), "Keep my note")
+        project = o.snapshot()["projects"][0]
+        self.assertTrue(project["hold"])
+        self.assertEqual(project["note"], "Keep my note")
+        self.assertNotIn("decision", project)
+        o.set_hold(str(self.repo), "false")
+        self.assertFalse(o.snapshot()["projects"][0]["hold"])
+        self.assertEqual(o.project_settings()[str(self.repo)]["note"], "Keep my note")
+        with self.assertRaises(o.Refusal):
+            o.set_hold(str(self.repo), "yes")
+
+    def test_snapshot_does_not_expose_deprecated_decision(self):
+        o.save(o.STATE / "snapshot.json", {"root": str(self.root), "projects": [
+            {"id": str(self.repo), "path": str(self.repo), "git": True, "decision": "Keep", "candidates": []}]})
+        project = o.snapshot()["projects"][0]
+        self.assertNotIn("decision", project)
+        self.assertIn("hold", project)
+
+    def test_deprecated_decide_command_is_not_accepted(self):
+        o.save(o.STATE / "snapshot.json", {"root": str(self.root), "projects": [
+            {"id": str(self.repo), "path": str(self.repo), "git": True, "candidates": []}]})
+        with patch.object(sys, "argv", ["organizer", "decide", str(self.repo), "Keep", "note"]), \
+             patch("sys.stderr", new_callable=io.StringIO), patch("builtins.print"):
+            with self.assertRaises(SystemExit) as stopped:
+                o.main()
+        self.assertEqual(stopped.exception.code, 2)
+
+    def test_backend_help_hides_deprecated_decide_alias(self):
+        output = io.StringIO()
+        with patch.object(sys, "argv", ["organizer", "--help"]), patch.object(sys, "stdout", output):
+            with self.assertRaises(SystemExit) as stopped:
+                o.main()
+        self.assertEqual(stopped.exception.code, 0)
+        self.assertNotRegex(output.getvalue(), r"\bdecide\b")
+        self.assertRegex(output.getvalue(), r"\bhold\b")
 
     def test_tracked_content_refuses_even_when_ignored(self):
         self.git("add", "-f", "node_modules/package.js")

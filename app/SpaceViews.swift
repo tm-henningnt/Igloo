@@ -285,13 +285,13 @@ struct SpaceView: View {
                 Spacer()
                 Button("Done") { store.spaceShown = false }.keyboardShortcut(.cancelAction)
             }
-        }.padding(24).frame(width: 1180, height: 780)
+        }.padding(24).frame(width: sheetWidth(1180), height: 780)
     }
     var explanation: String {
         let geometry = layout == "Sunburst" ? "Inner ring: selected groups. Outer ring: project folder slices. Angle shows bytes." :
             layout == "Icicle" ? "Top row: selected groups. Bottom row: project folder slices. Width shows bytes." :
             "Column width shows group bytes; folder-slice heights show composition, so area shows bytes."
-        return geometry + " Age colors run warm for recent Git activity to cold for older projects; gray means unknown. Category colors use an ice-blue scale and carry no age meaning. Types are measured dependency/build and review folders; Other project files is the remainder, including source, Git metadata and local data. Type does not imply safe to delete. Age estimates Git activity; activity reflects detected working directories. Technology groups use full detected combinations so each project is counted once. Vault and unassigned workspace files are outside these project totals."
+        return geometry + " Age colors run warm for recent Git activity to cold for older projects; gray means unknown. Category colors use an ice-blue scale and carry no age meaning. Types are measured dependency/build and review folders; Other project files is the remainder, including source, Git metadata and local data. Type does not imply safe to delete. Age estimates Git activity; activity reflects detected working directories. Technology groups use full detected combinations so each project is counted once. Freezer and unassigned workspace files are outside these project totals."
     }
     var legend: some View {
         ViewThatFits {

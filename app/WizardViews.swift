@@ -32,7 +32,7 @@ struct WizardRow: Decodable, Identifiable {
 }
 struct WizardPlan: Decodable, Identifiable {
     var id: String; var created: String; var root: String; var vault: String; var rules: WizardRules
-    var status: String; var rows: [WizardRow]; var message: String
+    var status: String; var rows: [WizardRow]; var message: String; var outcome: ReviewOutcome?
 }
 struct WizardState: Decodable {
     var rules: WizardRules; var cacheKinds: [String]; var last: WizardPlan?
@@ -40,6 +40,7 @@ struct WizardState: Decodable {
 
 struct CleanupWizardView: View {
     @EnvironmentObject var store: OrganizerStore
+    var captureReview = false
     @LocalState var rules = WizardRules()
     @LocalState var kinds: [String] = []
     @LocalState var proposals: [WizardProposal] = []
@@ -52,11 +53,18 @@ struct CleanupWizardView: View {
     @LocalState var taskEditorShown = false
     @LocalState var reviewTopic = "Summary"
     let actions = ["keep", "cleanup", "archive", "freeze"]
+    init(captureReview: Bool = false) {
+        self.captureReview = captureReview
+        let example: WizardPlan? = captureReview ? DemoCatalog.reply(["wizard-state"], as: WizardState.self)?.last : nil
+        _phase = LocalState(initialValue: captureReview ? 2 : 0)
+        _plan = LocalState(initialValue: example)
+        _selected = LocalState(initialValue: example?.rows.first?.id)
+    }
     func actionName(_ action: String) -> String {
         switch action {
         case "cleanup": return "Clean caches"
-        case "archive": return "Archive & push; keep checkout"
-        case "freeze": return "Freeze & remove checkout"
+        case "archive": return "Preserve"
+        case "freeze": return "Freeze"
         default: return "Keep"
         }
     }
@@ -65,12 +73,17 @@ struct CleanupWizardView: View {
     }
     var reviewRow: WizardRow? { plan?.rows.first { $0.id == selected } }
     var ready: Int { plan?.rows.filter { $0.status == "ready" }.count ?? 0 }
+    var outcomeActionLabel: String {
+        guard let plan, let outcome = plan.outcome else { return "Run reviewed actions" }
+        let preserved = plan.rows.filter { $0.status == "ready" && $0.action == "archive" }.count
+        return outcome.actionLabel(preservedProjects: preserved)
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
                 Text("Cleanup wizard").font(.title2).fontWeight(.semibold)
                 Spacer()
-                Text(["Rules", "Choose actions", "Review plan", "Results"][phase]).font(.headline).foregroundStyle(.secondary)
+                Text(["Rules", "Choose actions", "Review", "Results"][phase]).font(.headline).foregroundStyle(.secondary)
             }
             if phase == 0 { ruleStep }
             else if phase == 1 { proposalStep }
@@ -84,12 +97,13 @@ struct CleanupWizardView: View {
                     store.load()
                 }.disabled(store.busy).keyboardShortcut(.cancelAction)
             }
-        }.padding(24).frame(width: 1120, height: 780)
+        }.padding(24).frame(width: sheetWidth(1120), height: sheetWidth(1120) < 1000 ? 700 : 780)
             .interactiveDismissDisabled(store.busy)
             .sheet(isPresented: $taskEditorShown) { TasksView(initialRules: rules).environmentObject(store) }
             .onAppear {
                 store.invoke(["wizard-state"], as: WizardState.self) { value in
                     rules = value.rules; kinds = value.cacheKinds; last = value.last
+                    if captureReview, let review = value.last { plan = review; selected = review.rows.first?.id; phase = 2 }
                 }
             }
     }
@@ -131,7 +145,7 @@ struct CleanupWizardView: View {
             Spacer()
             HStack {
                 if let previous = last {
-                    Button(previous.status == "review" ? "Open saved plan" : "Previous batch results") {
+                    Button(previous.status == "review" ? "Open saved review" : "Previous batch results") {
                         plan = previous; selected = previous.rows.first?.id; approved = false
                         phase = previous.status == "review" ? 2 : 3
                     }
@@ -149,7 +163,7 @@ struct CleanupWizardView: View {
     }
     var proposalStep: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("These are suggestions. Change any action before preparing the exact plan. Nothing has been cleaned, pushed or frozen.")
+            Text("These are suggestions. Change any action before preparing the exact review. Nothing has been cleaned, pushed or frozen.")
                 .font(.callout).foregroundStyle(.secondary)
             HStack {
                 Text("\(proposals.filter { $0.action != "keep" }.count) actions · \(proposals.filter { $0.action == "keep" }.count) kept")
@@ -176,7 +190,7 @@ struct CleanupWizardView: View {
                             }
                         }
                         Text(row.reason).font(.caption).foregroundStyle(.secondary)
-                        Text("\(row.cacheCount) eligible caches (\(bytes(row.cacheSize))) · \(row.changedCount) changed source entries · \(row.branchCount) branches to review · \(row.stashCount) stashes · \(row.localCount) local file matches")
+                        Text("\(row.cacheCount) eligible caches (\(bytes(row.cacheSize))) · \(row.changedCount) changed source entries · \(row.branchCount) \(row.branchCount == 1 ? "branch" : "branches") to review · \(row.stashCount) stashes · \(row.localCount) local file matches")
                             .font(.caption).foregroundStyle(.secondary)
                     }.padding(.vertical, 7)
                 }
@@ -187,7 +201,7 @@ struct CleanupWizardView: View {
             HStack {
                 Button("Back to rules") { phase = 0 }
                 Spacer()
-                Button("Prepare exact execution plan") {
+                Button("Build review") {
                     let request = WizardRequest(rules: rules, choices: proposals.map {
                         WizardChoice(path: $0.path, action: $0.action, remote: $0.remote)
                     })
@@ -202,7 +216,7 @@ struct CleanupWizardView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text(plan?.message ?? "").font(.callout).foregroundStyle(.secondary)
             if plan?.status == "running" {
-                Text("This batch was interrupted. Inspect recorded results, archives and Trash history; start a fresh plan for remaining work. It will not run twice.")
+                Text("This batch was interrupted. Inspect recorded results, archives and Trash history; start a fresh review for remaining work. It will not run twice.")
                     .font(.callout).foregroundStyle(.orange)
             }
             HSplitView {
@@ -213,7 +227,7 @@ struct CleanupWizardView: View {
                         Label(row.status.capitalized, systemImage: row.status == "done" ? "checkmark.circle" : row.status == "ready" ? "circle" : "exclamationmark.circle")
                             .font(.caption).foregroundStyle(row.status == "done" ? Color.green : Color.secondary)
                     }.padding(.vertical, 5).tag(row.id)
-                }.frame(minWidth: 270, idealWidth: 300, maxWidth: 360)
+                }.frame(minWidth: 160, idealWidth: 220, maxWidth: 280)
                 VStack(alignment: .leading, spacing: 12) {
                     if let row = reviewRow {
                         Text(row.path).font(.caption).textSelection(.enabled)
@@ -227,7 +241,10 @@ struct CleanupWizardView: View {
                     } else {
                         ContentUnavailableView("Choose an action", systemImage: "list.bullet.clipboard")
                     }
-                }.padding(.leading, 16).frame(minWidth: 560, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                }.padding(.leading, 16).frame(minWidth: 400, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            }
+            if let outcome = plan?.outcome {
+                ScrollView { OutcomeSummaryView(outcome: outcome) }.frame(maxHeight: 220)
             }
             if phase == 2 {
                 Text("Acceptance covers every ready row. Cache folders move to Trash. Freeze archives local files and Git metadata, pushes only the listed ordinary refs, verifies recovery and the remote, then removes the listed checkouts. Private recovery stays on this Mac and is not encrypted. Blocked rows will not run. Review expires after ten minutes.")
@@ -237,18 +254,18 @@ struct CleanupWizardView: View {
                     Button("Change actions") { phase = 1; approved = false }.disabled(store.busy || proposals.isEmpty)
                     Spacer()
                     Text("\(ready) ready · \(plan?.rows.filter { $0.status == "blocked" }.count ?? 0) blocked").font(.caption)
-                    Button("Accept & run entire plan") {
+                    Button(outcomeActionLabel) {
                         guard let id = plan?.id else { return }
                         store.invoke(["wizard-execute", id], as: WizardPlan.self) { value in
                             plan = value; last = value; phase = 3; approved = false; store.load()
                         }
-                    }.buttonStyle(.borderedProminent).disabled(store.busy || !approved || ready == 0)
+                    }.buttonStyle(.borderedProminent).disabled(store.busy || store.isDemo || !approved || ready == 0)
                 }
             } else {
                 HStack {
                     Text("\(plan?.rows.filter { $0.status == "done" }.count ?? 0) completed · \(plan?.rows.filter { ["failed", "partial", "running"].contains($0.status) }.count ?? 0) need attention").font(.callout)
                     Spacer()
-                    Button("Start a new plan") { phase = 0; plan = nil; approved = false }
+                    Button("Start a new review") { phase = 0; plan = nil; approved = false }
                 }
             }
         }
@@ -256,9 +273,9 @@ struct CleanupWizardView: View {
     @ViewBuilder func details(_ row: WizardRow) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             if let cleanup = row.cleanup {
-                Text("Move \(cleanup.items.count) folders to Trash · \(bytes(cleanup.totalSize))").font(.headline)
+                Text("Move \(cleanup.items.count) \(cleanup.items.count == 1 ? "folder" : "folders") to Trash · \(bytes(cleanup.totalSize))").font(.headline)
                 ForEach(cleanup.items) { item in Text(item.path + " · " + bytes(item.size)).font(.caption).textSelection(.enabled) }
-                ForEach(cleanup.blocked) { item in Text("Held: " + item.path + "\n" + item.reason).font(.caption) }
+                ForEach(cleanup.blocked) { item in Text("Not run: " + item.path + "\n" + item.reason).font(.caption) }
                 if let results = row.results {
                     Divider()
                     ForEach(Array(results.enumerated()), id: \.offset) { _, item in Text(item.path + "\n" + item.message).font(.caption) }
@@ -266,10 +283,10 @@ struct CleanupWizardView: View {
             }
             if let freeze = row.freeze {
                 if reviewTopic == "Summary" {
-                    Text(row.action == "freeze" ? "Archive, push & remove checkouts" : "Archive & push; keep checkouts").font(.headline)
+                    Text(row.action == "freeze" ? "Freeze" : "Preserve").font(.headline)
                     Text("Publish to: " + freeze.destination).textSelection(.enabled)
                     Text("\(freeze.checkouts.count) checkouts · \(freeze.localCount) local entries · \(bytes(freeze.localSize)) plus Git recovery")
-                    Text("Vault: " + freeze.archiveLocation).font(.caption).textSelection(.enabled)
+                    Text("Freezer: " + freeze.archiveLocation).font(.caption).textSelection(.enabled)
                     Text(freeze.message).font(.caption)
                     Text("Local stashes, reflogs and private refs stay in local Git recovery. Source changes must be committed separately before freezing.").font(.callout)
                 } else if reviewTopic == "Publication" {

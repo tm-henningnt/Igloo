@@ -57,7 +57,7 @@ def validate(value):
     if not name or len(name) > 120:
         fail("Give the task a name of at most 120 characters.")
     if value.get("mode") not in {"review", "cleanup"} or type(value.get("unattended")) is not bool:
-        fail("Choose plan-only or cache-cleanup mode and its unattended permission.")
+        fail("Choose review-only or cache-cleanup mode and its unattended permission.")
     policy = planning.rules(value["rules"])
     project_limit, byte_limit = value.get("maxProjects"), value.get("maxBytes")
     if type(project_limit) is not int or not 1 <= project_limit <= 1000:
@@ -70,7 +70,7 @@ def validate(value):
     if any(kind not in classification.TYPES for kind in value["projectTypes"]):
         fail("Choose recognized project types.")
     if value.get("root") != str(O.ROOT) or value.get("vault") != str(O.VAULT):
-        fail("This task belongs to another workspace or vault. Save a new task for the current settings.")
+        fail("This task belongs to another workspace or Freezer. Save a new task for the current settings.")
     return {"id": value["id"], "name": name, "root": str(O.ROOT), "vault": str(O.VAULT),
             "mode": value["mode"], "unattended": value["unattended"], "rules": policy,
             "include": sorted(set(map(scope_path, value["include"]))),
@@ -178,9 +178,11 @@ def build_plan(task):
     snapshot = O.snapshot()
     projects = [p for p in snapshot["projects"] if scoped(p, task)]
     proposals = planning.suggest({"projects":projects}, task["rules"])
-    choices, holds = [], []
+    choices, holds, excluded = [], [], []
     for row in proposals:
-        if row["action"] == "cleanup":
+        if row.get("held"):
+            excluded.append({"path": row["path"], "reason": "On hold."})
+        elif row["action"] == "cleanup":
             if len(choices) < task["maxProjects"]:
                 choices.append({"path":row["path"], "action":"cleanup", "remote":""})
             else:
@@ -194,7 +196,8 @@ def build_plan(task):
     if total > task["maxBytes"]:
         for row in plan["rows"]:
             if row["status"] == "ready":
-                row.update(status="blocked", message="The batch exceeds this task's per-run byte limit. No cleanup will run.")
+                row.update(status="blocked", message="The review exceeds this task's per-run byte limit. No cleanup will run.")
+    plan["held"] = excluded + [{"path": r["path"], "reason": r["message"]} for r in plan["rows"] if r["status"] == "blocked"]
     planning.persist(plan)
     return plan, total
 
@@ -210,25 +213,28 @@ def run_task(task_id, apply=False, scheduled=False, expected_hash=""):
                 fail("Unattended cache cleanup is not enabled for this task.")
             apply = task["mode"] == "cleanup"
         if apply and task["mode"] != "cleanup":
-            fail("Plan-only tasks cannot apply changes. Choose cache-cleanup mode explicitly.")
+            fail("Review-only tasks cannot apply changes. Choose cache-cleanup mode explicitly.")
         plan, total = build_plan(task)
         run.update(planID=plan["id"], ready=sum(r["status"]=="ready" for r in plan["rows"]),
-                   blocked=sum(r["status"]=="blocked" for r in plan["rows"]), cacheBytes=total)
+                   blocked=len(plan["held"]), cacheBytes=total, outcome=plan["outcome"])
         record(run)
         if apply and run["ready"]:
             result = planning.execute(plan["id"])
+            run["outcome"] = result["outcome"]
+            run["blocked"] = len(result["held"])
             bad = any(r["status"] in {"failed","partial","running"} for r in result["rows"])
             run.update(status="partial" if bad or run["blocked"] else "completed",
-                       message="Task actions finished. Review held or failed rows in its saved plan.")
+                       message="Task actions finished. Review held or failed rows in its saved review.")
         elif apply:
+            run["outcome"] = O.combine_outcomes([], held=plan["held"], observed=True)
             run.update(status="held" if run["blocked"] else "nothing-to-do",
                        message="No ready cleanup actions. Held projects were not changed.")
         else:
-            run.update(status="planned", message="Fresh plan saved. No project files were changed.")
+            run.update(status="planned", message="Fresh review saved. No project files were changed.")
     except O.Refusal as e:
         run.update(status="failed", message=str(e))
     except Exception:
-        run.update(status="failed", message="Task stopped unexpectedly. Existing plans and recovery history were preserved.")
+        run.update(status="failed", message="Task stopped unexpectedly. Existing reviews and recovery history were preserved.")
     run["finished"] = O.now()
     record(run)
     return run
@@ -236,28 +242,29 @@ def run_task(task_id, apply=False, scheduled=False, expected_hash=""):
 def apply_plan(plan_id):
     plan = O.load(planning.location(plan_id))
     if not plan or not plan.get("task"):
-        fail("Choose a saved task plan.")
+        fail("Choose a saved task review.")
     task = get(plan["task"]["id"])
     if task["mode"] != "cleanup" or plan["task"]["policyHash"] != policy_hash(task):
-        fail("Task rules changed or cleanup is disabled. Generate a new plan.")
+        fail("Task rules changed or cleanup is disabled. Generate a new review.")
     if any(r["action"] != "cleanup" for r in plan["rows"] if r["status"] == "ready"):
         fail("Tasks only apply cache cleanup.")
     ready = [r for r in plan["rows"] if r["status"] == "ready"]
     total = sum(r["cleanup"]["totalSize"] for r in ready)
     if len(ready) > task["maxProjects"] or total > task["maxBytes"]:
-        fail("The plan exceeds its saved task limits.")
+        fail("The review exceeds its saved task limits.")
     run = new_run(task, "reviewed")
     run.update(planID=plan_id, ready=len(ready), cacheBytes=total,
-               blocked=sum(r["status"]=="blocked" for r in plan["rows"]))
+               blocked=len(plan.get("held", [])), outcome=plan.get("outcome"))
     record(run)
     try:
         result = planning.execute(plan_id)
-        run.update(status="partial" if any(r["status"] in {"failed","partial","running","blocked"} for r in result["rows"]) else "completed",
-                   message="Reviewed task plan finished. Inspect its saved results.")
+        run["outcome"] = result["outcome"]
+        run.update(status="partial" if result["held"] or any(r["status"] in {"failed","partial","running","blocked"} for r in result["rows"]) else "completed",
+                   message="Reviewed task review finished. Inspect its saved results.")
     except O.Refusal as e:
         run.update(status="failed", message=str(e))
     except Exception:
-        run.update(status="failed", message="Task stopped. Inspect the saved plan and Trash history.")
+        run.update(status="failed", message="Task stopped. Inspect the saved review and Trash history.")
     run["finished"] = O.now()
     record(run)
     return run
@@ -358,7 +365,7 @@ def dispatch(command,args):
     if command=="task-list":return listing()
     if command=="task-plan":
         plan=O.load(planning.location(args[0]))
-        if not plan or not plan.get("task"):fail("Task plan not found.")
+        if not plan or not plan.get("task"):fail("Task review not found.")
         return plan
     if command=="task-save":return save(json.loads(args[0]))
     if command=="task-delete":return delete(args[0])

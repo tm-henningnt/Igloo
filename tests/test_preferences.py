@@ -34,6 +34,45 @@ class PreferencesTests(unittest.TestCase):
         self.assertEqual(preferences.load(self.path,self.home),self.value)
         self.assertEqual(self.path.stat().st_mode&0o777,0o600)
         self.assertEqual(self.path.parent.stat().st_mode&0o777,0o700)
+    def test_backup_defaults_and_existing_schema_remain_compatible(self):
+        self.assertEqual(self.value["freezerBackupRoot"], "")
+        self.assertEqual(self.value["freezerBackupCloudAcceptedRoot"], "")
+        legacy = dict(self.value)
+        legacy.pop("freezerBackupRoot")
+        legacy.pop("freezerBackupCloudAcceptedRoot")
+        self.path.parent.mkdir(parents=True)
+        self.path.write_text(json.dumps(legacy))
+        self.assertEqual(preferences.load(self.path, self.home), self.value)
+
+    def test_backup_configuration_roundtrip_and_validation(self):
+        value = dict(self.value, freezerBackupRoot=str(self.home / "Backup"),
+                     freezerBackupCloudAcceptedRoot=str((self.home / "Backup").resolve()).casefold())
+        preferences.write(value, self.path)
+        self.assertEqual(preferences.load(self.path, self.home), value)
+        for root in (None, False, "relative", " ", "bad\x00path"):
+            with self.subTest(root=root), self.assertRaises(ValueError):
+                preferences.validate(dict(self.value, freezerBackupRoot=root))
+        for accepted in (None, True, False, "true", 1, " ", "bad\x00path", "/backup/../other"):
+            with self.subTest(accepted=accepted), self.assertRaises(ValueError):
+                preferences.validate(dict(self.value, freezerBackupCloudAcceptedRoot=accepted))
+
+    def test_legacy_cloud_acceptance_does_not_authorize_any_folder(self):
+        legacy = dict(self.value, freezerBackupCloudAccepted=True)
+        legacy.pop("freezerBackupCloudAcceptedRoot")
+        self.path.parent.mkdir(parents=True)
+        self.path.write_text(json.dumps(legacy))
+        result = preferences.load(self.path, self.home)
+        self.assertEqual(result["freezerBackupCloudAcceptedRoot"], "")
+        self.assertNotIn("freezerBackupCloudAccepted", result)
+
+    def test_cloud_acceptance_root_resolves_alias_and_casefolds(self):
+        destination = self.home / "MixedCaseBackup"
+        destination.mkdir()
+        alias = self.home / "alias"
+        alias.symlink_to(destination, target_is_directory=True)
+        value = dict(self.value, freezerBackupCloudAcceptedRoot=str(alias))
+        self.assertEqual(preferences.validate(value)["freezerBackupCloudAcceptedRoot"],
+                         str(destination.resolve()).casefold())
     def test_whole_filesystem_and_home_are_not_workspaces(self):
         for root in ("/",str(Path.home())):
             with self.subTest(root=root),self.assertRaises(ValueError):

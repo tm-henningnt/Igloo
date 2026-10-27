@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tarfile
 import unittest
 from unittest.mock import patch
@@ -27,6 +28,8 @@ class LifecycleTests(unittest.TestCase):
                      for w in o.worktree_list(str(self.repo)) if isinstance(w.get("worktree"), str)]
             return {"projects": [{"git": True, "path": str(self.repo), "worktrees": trees}]}
         self.extra = [patch.object(o, "snapshot", side_effect=snapshot),
+                      patch.object(o, "CONFIG", dict(o.CONFIG, freezerBackupRoot="",
+                                                    freezerBackupCloudAcceptedRoot="")),
                       patch.object(o, "process_cwds", return_value=[]),
                       patch.object(life, "open_files", return_value=None)]
         for p in self.extra: p.start()
@@ -45,6 +48,339 @@ class LifecycleTests(unittest.TestCase):
         preview = life.preview_freeze(str(self.repo), "origin")
         life.execute_freeze(preview["id"])
         return preview["id"], life.archive_record(preview["id"])
+
+    def enable_backup(self):
+        home = self.root / "home"
+        home.mkdir()
+        home_patch = patch.object(Path, "home", return_value=home)
+        home_patch.start()
+        self.extra.append(home_patch)
+        destination = home / "Backup"
+        destination.mkdir()
+        o.CONFIG["freezerBackupRoot"] = str(destination)
+        return destination
+
+    def backup_copy(self, root, identifier):
+        return root / "Igloo-Freezer-Backup" / identifier
+
+    def test_preserve_creates_verified_private_backup(self):
+        destination = self.enable_backup()
+        identifier, (location, _) = self.freeze()
+        copy = self.backup_copy(destination, identifier)
+        for name in ("manifest.json", "source.bundle", "git-metadata.tar.gz", "local-files.tar.gz"):
+            self.assertEqual(life.digest(copy / name), life.digest(location / name))
+            self.assertEqual((copy / name).stat().st_mode & 0o777, 0o600)
+        self.assertEqual(copy.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(copy.parent.stat().st_mode & 0o777, 0o700)
+        status = life.backup_status()
+        self.assertTrue(status["archives"][0]["backedUp"])
+        self.assertFalse(status["archives"][0]["missing"])
+        self.assertIsNotNone(status["archives"][0]["lastVerified"])
+        self.assertTrue(life.vault_entries()[0]["backup"]["backedUp"])
+        before = {p.name: p.read_bytes() for p in copy.iterdir() if p.name != "backup.json"}
+        life.backup_run()
+        self.assertEqual(before, {p.name: p.read_bytes() for p in copy.iterdir() if p.name != "backup.json"})
+
+    def test_missing_backup_folder_never_blocks_preserve(self):
+        destination = self.enable_backup()
+        destination.rmdir()
+        review = life.preview_freeze(str(self.repo), "origin")
+        result = life.execute_freeze(review["id"])
+        self.assertEqual(result["state"], "ready")
+        self.assertTrue((self.repo / ".git").is_dir())
+        self.assertFalse(destination.exists())
+        self.assertEqual(result["backup"]["status"], "Not backed up")
+        row = life.backup_status()["archives"][0]
+        self.assertFalse(row["backedUp"])
+        self.assertTrue(row["missing"])
+        self.assertIn("missing", row["reason"])
+
+    def test_unwritable_backup_never_blocks_preserve(self):
+        self.enable_backup()
+        review = life.preview_freeze(str(self.repo), "origin")
+        with patch.object(life, "backup_run", side_effect=PermissionError("fixture")):
+            result = life.execute_freeze(review["id"])
+        self.assertEqual(result["state"], "ready")
+        self.assertFalse(result["backup"]["backedUp"])
+        self.assertTrue(result["backup"]["reason"])
+
+    def test_backup_verify_detects_corruption_and_run_does_not_replace_copy(self):
+        destination = self.enable_backup()
+        identifier, _ = self.freeze()
+        copy = self.backup_copy(destination, identifier)
+        (copy / "local-files.tar.gz").write_bytes(b"corrupted fixture")
+        with self.assertRaisesRegex(o.Refusal, "verification failed"):
+            life.backup_verify()
+        row = life.backup_status()["archives"][0]
+        self.assertFalse(row["backedUp"])
+        self.assertFalse(row["missing"])
+        self.assertTrue(row["lastVerified"])
+        with self.assertRaises(o.Refusal):
+            life.backup_run()
+        self.assertEqual((copy / "local-files.tar.gz").read_bytes(), b"corrupted fixture")
+
+    def test_backup_verify_detects_source_corruption(self):
+        self.enable_backup()
+        _, (location, _) = self.freeze()
+        (location / "source.bundle").write_bytes(b"changed source archive")
+        with self.assertRaises(o.Refusal):
+            life.backup_verify()
+        self.assertFalse(life.backup_status()["archives"][0]["backedUp"])
+
+    def test_backup_verify_records_time_and_missing_files(self):
+        destination = self.enable_backup()
+        identifier, _ = self.freeze()
+        verified = "2030-01-02T03:04:05+00:00"
+        with patch.object(o, "now", return_value=verified):
+            life.backup_verify()
+        self.assertEqual(life.backup_status()["archives"][0]["lastVerified"], verified)
+        (self.backup_copy(destination, identifier) / "source.bundle").unlink()
+        row = life.backup_status()["archives"][0]
+        self.assertFalse(row["backedUp"])
+        self.assertTrue(row["missing"])
+
+    def test_backup_refuses_linked_recovery_files_and_invalid_receipts(self):
+        destination = self.enable_backup()
+        o.CONFIG["freezerBackupRoot"] = ""
+        identifier, (location, _) = self.freeze()
+        payload = (location / "source.bundle").read_bytes()
+        target = self.root / "outside-copy"
+        target.write_bytes(payload)
+        (location / "source.bundle").unlink()
+        (location / "source.bundle").symlink_to(target)
+        o.CONFIG["freezerBackupRoot"] = str(destination)
+        with self.assertRaises(o.Refusal):
+            life.backup_run()
+        self.assertFalse(self.backup_copy(destination, identifier).exists())
+        (location / "source.bundle").unlink()
+        (location / "source.bundle").write_bytes(payload)
+        life.backup_run()
+        (self.backup_copy(destination, identifier) / "backup.json").write_text('["invalid"]')
+        self.assertFalse(life.backup_status()["archives"][0]["backedUp"])
+        with self.assertRaises(o.Refusal):
+            life.backup_verify()
+        self.assertEqual(target.read_bytes(), payload)
+
+    def test_backup_verify_command_fails_with_json_error(self):
+        destination = self.enable_backup()
+        identifier, _ = self.freeze()
+        (self.backup_copy(destination, identifier) / "source.bundle").write_bytes(b"changed")
+        output = io.StringIO()
+        with patch.object(sys, "argv", ["organizer.py", "backup-verify"]), \
+             patch.object(o, "lifecycle_module", return_value=life), patch.object(sys, "stdout", output):
+            code = o.main()
+        self.assertEqual(code, 1)
+        self.assertIn("verification failed", json.loads(output.getvalue())["error"])
+
+    def test_backup_after_thaw_is_an_orphan_and_removal_is_explicit(self):
+        destination = self.enable_backup()
+        identifier, _ = self.freeze()
+        with self.assertRaisesRegex(o.Refusal, "still in the Freezer"):
+            life.backup_remove(identifier)
+        life.freeze_retire(identifier)
+        # A lifecycle-only manifest change does not invalidate recovery files.
+        life.backup_verify()
+        life.rehydrate(identifier, offline=True)
+        copy = self.backup_copy(destination, identifier)
+        self.assertTrue(copy.is_dir())
+        status = life.backup_status()
+        self.assertEqual(status["archives"], [])
+        self.assertEqual([r["id"] for r in status["orphans"]], [identifier])
+        life.backup_run()
+        life.backup_verify()
+        self.assertTrue(copy.is_dir())
+        life.backup_remove(identifier)
+        self.assertFalse(copy.exists())
+        self.assertTrue((self.repo / "source.txt").is_file())
+
+    def test_removing_source_archive_leaves_backup_for_explicit_removal(self):
+        destination = self.enable_backup()
+        identifier, (location, _) = self.freeze()
+        import shutil
+        shutil.rmtree(location)
+        self.assertEqual(life.backup_status()["orphans"][0]["id"], identifier)
+        life.backup_verify()
+        life.backup_remove(identifier)
+        self.assertFalse(self.backup_copy(destination, identifier).exists())
+
+    def test_cloud_backup_requires_matching_destination_acceptance(self):
+        self.enable_backup()
+        home = Path.home()
+        for relative in ("Library/Mobile Documents/com~apple~CloudDocs/Backup", "Library/CloudStorage/Fixture/Backup"):
+            cloud = home / relative
+            cloud.mkdir(parents=True)
+            o.CONFIG["freezerBackupRoot"] = str(cloud)
+            with self.assertRaisesRegex(o.Refusal, "unencrypted"):
+                life.backup_run()
+            self.assertEqual(list(cloud.iterdir()), [])
+            o.CONFIG["freezerBackupCloudAcceptedRoot"] = str(cloud.resolve()).casefold()
+            life.backup_run()
+            o.CONFIG["freezerBackupCloudAcceptedRoot"] = ""
+            alias = home / "alias"
+            alias.symlink_to(cloud, target_is_directory=True)
+            o.CONFIG["freezerBackupRoot"] = str(alias)
+            with self.assertRaises(o.Refusal):
+                life.backup_run()
+            alias.unlink()
+
+    def test_firmlink_cloud_paths_require_destination_consent(self):
+        # Model macOS's /System/Volumes/Data firmlink without touching a real home.
+        home = Path("/Users/demo")
+        prefix = "/System/Volumes/Data"
+        for relative in ("Library/CloudStorage/Fixture/Backup", "Library/Mobile Documents/Fixture/Backup"):
+            canonical = home / relative
+            alternate = Path(prefix + str(canonical))
+            for home_path, target in ((home, alternate), (Path(prefix + str(home)), canonical)):
+                with self.subTest(home=home_path, target=target), \
+                     patch.object(Path, "home", return_value=home_path), \
+                     patch.object(Path, "resolve", lambda path, *args, **kwargs: path):
+                    o.CONFIG["freezerBackupRoot"] = str(target)
+                    o.CONFIG["freezerBackupCloudAcceptedRoot"] = ""
+                    destination = life.backup_destination()
+                    self.assertTrue(destination["cloud"])
+                    self.assertFalse(destination["cloudAccepted"])
+                    with self.assertRaisesRegex(o.Refusal, "unencrypted"):
+                        life.backup_base()
+                    o.CONFIG["freezerBackupCloudAcceptedRoot"] = str(target).casefold()
+                    self.assertTrue(life.backup_destination()["cloudAccepted"])
+
+    def test_mixed_case_cloud_paths_require_acceptance(self):
+        self.enable_backup()
+        for relative in ("library/cloudstorage/Fixture/Backup", "Library/mobile documents/Fixture/Backup"):
+            cloud = Path.home() / relative
+            cloud.mkdir(parents=True)
+            o.CONFIG["freezerBackupRoot"] = str(cloud)
+            with self.assertRaisesRegex(o.Refusal, "unencrypted"):
+                life.backup_run()
+            status = life.backup_status()
+            self.assertTrue(status["cloud"])
+            self.assertFalse(status["cloudAccepted"])
+            self.assertEqual(status["acceptanceRoot"], str(cloud.resolve()).casefold())
+            self.assertEqual(list(cloud.iterdir()), [])
+            o.CONFIG["freezerBackupCloudAcceptedRoot"] = status["acceptanceRoot"]
+            self.assertTrue(life.backup_run()["cloudAccepted"])
+
+    def test_cloud_acceptance_does_not_follow_destination_changes(self):
+        self.enable_backup()
+        first = Path.home() / "Library/CloudStorage/Fixture/First"
+        second = first.parent / "Second"
+        first.mkdir(parents=True)
+        second.mkdir()
+        o.CONFIG["freezerBackupRoot"] = str(first)
+        o.CONFIG["freezerBackupCloudAcceptedRoot"] = str(first.resolve()).casefold()
+        life.backup_run()
+        o.CONFIG["freezerBackupRoot"] = str(second)
+        with self.assertRaisesRegex(o.Refusal, "unencrypted"):
+            life.backup_run()
+        self.assertEqual(list(second.iterdir()), [])
+        o.CONFIG["freezerBackupCloudAcceptedRoot"] = str(second.resolve()).casefold()
+        life.backup_run()
+
+    def test_cloud_detection_resolves_destination_and_cloud_folder_aliases(self):
+        self.enable_backup()
+        home = Path.home()
+        provider = home / "provider"
+        (provider / "Fixture/Backup").mkdir(parents=True)
+        library = home / "Library"
+        library.mkdir()
+        (library / "CloudStorage").symlink_to(provider, target_is_directory=True)
+        alias = home / "alias"
+        alias.symlink_to(library / "CloudStorage/Fixture", target_is_directory=True)
+        for cloud in (provider / "Fixture/Backup", alias / "Backup"):
+            o.CONFIG["freezerBackupRoot"] = str(cloud)
+            o.CONFIG["freezerBackupCloudAcceptedRoot"] = ""
+            with self.assertRaisesRegex(o.Refusal, "unencrypted"):
+                life.backup_run()
+            o.CONFIG["freezerBackupCloudAcceptedRoot"] = str(cloud.resolve()).casefold()
+            life.backup_run()
+
+    def test_vault_list_retains_archives_when_backup_status_fails(self):
+        self.enable_backup()
+        identifier, _ = self.freeze()
+        with patch.object(life, "backup_status", side_effect=PermissionError("fixture")):
+            rows = life.vault_entries()
+        self.assertEqual([row["id"] for row in rows], [identifier])
+        self.assertTrue(rows[0]["backup"]["error"])
+        self.assertFalse(rows[0]["backup"]["backedUp"])
+
+    def test_vault_list_reports_unreadable_freezer_as_status_error(self):
+        self.enable_backup()
+        self.freeze()
+        original_iterdir = Path.iterdir
+        def unreadable(path):
+            if path == o.VAULT:
+                raise PermissionError("fixture")
+            return original_iterdir(path)
+        with patch.object(Path, "iterdir", unreadable):
+            result = life.dispatch("vault-list", [])
+        self.assertEqual(result["archives"], [])
+        self.assertTrue(result["backup"]["error"])
+        self.assertFalse(result["backup"]["available"])
+
+    def test_vault_list_reports_linked_freezer_as_status_error(self):
+        self.enable_backup()
+        target = self.root / "freezer-target"
+        target.mkdir()
+        o.VAULT.parent.mkdir(parents=True)
+        o.VAULT.symlink_to(target, target_is_directory=True)
+        result = life.dispatch("vault-list", [])
+        self.assertEqual(result["archives"], [])
+        self.assertTrue(result["backup"]["error"])
+
+    def test_backup_run_saves_key_errors_per_archive(self):
+        destination = self.enable_backup()
+        o.CONFIG["freezerBackupRoot"] = ""
+        identifier, _ = self.freeze()
+        o.CONFIG["freezerBackupRoot"] = str(destination)
+        with patch.object(life, "write_backup_copy", side_effect=KeyError("fixture")):
+            with self.assertRaisesRegex(o.Refusal, "verification failed"):
+                life.backup_run()
+        self.assertIn(identifier, life.backup_failures())
+        self.assertFalse(life.backup_status()["archives"][0]["backedUp"])
+
+    def test_backup_refuses_overlap_symlinks_and_traversal(self):
+        destination = self.enable_backup()
+        identifier, (location, _) = self.freeze()
+        for root in (o.VAULT, location):
+            o.CONFIG["freezerBackupRoot"] = str(root)
+            with self.assertRaises(o.Refusal):
+                life.backup_run()
+        o.CONFIG["freezerBackupRoot"] = str(destination)
+        for identifier in ("../outside", "", "a" * 31):
+            with self.assertRaises(o.Refusal):
+                life.backup_remove(identifier)
+        managed = destination / "Igloo-Freezer-Backup"
+        import shutil
+        shutil.rmtree(managed)
+        managed.symlink_to(o.VAULT, target_is_directory=True)
+        with self.assertRaises(o.Refusal):
+            life.backup_run()
+
+    def test_backup_copy_is_not_published_when_checksum_or_rename_fails(self):
+        destination = self.enable_backup()
+        o.CONFIG["freezerBackupRoot"] = ""
+        identifier, _ = self.freeze()
+        o.CONFIG["freezerBackupRoot"] = str(destination)
+        for target in ("backup_hash", "rename_exclusive"):
+            effect = (lambda path: "0" * 64) if target == "backup_hash" else OSError("fixture")
+            with self.subTest(target=target), patch.object(life, target, side_effect=effect):
+                with self.assertRaises(o.Refusal):
+                    life.backup_run()
+            self.assertFalse(self.backup_copy(destination, identifier).exists())
+            self.assertEqual(list((destination / "Igloo-Freezer-Backup").iterdir()), [])
+        life.backup_run()
+        self.assertTrue(self.backup_copy(destination, identifier).is_dir())
+
+    def test_backup_commands_dispatch_and_reject_unexpected_arguments(self):
+        self.enable_backup()
+        for command in ("backup-run", "backup-verify", "backup-status"):
+            self.assertIn(command, life.COMMANDS)
+            self.assertIn("archives", life.dispatch(command, []))
+            with self.assertRaises(o.Refusal):
+                life.dispatch(command, ["unexpected"])
+        self.assertIn("backup-remove", life.COMMANDS)
+        with self.assertRaises(o.Refusal):
+            life.dispatch("backup-remove", [])
 
     def test_vault_creates_nested_private_storage_on_first_use(self):
         location = life.vault()
@@ -103,6 +439,186 @@ class LifecycleTests(unittest.TestCase):
         with self.assertRaisesRegex(o.Refusal, "Commit or resolve"):
             life.preview_freeze(str(self.repo), "origin")
         self.assertTrue((self.repo / "source.txt").exists())
+
+    def test_empty_repository_needs_files_before_an_initial_commit(self):
+        empty = self.root / "empty-project"
+        empty.mkdir()
+        subprocess.run(["/usr/bin/git", "-C", str(empty), "init", "-q"], check=True,
+                       capture_output=True, env=o.ENV)
+        snapshot = {"projects": [{"git": True, "path": str(empty), "worktrees": []}]}
+        with patch.object(o, "snapshot", return_value=snapshot):
+            rows = life.freeze_blockers(str(empty))["blockers"]
+            by_code = {row["code"]: row for row in rows}
+            self.assertIn("no-files", by_code)
+            self.assertEqual(by_code["no-files"]["message"], "Add files to this project, then commit them.")
+            self.assertIsNone(by_code["no-files"]["fix"])
+            self.assertNotIn("no-commit", by_code)
+            self.assertNotIn("changed-source", by_code)
+            with self.assertRaisesRegex(o.Refusal, "Add files to this project"):
+                life.preview_freeze(str(empty), "origin")
+
+            (empty / ".env").write_text("fixture only")
+            rows = life.freeze_blockers(str(empty))["blockers"]
+            self.assertIn("no-files", {row["code"] for row in rows})
+            self.assertFalse(any(row["fix"] == "commit" for row in rows))
+
+            (empty / "source.txt").write_text("fixture source")
+            rows = life.freeze_blockers(str(empty))["blockers"]
+            by_code = {row["code"]: row for row in rows}
+            self.assertIn("no-commit", by_code)
+            self.assertEqual(by_code["no-commit"]["fix"], "commit")
+            self.assertNotIn("no-files", by_code)
+            self.assertNotIn("changed-source", by_code)
+            with self.assertRaisesRegex(o.Refusal, "initial commit"):
+                life.preview_freeze(str(empty), "origin")
+
+    def test_cheap_blockers_match_review_refusals(self):
+        def check(code, fix):
+            blockers = life.freeze_blockers(str(self.repo))["blockers"]
+            matches = [b for b in blockers if b["code"] == code]
+            self.assertEqual(len(matches), 1, blockers)
+            self.assertEqual(matches[0]["fix"], fix)
+            with self.assertRaises(o.Refusal) as stopped:
+                life.preview_freeze(str(self.repo), "origin")
+            self.assertEqual(str(stopped.exception), matches[0]["message"])
+        self.assertEqual(life.freeze_blockers(str(self.repo))["blockers"], [])
+        self.git("remote", "remove", "origin")
+        check("no-remote", "connect-remote")
+        self.git("remote", "add", "origin", str(self.bare))
+        (self.repo / "source.txt").write_text("changed source")
+        check("changed-source", "commit")
+        self.git("checkout", "--", "source.txt")
+        (self.repo / "new-source.txt").write_text("untracked source")
+        check("changed-source", "commit")
+        (self.repo / "new-source.txt").unlink()
+        with patch.object(o, "process_cwds", return_value=[{"path": str(self.repo / "source.txt"), "pid": "fixture"}]):
+            check("open-processes", None)
+        with patch.object(o, "APP", self.repo):
+            check("own-source", None)
+        self.git("checkout", "--orphan", "unborn")
+        self.git("rm", "-rf", ".")
+        self.cache.joinpath("package.js").unlink()
+        self.cache.rmdir()
+        check("no-files", None)
+
+    def test_blockers_reuse_snapshot_facts_without_hashing_or_remote_queries(self):
+        states = [o.git_state(str(self.repo))]
+        with patch.object(life, "capture", side_effect=AssertionError("must not hash")), \
+             patch.object(o, "run_git", side_effect=AssertionError("must not query Git")), \
+             patch.object(life, "open_files", side_effect=AssertionError("must not walk open files")):
+            self.assertEqual(life.blockers_for_states(states, []), [])
+
+    def test_freeze_review_still_runs_full_open_file_guard(self):
+        with patch.object(life, "open_files", side_effect=o.Refusal("Close the open file.")) as full_check:
+            with self.assertRaisesRegex(o.Refusal, "Close the open file"):
+                life.preview_freeze(str(self.repo), "origin")
+        full_check.assert_called_once_with([self.repo])
+
+    def test_review_alone_finds_no_publishable_refs(self):
+        self.git("branch", "-m", "backup/private-only")
+        self.assertEqual(life.freeze_blockers(str(self.repo))["blockers"], [])
+        with self.assertRaisesRegex(o.Refusal, "No ordinary branches or tags"):
+            life.preview_freeze(str(self.repo), "origin")
+
+    def test_project_freeze_uses_one_acceptance_and_records_frozen(self):
+        review = life.preview_freeze(str(self.repo), "origin", "freeze")
+        self.assertEqual(review["mode"], "freeze")
+        result = life.execute_freeze(review["id"])
+        self.assertEqual(result["state"], "frozen")
+        self.assertFalse((self.repo / ".git").exists())
+        self.assertEqual(life.archive_record(review["id"])[1]["state"], "frozen")
+
+    def test_preserve_and_freeze_outcomes_match_observed_operations(self):
+        for mode in ("preserve", "freeze"):
+            with self.subTest(mode=mode):
+                before = o.physical_size(self.repo)
+                review = life.preview_freeze(str(self.repo), "origin", mode)
+                estimate = review["outcome"]
+                self.assertEqual(estimate["checkoutsRemoved"]["count"], int(mode == "freeze"))
+                self.assertEqual(estimate["archivesWritten"]["count"], 1)
+                self.assertEqual(estimate["archivesWritten"]["location"], str(o.VAULT))
+                self.assertIsNone(estimate["archivesWritten"]["paths"])
+                self.assertGreaterEqual(estimate["bytesFreedEstimate"], 0)
+                self.assertGreaterEqual(estimate["bytesUsedEstimate"], 0)
+                if mode == "preserve":
+                    self.assertEqual(estimate["bytesFreedEstimate"], 0)
+                    self.assertGreater(estimate["bytesUsedEstimate"], 0)
+                self.assertEqual(estimate["refsPushed"], [dict(ref=r["ref"], sha=r["sha"], destination=str(self.bare))
+                                                        for r in review["publish"]])
+                result = life.execute_freeze(review["id"])["outcome"]
+                for field in ("checkoutsRemoved", "refsPushed", "movedToTrash"):
+                    self.assertEqual(result[field], estimate[field])
+                for field in ("count", "location"):
+                    self.assertEqual(result["archivesWritten"][field], estimate["archivesWritten"][field])
+                self.assertEqual(result["archivesWritten"]["paths"], [str(o.VAULT / review["id"])])
+                self.assertTrue(result["observed"])
+                location = o.VAULT / review["id"]
+                observed = (before - o.physical_size(self.repo) if mode == "freeze" else 0) - o.physical_size(location)
+                self.assertEqual(result["bytesFreed"], observed)
+                self.assertEqual(result["bytesFreedEstimate"], estimate["bytesFreedEstimate"])
+                self.assertEqual(result["bytesUsedEstimate"], estimate["bytesUsedEstimate"])
+
+    def test_legacy_preserved_manifest_without_allocation_fields_can_freeze(self):
+        identifier, (location, manifest) = self.freeze()
+        for role in manifest["capture"]["roles"]:
+            for entry in role["entries"].values():
+                entry.pop("allocatedSize", None)
+        for entry in manifest["capture"]["git"].values():
+            entry.pop("allocatedSize", None)
+        manifest.pop("outcome", None)
+        o.save(location / "manifest.json", manifest)
+        life.freeze_retire(identifier)
+        self.assertEqual(life.archive_record(identifier)[1]["state"], "frozen")
+        self.assertFalse((self.repo / ".git").exists())
+        life.rehydrate(identifier, offline=True)
+        self.assertEqual((self.repo / "source.txt").read_text(), "source\n")
+
+    def test_failed_preserve_reports_only_observed_archive_effects(self):
+        review = life.preview_freeze(str(self.repo), "origin", "freeze")
+        with patch.object(life, "prove_recovery", side_effect=o.Refusal("Recovery verification failed.")):
+            with self.assertRaises(o.Refusal) as stopped:
+                life.execute_freeze(review["id"])
+        outcome = stopped.exception.outcome
+        self.assertTrue(outcome["observed"])
+        self.assertEqual(outcome["checkoutsRemoved"]["count"], 0)
+        self.assertEqual(outcome["archivesWritten"]["count"], 1)
+        self.assertEqual(outcome["refsPushed"], [])
+        self.assertEqual(life.archive_record(review["id"])[1]["state"], "incomplete")
+        self.assertTrue((self.repo / ".git").is_dir())
+
+    def test_preserve_review_cannot_be_executed_as_freeze(self):
+        review = life.preview_freeze(str(self.repo), "origin", "preserve")
+        with self.assertRaisesRegex(o.Refusal, "mode"):
+            life.execute_freeze(review["id"], "freeze")
+        self.assertTrue((self.repo / ".git").is_dir())
+        self.assertFalse((o.VAULT / review["id"]).exists())
+        result = life.execute_freeze(review["id"], "preserve")
+        self.assertEqual(result["state"], "ready")
+        self.assertTrue((self.repo / ".git").is_dir())
+
+    def test_freeze_removal_stops_leave_preserved_entry_and_reason(self):
+        original = life.freeze_retire
+        def verify_failure(identifier):
+            with patch.object(life, "verify_archives", side_effect=o.Refusal("Recovery verification failed.")):
+                return original(identifier)
+        def process_open(identifier):
+            with patch.object(life, "open_files", side_effect=o.Refusal(life.BLOCKERS["open-processes"][0])):
+                return original(identifier)
+        def file_changed(identifier):
+            (self.repo / ".env").write_text("new work after review")
+            return original(identifier)
+        for failure, reason in ((verify_failure, "verification failed"), (process_open, "Close it"),
+                                (file_changed, "changed")):
+            with self.subTest(failure=failure.__name__):
+                review = life.preview_freeze(str(self.repo), "origin", "freeze")
+                with patch.object(life, "freeze_retire", side_effect=failure):
+                    result = life.execute_freeze(review["id"])
+                manifest = life.archive_record(review["id"])[1]
+                self.assertEqual(result["state"], "ready")
+                self.assertEqual(manifest["state"], "ready")
+                self.assertIn(reason, result["message"])
+                self.assertIn(reason, manifest["message"])
+                self.assertTrue((self.repo / ".git").is_dir())
 
     def test_freeze_archives_ignored_files_preserves_stashes_and_private_refs(self):
         (self.repo / ".env").write_text("synthetic fixture values")

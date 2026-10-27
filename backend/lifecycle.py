@@ -13,15 +13,27 @@ import subprocess
 import tarfile
 import tempfile
 import uuid
+import preferences
 
 O = None
 REBUILD = {"node_modules", ".venv", "venv", "__pycache__", ".turbo", ".next", ".nuxt",
            ".svelte-kit", ".parcel-cache", ".pytest_cache", ".mypy_cache", ".ruff_cache",
            ".build", "build", "dist", "target", "coverage", "playwright-report", "test-results"}
 COMMANDS = {"github-status", "remote-add", "github-create", "commit-preview", "commit-execute",
-            "freeze-preview", "freeze-execute", "freeze-retire", "rehydrate", "vault-list",
-            "github-repos", "clone-preview", "clone-execute"}
+            "freeze-preview", "freeze-blockers", "freeze-execute", "freeze-retire", "rehydrate", "vault-list",
+            "github-repos", "clone-preview", "clone-execute",
+            "backup-run", "backup-verify", "backup-status", "backup-remove"}
+BACKUP_FILES = {"source.bundle", "git-metadata.tar.gz", "local-files.tar.gz"}
+BACKUP_FOLDER = "Igloo-Freezer-Backup"
 MARKER = ".freeze-dried.json"
+BLOCKERS = {
+    "no-remote": ("Connect a remote before preserving or freezing this project.", "connect-remote"),
+    "no-files": ("Add files to this project, then commit them.", None),
+    "no-commit": ("Make an initial commit before freezing this project.", "commit"),
+    "changed-source": ("Commit or resolve changed/untracked source first. Ignored local-only files will be preserved separately.", "commit"),
+    "open-processes": ("A process still has files open in this project. Close it before freezing.", None),
+    "own-source": ("The running Igloo app is protected from freezing. Its Git setup and source commits are available.", None),
+}
 
 
 def configure(organizer):
@@ -36,7 +48,7 @@ def refuse(message):
 def vault():
     p = O.VAULT
     if p.is_symlink():
-        refuse("The archive vault is a symbolic link. Choose a normal project folder.")
+        refuse("The Freezer is a symbolic link. Choose a normal project folder.")
     p.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     p.mkdir(mode=0o700, exist_ok=True)
     p.chmod(0o700)
@@ -116,7 +128,7 @@ def stable(entries):
 def checked(value, missing=False):
     p = O.checked_path(str(value), allow_missing=missing)
     if O.under(p, O.VAULT):
-        refuse("The archive vault is not a project checkout.")
+        refuse("The Freezer is not a project checkout.")
     return p
 
 
@@ -233,7 +245,7 @@ def reviewed_plan(kind, identifier):
     p = plan_path(kind, identifier)
     value = O.load(p)
     if not value or O.age_seconds(value["created"]) > 900 or value.get("executed"):
-        refuse("This review expired or was already used. Make a new preview.")
+        refuse("This review expired or was already used. Make a new review.")
     return p, value
 
 
@@ -317,12 +329,60 @@ def open_files(roots):
         for line in result.stdout.splitlines():
             if line.startswith("p"): pid = line[1:]
             if line.startswith("n") and pid != str(os.getpid()):
-                refuse("A process still has files open in this project. Close it before freezing.")
+                refuse(BLOCKERS["open-processes"][0])
+
+
+def initial_commit_has_files(state):
+    """Inspect collected Git status only; do not hash, query Git or scan files."""
+    root = Path(state["path"])
+    for change in state["changes"]:
+        name, status = change["path"], change["status"]
+        if name.endswith("/") or "D" in status:
+            continue
+        path = root / name
+        if O.config_name(path) and not O.is_template(path):
+            continue
+        return True
+    return False
+
+
+def blockers_for_states(states, processes):
+    """Use already collected local facts; no hashing, Git calls or network access."""
+    main = next((s for s in states if Path(s["common"]).parent == Path(s["path"])), states[0])
+    roots = [Path(s["path"]) for s in states]
+    changed = False
+    for state in states:
+        nested = [p for p in roots if p != Path(state["path"]) and O.under(p, Path(state["path"]))]
+        changed |= any(not any(O.under(Path(state["path"]) / c["path"].rstrip("/"), p) for p in nested)
+                       for c in state["changes"])
+    unborn = [state for state in states if not state["head"]]
+    no_files = any(not initial_commit_has_files(state) for state in unborn)
+    facts = {"no-remote": not main["remotes"], "no-files": no_files,
+             "no-commit": bool(unborn) and not no_files,
+             "changed-source": changed and not unborn,
+             "open-processes": processes is not None and any(O.under(Path(p["path"]), root)
+                                                             for p in processes for root in roots),
+             "own-source": any(O.under(O.APP, root) for root in roots)}
+    return [{"code": code, "message": message, "fix": fix}
+            for code, (message, fix) in BLOCKERS.items() if facts[code]]
+
+
+def freeze_blockers(path):
+    p = known_checkout(path, allow_app=True)
+    states = [O.git_state(w["worktree"]) for w in O.worktree_list(str(p))
+              if isinstance(w.get("worktree"), str) and Path(w["worktree"]).is_dir()]
+    if not states:
+        refuse("The main checkout could not be verified.")
+    try:
+        processes = O.process_cwds()
+    except O.Refusal:
+        processes = None
+    return {"path": str(p), "blockers": blockers_for_states(states, processes)}
 
 
 def group_state(path):
     if O.under(O.APP, Path(path)):
-        refuse("The running Igloo app is protected from freezing. Its Git setup and source commits are available.")
+        refuse(BLOCKERS["own-source"][0])
     p = known_checkout(path)
     common = Path(O.common_dir(p))
     primary = common.parent
@@ -340,20 +400,21 @@ def group_state(path):
             if state["common"] != str(common):
                 refuse("A worktree points to different Git metadata.")
             if not state["head"]:
-                refuse("Make an initial commit before freezing this project.")
+                code = "no-commit" if initial_commit_has_files(state) else "no-files"
+                refuse(BLOCKERS[code][0])
             states.append(state)
     if not states or not any(s["path"] == str(primary) for s in states):
         refuse("The main checkout could not be verified.")
     cwds = O.process_cwds()
     if O.activity(str(primary), cwds):
-        refuse("Close this project's shells, agents and running applications before freezing.")
+        refuse(BLOCKERS["open-processes"][0])
     paths = [Path(s["path"]) for s in states]
     for state in states:
         nested = [r for r in paths if r != Path(state["path"]) and O.under(r, Path(state["path"]))]
         remaining = [c for c in state["changes"]
                      if not any(O.under(Path(state["path"]) / c["path"].rstrip("/"), n) for n in nested)]
         if remaining:
-            refuse("Commit or resolve changed/untracked source first. Ignored local-only files will be archived separately.")
+            refuse(BLOCKERS["changed-source"][0])
     for name in ("MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-apply", "rebase-merge", "index.lock"):
         if (common / name).exists() or any((Path(s["path"]) / ".git" / name).exists() for s in states if (Path(s["path"]) / ".git").is_dir()):
             refuse("Finish the active Git operation before freezing.")
@@ -423,8 +484,12 @@ def capture(primary, common, states):
     return {"roles": roles, "git": metadata_inventory(common), "refs": read_refs(primary)}
 
 
-def preview_freeze(path, remote):
+def preview_freeze(path, remote, mode="preserve"):
+    if mode not in {"preserve", "freeze"}:
+        refuse("Choose preserve or freeze mode for this review.")
     primary, common, states = group_state(path)
+    if not states[0]["remotes"]:
+        refuse(BLOCKERS["no-remote"][0])
     destination = selected_destination(primary, remote)
     roots = [Path(s["path"]) for s in states]
     roots = [p for p in roots if not any(p != q and O.under(p, q) for q in roots)]
@@ -444,17 +509,30 @@ def preview_freeze(path, remote):
     if not publish:
         refuse("No ordinary branches or tags are available to publish. Preserve this repository manually.")
     local = [(r, n, e) for r in captured["roles"] for n, e in r["entries"].items() if e.get("local", True)]
-    plan = {"id": uuid.uuid4().hex, "created": O.now(), "name": primary.name, "path": str(primary),
+    plan = {"id": uuid.uuid4().hex, "mode": mode, "created": O.now(), "name": primary.name, "path": str(primary),
             "remote": remote, "destination": destination, "roots": [str(p) for p in roots],
-            "capture": captured, "publish": publish, "localRefs": local_refs}
+            "capture": captured, "publish": publish, "localRefs": local_refs, "held": O.on_hold(str(primary))}
+    plan["checkoutBytes"] = sum(O.physical_size(p) for p in roots)
+    # Allocation is an estimate input, not part of the preservation identity.
+    # Keep signatures compatible with existing Preserved manifests.
+    archive_estimate = sum((Path(r["path"]) / name).lstat().st_blocks * 512
+                           for r in captured["roles"] for name, e in r["entries"].items() if e["kind"] == "file")
+    archive_estimate += sum((common / name).lstat().st_blocks * 512
+                            for name, e in captured["git"].items() if e["kind"] == "file")
+    net_estimate = (plan["checkoutBytes"] if mode == "freeze" else 0) - archive_estimate
+    plan["outcome"] = O.outcome_summary(
+        checkouts=[r["path"] for r in captured["roles"]] if mode == "freeze" else [],
+        estimate=max(0, net_estimate), used_estimate=max(0, -net_estimate),
+        archive_count=1,
+        refs=[dict(r, destination=destination) for r in publish])
     O.save(plan_path("freeze", plan["id"]), plan)
-    return {"id": plan["id"], "created": plan["created"], "name": plan["name"], "path": plan["path"],
+    return {"id": plan["id"], "mode": mode, "held": plan["held"], "created": plan["created"], "name": plan["name"], "path": plan["path"],
             "destination": destination, "publish": publish, "localRefs": local_refs,
             "checkouts": [r["path"] for r in captured["roles"]],
             "localCount": len(local), "localSize": sum(e["size"] for _, _, e in local),
             "localFiles": [str(Path(r["path"]) / n) for r, n, _ in local],
             "excluded": [str(Path(r["path"]) / n) for r in captured["roles"] for n in r["excluded"]],
-            "archiveLocation": str(O.VAULT),
+            "archiveLocation": str(O.VAULT), "outcome": plan["outcome"],
             "message": "Local archives are private-permission files on this Mac, not encrypted and never uploaded."}
 
 
@@ -614,12 +692,40 @@ def current_matches(plan):
         refuse("The remote destination changed since review.")
     fresh = capture(primary, common, states)
     if stable(fresh) != stable(plan["capture"]):
-        refuse("Source, local files or Git metadata changed since review. Make a new freeze preview.")
+        refuse("Source, local files or Git metadata changed since review. Make a new freeze review.")
     return primary, common, states
 
 
-def execute_freeze(identifier):
+def record_freeze_outcome(plan, manifest, location, refs):
+    removed = manifest["state"] == "frozen"
+    wrote_archive = any((location / name).is_file() for name in
+                        ("source.bundle", "git-metadata.tar.gz", "local-files.tar.gz"))
+    outcome = O.outcome_summary(
+        checkouts=[r["path"] for r in manifest["capture"]["roles"]] if removed else [],
+        estimate=plan.get("outcome", {}).get("bytesFreedEstimate", 0),
+        used_estimate=plan.get("outcome", {}).get("bytesUsedEstimate", 0),
+        archives=[location] if wrote_archive else [], refs=refs, observed=True)
+    if manifest["state"] != ("frozen" if plan.get("mode") == "freeze" else "ready"):
+        outcome["held"] = [{"path": plan["path"], "reason": manifest["message"]}]
+    manifest["outcome"] = outcome
+    O.save(location / "manifest.json", manifest)
+    removed_bytes = (plan.get("checkoutBytes", 0) - sum(O.physical_size(p) for p in plan["roots"])) if removed else 0
+    # Include the durable summary itself in allocated recovery bytes. A second
+    # write normally keeps the same allocation; recalculate if it crosses a block.
+    for _ in range(3):
+        freed = removed_bytes - O.physical_size(location)
+        if outcome["bytesFreed"] == freed:
+            break
+        outcome["bytesFreed"] = freed
+        O.save(location / "manifest.json", manifest)
+    return outcome
+
+
+def execute_freeze(identifier, mode=None):
     plan_location, plan = reviewed_plan("freeze", identifier)
+    accepted_mode = plan.get("mode", "preserve")
+    if accepted_mode not in {"preserve", "freeze"} or mode is not None and mode != accepted_mode:
+        refuse("The requested mode does not match this review. Make a new review.")
     primary, common, states = current_matches(plan)
     open_files([Path(p) for p in plan["roots"]])
     captured = plan["capture"]
@@ -637,6 +743,7 @@ def execute_freeze(identifier):
                 "publish": plan["publish"], "localRefs": plan["localRefs"], "checksums": {},
                 "moves": [], "message": "Archive preparation is incomplete; source was not removed."}
     O.save(location / "manifest.json", manifest)
+    confirmed_refs = []
     try:
         O.progress("Building a local Git recovery copy…")
         rc, _ = git(primary, "bundle", "create", str(location / "source.bundle"), "--all", "HEAD", timeout=600)
@@ -673,6 +780,7 @@ def execute_freeze(identifier):
         advertised = {(line.split("\t")[1], line.split("\t")[0]) for line in raw.splitlines() if "\t" in line}
         if rc or any((r["ref"], r["sha"]) not in advertised for r in plan["publish"]):
             refuse("The published refs could not be verified. Source remains in place.")
+        confirmed_refs = [dict(r, destination=plan["destination"]) for r in plan["publish"]]
         # Push may update tracking refs; recapture and preserve that metadata too.
         fresh_primary, fresh_common, fresh_states = group_state(str(primary))
         after = capture(fresh_primary, fresh_common, fresh_states)
@@ -691,16 +799,47 @@ def execute_freeze(identifier):
         if stable(capture(fresh_primary, fresh_common, fresh_states)) != stable(after):
             refuse("The project changed during recovery verification. Source remains in place.")
         manifest.update(state="ready", verifiedAt=O.now(),
-                        message="Archive recovery and published refs verified. Checkouts are still present.")
+                        message="Preserved. Recovery and published refs verified. Checkouts are still present.")
         O.save(location / "manifest.json", manifest)
         plan["executed"] = O.now()
         O.save(plan_location, plan)
-        return {"message": "Archive and reviewed refs verified. Use the Frozen projects shelf to finish removal when ready."}
-    except Exception:
+    except Exception as e:
         manifest["state"] = "incomplete"
-        manifest["message"] = "Preparation did not finish. Source checkouts were not removed."
+        manifest["message"] = str(e) if isinstance(e, O.Refusal) else "Preservation did not finish. Source checkouts were not removed."
         O.save(location / "manifest.json", manifest)
+        e.outcome = record_freeze_outcome(plan, manifest, location, confirmed_refs)
         raise
+    if accepted_mode == "freeze":
+        try:
+            freeze_retire(identifier)
+        except (O.Refusal, OSError) as e:
+            # Preserve has completed. A refused removal keeps its exact recovery
+            # state and reason, including an interrupted move journal if present.
+            manifest = O.load(location / "manifest.json")
+            reason = str(e) if isinstance(e, O.Refusal) else "Checkout removal stopped. Review the recovery history."
+            manifest["message"] = ("Preserved. Freeze stopped: " if manifest["state"] == "ready"
+                                   else "Freeze was interrupted: ") + reason
+            O.save(location / "manifest.json", manifest)
+    manifest = O.load(location / "manifest.json")
+    outcome = record_freeze_outcome(plan, manifest, location, confirmed_refs)
+    result = {"archiveID": identifier, "mode": accepted_mode, "state": manifest["state"],
+              "outcome": outcome, "message": manifest["message"]}
+    if O.CONFIG.get("freezerBackupRoot"):
+        try:
+            backup_run([identifier])
+            result["backup"] = next(r for r in backup_status()["archives"] if r["id"] == identifier)
+        except Exception as error:
+            # The preservation result is durable already. Backup failure must
+            # never turn it into a failed Preserve or invite a duplicate push.
+            reason = backup_failures().get(identifier) or backup_reason(error)
+            result["backup"] = backup_row(identifier, reason=reason)
+            try:
+                failures = backup_failures()
+                failures[identifier] = reason
+                save_backup_failures(failures)
+            except Exception:
+                pass
+    return result
 
 
 def archive_record(identifier):
@@ -736,11 +875,12 @@ def freeze_retire(identifier):
     location, manifest = archive_record(identifier)
     if manifest["state"] != "ready":
         refuse("Only a fully verified archive is ready for checkout removal.")
+    checkout_bytes = sum(O.physical_size(p) for p in manifest["roots"])
     verify_archives(location, manifest)
     primary, common, states = group_state(manifest["path"])
     open_files([Path(p) for p in manifest["roots"]])
     if stable(capture(primary, common, states)) != stable(manifest["capture"]):
-        refuse("This project changed after archiving. Build a new verified archive first.")
+        refuse("This project changed after Preserve. Preserve it again before freezing.")
     # Verify recovery again immediately before any source leaves its original path.
     prove_recovery(location, manifest["capture"])
     if stable(capture(primary, common, states)) != stable(manifest["capture"]):
@@ -756,12 +896,12 @@ def freeze_retire(identifier):
         for move in manifest["moves"]:
             if O.under(original, Path(move["original"])):
                 return Path(move["temporary"]) / original.relative_to(move["original"])
-        refuse("A source root is outside the reviewed move plan.")
+        refuse("A source root is outside the reviewed move review.")
     try:
         for move in manifest["moves"]:
             original, temporary = Path(move["original"]), Path(move["temporary"])
             if temporary.exists() or temporary.is_symlink():
-                refuse("A retirement staging path already exists. Source was not overwritten.")
+                refuse("A checkout removal staging path already exists. Source was not overwritten.")
             rename_exclusive(original, temporary)
             renamed.append(move)
         for role in manifest["capture"]["roles"]:
@@ -770,11 +910,11 @@ def freeze_retire(identifier):
                       if r["path"] != role["path"] and O.under(Path(r["path"]), Path(role["path"]))]
             entries, _ = inventory(root, set(role["tracked"]), nested, excluded_override=set(role["excluded"]))
             if role.get("pointer") and (root / ".git").read_text() != role["pointer"]:
-                refuse("A worktree pointer changed during retirement.")
+                refuse("A worktree pointer changed during checkout removal.")
             if entries != role["entries"]:
-                refuse("A file changed during retirement. Original checkouts were preserved.")
+                refuse("A file changed during checkout removal. Original checkouts were preserved.")
         if metadata_inventory(mapped(common)) != manifest["capture"]["git"]:
-            refuse("Git metadata changed during retirement. Original checkouts were preserved.")
+            refuse("Git metadata changed during checkout removal. Original checkouts were preserved.")
         open_files([Path(m["temporary"]) for m in manifest["moves"]])
     except Exception:
         for move in reversed(renamed):
@@ -796,13 +936,16 @@ def freeze_retire(identifier):
         shutil.rmtree(temporary)
     manifest.update(state="frozen", frozenAt=O.now(), message="Checkouts removed; local archives and a project marker remain.")
     O.save(location / "manifest.json", manifest)
-    return {"message": "Safely frozen. Local-only files and Git recovery are in the vault; the marker can be thawed whenever you are ready."}
+    remaining = sum(O.physical_size(p) for p in manifest["roots"])
+    return {"outcome": O.outcome_summary(checkouts=[r["path"] for r in manifest["capture"]["roles"]],
+                                         estimate=checkout_bytes, freed=checkout_bytes - remaining, observed=True),
+            "message": "Safely frozen. Local-only files and Git recovery are in the Freezer; the marker can be thawed whenever you are ready."}
 
 
 def rehydrate(identifier, offline=False):
     location, manifest = archive_record(identifier)
     if manifest["state"] not in {"frozen", "retiring", "removing", "rehydrating"}:
-        refuse("This archive is not a frozen or interrupted-retirement project.")
+        refuse("Choose a Frozen project or an interrupted checkout removal.")
     verify_archives(location, manifest)
     # Recover interruptions before removal, without overwriting anything the user added.
     if manifest["state"] == "retiring":
@@ -816,7 +959,7 @@ def rehydrate(identifier, offline=False):
                     else:
                         refuse("A project path is occupied during recovery. Keep both copies and review it manually.")
                 rename_exclusive(temporary, original)
-        manifest.update(state="ready", message="Interrupted retirement rolled back. Checkouts are present.")
+        manifest.update(state="ready", message="Interrupted checkout removal rolled back. Checkouts are present.")
         O.save(location / "manifest.json", manifest)
         return {"message": "Interrupted removal rolled back. All moved checkouts are back in place."}
     resumed = set()
@@ -922,15 +1065,325 @@ def rehydrate(identifier, offline=False):
     return {"message": message}
 
 
+def backup_reason(error):
+    return str(error) if isinstance(error, O.Refusal) else "The backup could not complete. Check the folder's permissions and retry."
+
+
+def backup_destination():
+    raw = O.CONFIG.get("freezerBackupRoot", "")
+    if not raw:
+        return {"cloud": False, "acceptanceRoot": "", "cloudAccepted": False}
+    root = Path(raw).expanduser()
+    if not root.is_absolute() or ".." in root.parts:
+        refuse("Choose an absolute Freezer backup folder without traversal.")
+    # Compare components, not string prefixes. Check both lexical and resolved
+    # paths on both sides: cloud folders themselves can redirect to a provider.
+    def folded(path):
+        parts = tuple(part.casefold() for part in path.parts)
+        # macOS exposes /Users through the Data volume firmlink as well.
+        # Normalize only that spelling for classification; consent below still
+        # uses the resolved destination identity, not this comparison value.
+        if parts[:5] == ("/", "system", "volumes", "data", "users"):
+            return ("/",) + parts[4:]
+        return parts
+    roots = [folded(root), folded(root.resolve())]
+    home = Path.home()
+    clouds = [home / "Library/Mobile Documents", home / "Library/CloudStorage"]
+    parents = [folded(path) for cloud in clouds for path in (cloud, cloud.resolve())]
+    cloud = any(parts[:len(parent)] == parent for parts in roots for parent in parents)
+    identity = preferences.backup_root_identity(root)
+    return {"cloud": cloud, "acceptanceRoot": identity,
+            "cloudAccepted": O.CONFIG.get("freezerBackupCloudAcceptedRoot", "") == identity}
+
+
+def backup_base(create=False):
+    raw = O.CONFIG.get("freezerBackupRoot", "")
+    if not raw:
+        refuse("Choose a Freezer backup folder first.")
+    root = Path(raw).expanduser()
+    if not root.is_absolute() or ".." in root.parts:
+        refuse("Choose an absolute Freezer backup folder without traversal.")
+    resolved = root.resolve()
+    destination = backup_destination()
+    if destination["cloud"] and not destination["cloudAccepted"]:
+        refuse("Confirm that local-only files will upload unencrypted before using this cloud backup folder.")
+    base = resolved / BACKUP_FOLDER
+    for protected in (O.VAULT.resolve(), O.STATE.resolve()):
+        if O.under(resolved, protected) or O.under(protected, base):
+            refuse("The backup folder must be separate from the Freezer and Igloo's state folder.")
+    if root.is_symlink() or base.is_symlink():
+        refuse("The backup folder cannot be a symbolic link.")
+    if not root.is_dir():
+        refuse("The backup folder is missing or unavailable. Reconnect it and retry.")
+    if base.exists() and not base.is_dir():
+        refuse("The backup location is not a folder.")
+    if create:
+        base.mkdir(mode=0o700, exist_ok=True)
+        base.chmod(0o700)
+    return base
+
+
+def backup_sources():
+    # Do not create the Freezer during status/verification or hide damaged
+    # entries: a damaged live archive still prevents removal of its copy.
+    if O.VAULT.is_symlink():
+        refuse("The Freezer cannot be a symbolic link.")
+    if not O.VAULT.exists():
+        return {}
+    sources = {}
+    for location in O.VAULT.iterdir():
+        if not re.fullmatch(r"[0-9a-f]{32}", location.name):
+            continue
+        manifest = None
+        try:
+            if not location.is_symlink() and not (location / "manifest.json").is_symlink():
+                manifest = backup_json(location / "manifest.json")
+        except (OSError, ValueError):
+            pass
+        if isinstance(manifest, dict) and manifest.get("id") == location.name and manifest.get("state") == "rehydrated":
+            continue
+        sources[location.name] = location
+    return sources
+
+
+def backup_failures():
+    try:
+        value = O.load(O.STATE / "freezer-backup.json", {})
+        if isinstance(value, dict) and value.get("root") == O.CONFIG.get("freezerBackupRoot", ""):
+            failures = value.get("failures", {})
+            if isinstance(failures, dict):
+                return dict(failures)
+    except (OSError, ValueError):
+        pass
+    return {}
+
+
+def save_backup_failures(failures):
+    O.save(O.STATE / "freezer-backup.json", {"version": 1,
+           "root": O.CONFIG.get("freezerBackupRoot", ""), "failures": failures})
+
+
+def backup_manifest(location, identifier):
+    if location.is_symlink() or not location.is_dir() or (location / "manifest.json").is_symlink():
+        refuse("A Freezer archive is missing or is a symbolic link.")
+    manifest = backup_json(location / "manifest.json")
+    checksums = manifest.get("checksums") if isinstance(manifest, dict) else None
+    if not isinstance(manifest, dict) or manifest.get("id") != identifier or not isinstance(checksums, dict) or set(checksums) != BACKUP_FILES:
+        refuse("A Freezer archive has no complete recovery manifest.")
+    if any(not isinstance(h, str) or not re.fullmatch(r"[0-9a-f]{64}", h) for h in checksums.values()):
+        refuse("A Freezer archive has invalid checksums.")
+    return manifest
+
+
+def backup_receipt(copy, identifier):
+    if copy.is_symlink() or not copy.is_dir() or (copy / "backup.json").is_symlink():
+        refuse("The backup copy is missing or is a symbolic link.")
+    receipt = backup_json(copy / "backup.json")
+    checksums = receipt.get("checksums") if isinstance(receipt, dict) else None
+    if (not isinstance(receipt, dict) or receipt.get("version") != 1 or receipt.get("id") != identifier
+            or not isinstance(checksums, dict) or set(checksums) != BACKUP_FILES | {"manifest.json"}
+            or not isinstance(receipt.get("lastVerified"), str)):
+        refuse("The backup copy has no valid verification receipt.")
+    if any(not isinstance(h, str) or not re.fullmatch(r"[0-9a-f]{64}", h) for h in checksums.values()):
+        refuse("The backup copy has invalid checksums.")
+    return receipt
+
+
+def backup_regular(path):
+    # O_NOFOLLOW prevents a replaced file from redirecting archive reads.
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            refuse("Backup recovery files must be normal files.")
+        stream = os.fdopen(descriptor, "rb")
+    except Exception:
+        os.close(descriptor)
+        raise
+    return stream
+
+
+def backup_hash(path):
+    checksum = hashlib.sha256()
+    with backup_regular(path) as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            checksum.update(chunk)
+    return checksum.hexdigest()
+
+
+def backup_json(path):
+    try:
+        with backup_regular(path) as stream:
+            return json.load(stream)
+    except FileNotFoundError:
+        return None
+
+
+def verify_backup_copy(copy, identifier, source=None):
+    receipt = backup_receipt(copy, identifier)
+    for name, expected in receipt["checksums"].items():
+        path = copy / name
+        if path.is_symlink() or not path.is_file() or backup_hash(path) != expected:
+            refuse("Backup verification failed: a recovery file is missing or has changed.")
+    if source is not None:
+        manifest = backup_manifest(source, identifier)
+        for name, expected in manifest["checksums"].items():
+            path = source / name
+            if path.is_symlink() or not path.is_file() or backup_hash(path) != expected or receipt["checksums"][name] != expected:
+                refuse("Backup verification failed: the source archive and its copy do not match.")
+    # The copied manifest is a snapshot. Freeze/Thaw update the live manifest,
+    # so compare its saved bytes to the receipt, not to live lifecycle state.
+    receipt["lastVerified"] = O.now()
+    O.save(copy / "backup.json", receipt)
+    return receipt
+
+
+def write_backup_copy(base, identifier, source):
+    destination = base / identifier
+    if destination.exists() or destination.is_symlink():
+        verify_backup_copy(destination, identifier, source)
+        return
+    manifest = backup_manifest(source, identifier)
+    checksums = dict(manifest["checksums"], **{"manifest.json": backup_hash(source / "manifest.json")})
+    with tempfile.TemporaryDirectory(prefix=".backup-", dir=base) as temporary:
+        stage = Path(temporary)
+        stage.chmod(0o700)
+        for name, expected in checksums.items():
+            target = stage / name
+            with backup_regular(source / name) as incoming, os.fdopen(os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as outgoing:
+                shutil.copyfileobj(incoming, outgoing, length=1024 * 1024)
+                outgoing.flush()
+                os.fsync(outgoing.fileno())
+            if backup_hash(target) != expected:
+                refuse("Backup verification failed while copying. No copy was published.")
+        O.save(stage / "backup.json", {"version": 1, "id": identifier,
+               "checksums": checksums, "lastVerified": O.now()})
+        verify_backup_copy(stage, identifier, source)
+        rename_exclusive(stage, destination)
+
+
+def backup_row(identifier, copy=None, source=None, reason=""):
+    row = {"id": identifier, "copyID": identifier, "backedUp": False,
+           "lastVerified": None, "missing": True, "status": "Not backed up", "reason": reason}
+    if copy is not None:
+        try:
+            receipt = backup_receipt(copy, identifier)
+            row["lastVerified"] = receipt["lastVerified"]
+            row["missing"] = any((copy / n).is_symlink() or not (copy / n).is_file() for n in receipt["checksums"])
+            if source is not None:
+                manifest = backup_manifest(source, identifier)
+                if any(receipt["checksums"][n] != h for n, h in manifest["checksums"].items()):
+                    row["reason"] = "The backup copy does not match the Freezer archive."
+            if not row["missing"] and not row["reason"]:
+                row.update(backedUp=True, status="Backed up")
+        except (O.Refusal, OSError, ValueError, TypeError):
+            if not row["reason"]:
+                row["reason"] = "No valid backup copy is available."
+    if not row["backedUp"] and not row["reason"]:
+        row["reason"] = "A recovery file is missing from the backup." if row["missing"] else "The copy has not been verified."
+    return row
+
+
+def backup_status():
+    result = {"configured": bool(O.CONFIG.get("freezerBackupRoot")), "available": False,
+              "reason": "", "archives": [], "orphans": [],
+              "cloud": False, "acceptanceRoot": "", "cloudAccepted": False}
+    try:
+        result.update(backup_destination())
+        sources = backup_sources()
+    except (O.Refusal, OSError, ValueError, TypeError, KeyError) as error:
+        result["reason"] = result["error"] = backup_reason(error)
+        return result
+    reason, base, copies = "", None, []
+    try:
+        base = backup_base()
+        if base.exists():
+            copies = sorted(base.iterdir())
+    except (O.Refusal, OSError, ValueError) as error:
+        reason = backup_reason(error)
+        base = None
+        if result["configured"]:
+            result["error"] = reason
+    failures = backup_failures()
+    archives = [backup_row(identifier, base / identifier if base else None, source,
+                           reason or failures.get(identifier, "")) for identifier, source in sorted(sources.items())]
+    orphans = []
+    for copy in copies:
+        if re.fullmatch(r"[0-9a-f]{32}", copy.name) and copy.name not in sources:
+            orphans.append(backup_row(copy.name, copy, reason=failures.get(copy.name, "")))
+    result.update(available=base is not None, reason=reason, archives=archives, orphans=orphans)
+    return result
+
+
+def backup_run(identifiers=None):
+    return backup_process(False, identifiers)
+
+
+def backup_verify():
+    return backup_process(True)
+
+
+def backup_process(verify_only, identifiers=None):
+    base = backup_base(create=not verify_only)
+    sources = backup_sources()
+    selected = set(identifiers) if identifiers is not None else set(sources)
+    if verify_only and base.exists():
+        selected.update(p.name for p in base.iterdir() if re.fullmatch(r"[0-9a-f]{32}", p.name))
+    failures = backup_failures()
+    failed = False
+    for identifier in sorted(selected):
+        try:
+            if not re.fullmatch(r"[0-9a-f]{32}", identifier):
+                refuse("Invalid backup copy identifier.")
+            if verify_only:
+                verify_backup_copy(base / identifier, identifier, sources.get(identifier))
+            else:
+                write_backup_copy(base, identifier, sources[identifier])
+            failures.pop(identifier, None)
+        except (O.Refusal, OSError, ValueError, TypeError, KeyError) as error:
+            failures[identifier] = backup_reason(error)
+            failed = True
+    save_backup_failures(failures)
+    if failed:
+        refuse("Backup verification failed for one or more archives. See backup-status for each reason.")
+    result = backup_status()
+    result["message"] = "Freezer backup verified." if verify_only else "Freezer backup completed."
+    return result
+
+
+def backup_remove(identifier):
+    if not re.fullmatch(r"[0-9a-f]{32}", identifier):
+        refuse("Invalid backup copy identifier.")
+    base = backup_base()
+    if identifier in backup_sources():
+        refuse("This archive is still in the Freezer. Its backup copy cannot be removed.")
+    copy = base / identifier
+    backup_receipt(copy, identifier)
+    # Delete only recognized flat files, never traverse directories or links.
+    entries = list(copy.iterdir())
+    if any(p.name not in BACKUP_FILES | {"manifest.json", "backup.json"} or p.is_symlink() or not p.is_file() for p in entries):
+        refuse("The backup copy contains unexpected files. Review it manually.")
+    for path in entries:
+        path.unlink()
+    copy.rmdir()
+    failures = backup_failures()
+    failures.pop(identifier, None)
+    save_backup_failures(failures)
+    return {"copyID": identifier, "removed": True, "message": "Copy removed from backup."}
+
+
 def vault_entries():
     base = O.VAULT
-    if not base.exists() or base.is_symlink():
-        return []
     rows = []
-    for p in base.iterdir():
-        if p.is_symlink() or not p.is_dir() or not re.fullmatch(r"[0-9a-f]{32}", p.name):
-            continue
+    try:
+        if not base.exists() or base.is_symlink():
+            return []
+        entries = list(base.iterdir())
+    except OSError:
+        return []  # backup-status carries the lookup error to the native caller.
+    for p in entries:
         try:
+            if p.is_symlink() or not p.is_dir() or not re.fullmatch(r"[0-9a-f]{32}", p.name):
+                continue
             m = O.load(p / "manifest.json")
             if m and m.get("id") == p.name:
                 rows.append({"id": m["id"], "name": m["name"], "path": m["path"], "state": m["state"],
@@ -940,20 +1393,42 @@ def vault_entries():
                              "leftovers": [v["temporary"] for v in m.get("moves", []) if Path(v["temporary"]).exists()]})
         except (OSError, ValueError, KeyError):
             continue
+    status_error = ""
+    try:
+        status = backup_status()
+        statuses = {row["id"]: row for row in status["archives"]}
+        status_error = status.get("error", "")
+    except (O.Refusal, OSError, ValueError, TypeError, KeyError) as error:
+        statuses = {}
+        status_error = backup_reason(error)
+    for row in rows:
+        if row["id"] in statuses:
+            row["backup"] = statuses[row["id"]]
+        elif status_error:
+            row["backup"] = dict(backup_row(row["id"], reason=status_error), error=status_error)
     return sorted(rows, key=lambda r: r["created"], reverse=True)
 
 
 def dispatch(command, args):
+    if command in {"backup-run", "backup-verify", "backup-status"}:
+        if args:
+            refuse("This backup command takes no arguments.")
+        return {"backup-run": backup_run, "backup-verify": backup_verify, "backup-status": backup_status}[command]()
+    if command == "backup-remove":
+        if len(args) != 1:
+            refuse("Choose one backup copy identifier to remove.")
+        return backup_remove(args[0])
     if command == "github-status": return github_status()
     if command == "remote-add": return connect_remote(*args)
     if command == "github-create": return create_private_repo(*args)
     if command == "commit-preview": return preview_commit(args[0], args[1:])
     if command == "commit-execute": return execute_commit(*args)
     if command == "freeze-preview": return preview_freeze(*args)
+    if command == "freeze-blockers": return freeze_blockers(*args)
     if command == "freeze-execute": return execute_freeze(*args)
     if command == "freeze-retire": return freeze_retire(*args)
     if command == "rehydrate": return rehydrate(args[0], offline=len(args)>1 and args[1]=="offline")
-    if command == "vault-list": return {"archives": vault_entries()}
+    if command == "vault-list": return {"archives": vault_entries(), "backup": backup_status()}
     if command == "github-repos": return github_repositories(*args)
     if command == "clone-preview": return preview_clones(args[0], args[1:])
     if command == "clone-execute": return execute_clones(*args)

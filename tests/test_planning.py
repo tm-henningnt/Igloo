@@ -53,6 +53,86 @@ class PlanningTests(unittest.TestCase):
         for changed in (dict(ageDays=None),dict(active=True),dict(activityKnown=False)):
             with self.subTest(changed=changed):
                 self.assertEqual(wizard.suggest({"projects":[self.project(**changed)]},wizard.defaults())[0]["action"],"keep")
+
+    def test_hold_overrides_wizard_suggestions_and_preparation(self):
+        self.records = [self.project(hold=True)]
+        row = wizard.suggest({"projects": self.records}, wizard.defaults())[0]
+        self.assertEqual((row["action"], row["reason"]), ("keep", "On hold."))
+        review = self.prepare("freeze")
+        self.assertEqual(review["rows"][0]["status"], "blocked")
+        self.assertEqual(review["rows"][0]["message"], "On hold.")
+        result = wizard.execute(review["id"])
+        self.assertEqual(result["rows"][0]["status"], "blocked")
+        self.assertTrue((self.repo / ".git").is_dir())
+
+    def test_hold_added_after_review_stops_wizard_cleanup(self):
+        review = self.prepare("cleanup")
+        self.records = [self.project(hold=True)]
+        result = wizard.execute(review["id"])
+        self.assertEqual(result["rows"][0]["status"], "blocked")
+        self.assertEqual(result["rows"][0]["message"], "On hold.")
+        self.assertTrue(self.cache.exists())
+
+    def test_manual_reviews_on_hold_still_allow_cleanup_preserve_and_freeze(self):
+        self.records = [self.project(hold=True)]
+        cleanup = o.preview_cleanup([str(self.cache)])
+        self.assertTrue(cleanup["held"])
+        result = o.execute_cleanup(cleanup["id"])
+        self.assertTrue(result["results"][0]["ok"])
+        preserve = life.preview_freeze(str(self.repo), "origin", "preserve")
+        self.assertTrue(preserve["held"])
+        self.assertEqual(life.execute_freeze(preserve["id"])["state"], "ready")
+        freeze = life.preview_freeze(str(self.repo), "origin", "freeze")
+        self.assertTrue(freeze["held"])
+        self.assertEqual(life.execute_freeze(freeze["id"])["state"], "frozen")
+
+    def test_cleanup_outcome_reports_trash_and_observed_zero_space_freed(self):
+        review = o.preview_cleanup([str(self.cache)])
+        outcome = review["outcome"]
+        self.assertEqual(outcome["checkoutsRemoved"], {"count": 0, "paths": []})
+        self.assertEqual(outcome["archivesWritten"]["count"], 0)
+        self.assertEqual(outcome["refsPushed"], [])
+        self.assertEqual(outcome["movedToTrash"], 1)
+        self.assertEqual(outcome["bytesFreedEstimate"], 0)
+        self.assertIsNone(outcome["bytesFreed"])
+        result = o.execute_cleanup(review["id"])["outcome"]
+        self.assertTrue(result["observed"])
+        self.assertEqual(result["movedToTrash"], 1)
+        self.assertEqual(result["bytesFreed"], outcome["bytesFreedEstimate"])
+        self.assertFalse(self.cache.exists())
+
+    def test_mixed_wizard_outcome_sums_ready_rows_and_records_blocked_projects(self):
+        second = self.root / "second"
+        rc, _ = o.run_git(self.repo, "clone", "--", str(self.repo), str(second))
+        self.assertEqual(rc, 0)
+        o.run_git(second, "remote", "set-url", "origin", str(self.bare))
+        third = self.root / "held"
+        self.records += [self.project(id=str(second), path=str(second), name="Second", candidates=[],
+                                      worktrees=[dict(path=str(second), exists=True)]),
+                         self.project(id=str(third), path=str(third), name="Held", hold=True, candidates=[],
+                                      worktrees=[dict(path=str(third), exists=False)])]
+        review = wizard.prepare({"rules": wizard.defaults(), "choices": [
+            {"path": str(self.repo), "action": "cleanup"},
+            {"path": str(second), "action": "freeze", "remote": "origin"},
+            {"path": str(third), "action": "freeze", "remote": "origin"}]})
+        estimate = review["outcome"]
+        self.assertEqual(estimate["checkoutsRemoved"], {"count": 1, "paths": [str(second)]})
+        self.assertEqual(estimate["archivesWritten"]["count"], 1)
+        self.assertIsNone(estimate["archivesWritten"]["paths"])
+        self.assertEqual(estimate["movedToTrash"], 1)
+        self.assertEqual(estimate["held"], [{"path": str(third), "reason": "On hold."}])
+        executed = wizard.execute(review["id"])
+        result = executed["outcome"]
+        for field in ("checkoutsRemoved", "refsPushed", "movedToTrash", "held"):
+            self.assertEqual(result[field], estimate[field])
+        for field in ("count", "location"):
+            self.assertEqual(result["archivesWritten"][field], estimate["archivesWritten"][field])
+        self.assertEqual(result["archivesWritten"]["paths"],
+                         [str(o.VAULT / executed["rows"][1]["archiveID"])])
+        self.assertTrue((Path(result["archivesWritten"]["paths"][0]) / "manifest.json").is_file())
+        self.assertTrue(result["observed"])
+        self.assertEqual(result["bytesFreedEstimate"], estimate["bytesFreedEstimate"])
+        self.assertIsInstance(result["bytesFreed"], int)
     def test_file_age_is_choosable_and_has_no_git_fallback(self):
         policy=dict(wizard.defaults(),ageBasis="files")
         for age,action in [(10,"keep"),(70,"cleanup"),(300,"freeze"),(None,"keep")]:
@@ -97,7 +177,11 @@ class PlanningTests(unittest.TestCase):
         self.assertEqual((self.repo/".env").read_text(),"synthetic local fixture")
         self.assertEqual((self.repo/"source.txt").read_text(),"source\n")
     def test_archive_only_keeps_checkout(self):
-        review=self.prepare("archive");row=wizard.execute(review["id"])["rows"][0]
+        review=self.prepare("archive")
+        self.assertEqual(review["outcome"]["bytesFreedEstimate"], 0)
+        self.assertGreater(review["outcome"]["bytesUsedEstimate"], 0)
+        result=wizard.execute(review["id"]);row=result["rows"][0]
+        self.assertEqual(result["outcome"]["bytesUsedEstimate"], review["outcome"]["bytesUsedEstimate"])
         self.assertEqual(row["status"],"done",row["message"])
         self.assertTrue((self.repo/".git").exists())
         self.assertEqual(life.archive_record(row["archiveID"])[1]["state"],"ready")

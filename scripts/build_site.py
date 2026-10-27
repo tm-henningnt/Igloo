@@ -6,6 +6,10 @@ import shutil
 ASSETS = {
     "assets/README-header.png": "README-header.png",
     "assets/IglooIcon.png": "IglooIcon.png",
+    "assets/web/favicon.ico": "favicon.ico",
+    "assets/web/favicon-16.png": "favicon-16.png",
+    "assets/web/favicon-32.png": "favicon-32.png",
+    "assets/web/apple-touch-icon.png": "apple-touch-icon.png",
     "docs/screenshots/overview.png": "overview.png",
     "docs/screenshots/overview-light.png": "overview-light.png",
     "docs/screenshots/space-explorer.png": "space-explorer.png",

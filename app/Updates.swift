@@ -65,6 +65,7 @@ struct AvailableUpdate {
 enum UpdatePolicy {
     static let repository = "tm-henningnt/Igloo"
     static let website = URL(string: "https://tm-henningnt.github.io/Igloo/")!
+    static let releasesPage = URL(string: "https://github.com/" + repository + "/releases")!
     static let manifestName = "igloo-update.json"
     static let api = URL(string: "https://api.github.com/repos/" + repository + "/releases/latest")!
     static var architecture: String {
@@ -163,27 +164,66 @@ enum UpdateService {
         request.setValue("Igloo", forHTTPHeaderField: "User-Agent")
         return request
     }
+    static func responseError(_ response: HTTPURLResponse) -> UpdateError {
+        if response.statusCode == 403 {
+            let remaining = response.value(forHTTPHeaderField: "x-ratelimit-remaining")?.trimmingCharacters(in: .whitespacesAndNewlines)
+            if remaining == "0" {
+                if let raw = response.value(forHTTPHeaderField: "x-ratelimit-reset")?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   let seconds = TimeInterval(raw), seconds.isFinite, seconds > 0, seconds <= 253_402_300_799 {
+                    let formatter = DateFormatter()
+                    formatter.locale = Locale(identifier: "en_US_POSIX")
+                    formatter.calendar = Calendar(identifier: .gregorian)
+                    formatter.timeZone = TimeZone(secondsFromGMT: 0)!
+                    formatter.dateFormat = "MMM d, yyyy 'at' HH:mm 'UTC'"
+                    let reset = formatter.string(from: Date(timeIntervalSince1970: seconds))
+                    return .invalid("GitHub's update request limit has been reached. Try again after " + reset + ".")
+                }
+                return .invalid("GitHub's update request limit has been reached. Please try again later.")
+            }
+            return .invalid("GitHub denied this update request. Please try again later.")
+        }
+        if (500...599).contains(response.statusCode) {
+            return .invalid("GitHub is having trouble serving updates. Please try again later.")
+        }
+        return .invalid("GitHub could not serve the update. Please try again later.")
+    }
+    static func transportError(_ error: URLError) -> Error {
+        switch error.code {
+        case .notConnectedToInternet, .cannotFindHost, .networkConnectionLost:
+            return UpdateError.invalid("You appear to be offline. Check your internet connection and try again.")
+        case .timedOut:
+            return UpdateError.invalid("The update request timed out. Check your connection and try again.")
+        default:
+            return error
+        }
+    }
+    static func decode<T: Decodable>(_ type: T.Type, data: Data) throws -> T {
+        do { return try JSONDecoder().decode(type, from: data) }
+        catch is DecodingError { throw UpdateError.invalid("The update information is invalid. Please try again later.") }
+    }
     static func data(_ url: URL, session: URLSession, maximum: Int) async throws -> Data? {
-        guard UpdatePolicy.safeTransport(url) else { throw UpdateError.invalid("Invalid update address.") }
-        let (stream, response) = try await session.bytes(for: request(url))
-        guard let response = response as? HTTPURLResponse else { throw UpdateError.invalid("No update response.") }
-        if response.statusCode == 404 && url == UpdatePolicy.api { return nil }
-        guard response.statusCode == 200 else {
-            throw UpdateError.invalid("GitHub could not serve the update. Please try again later.")
-        }
-        var data = Data()
-        for try await byte in stream {
-            try Task.checkCancellation()
-            guard data.count < maximum else { throw UpdateError.invalid("The update information is too large.") }
-            data.append(byte)
-        }
-        return data
+        do {
+            guard UpdatePolicy.safeTransport(url) else { throw UpdateError.invalid("Invalid update address.") }
+            let (stream, response) = try await session.bytes(for: request(url))
+            guard let response = response as? HTTPURLResponse else { throw UpdateError.invalid("No update response.") }
+            if response.statusCode == 404 && url == UpdatePolicy.api { return nil }
+            guard response.statusCode == 200 else {
+                throw responseError(response)
+            }
+            var data = Data()
+            for try await byte in stream {
+                try Task.checkCancellation()
+                guard data.count < maximum else { throw UpdateError.invalid("The update information is too large.") }
+                data.append(byte)
+            }
+            return data
+        } catch let error as URLError { throw transportError(error) }
     }
     static func check(version: String, build: Int, system: String, runtime: String) async throws -> AvailableUpdate? {
         let session = session()
         defer { session.invalidateAndCancel() }
         guard let releaseData = try await data(UpdatePolicy.api, session: session, maximum: 1_048_576) else { return nil }
-        let release = try JSONDecoder().decode(GitHubRelease.self, from: releaseData)
+        let release = try decode(GitHubRelease.self, data: releaseData)
         guard !release.draft, !release.prerelease,
               release.tag_name.range(of: "^v[0-9]+\\.[0-9]+(?:\\.[0-9]+)?$", options: .regularExpression) != nil,
               release.html_url == UpdatePolicy.releaseURL(release.tag_name) else {
@@ -196,49 +236,55 @@ enum UpdateService {
               let manifestData = try await data(url, session: session, maximum: 65_536) else {
             throw UpdateError.invalid("This release does not include a complete update manifest.")
         }
-        let manifest = try JSONDecoder().decode(UpdateManifest.self, from: manifestData)
+        let manifest = try decode(UpdateManifest.self, data: manifestData)
         return try UpdatePolicy.validate(manifest, release: release, architecture: UpdatePolicy.architecture,
                                          currentVersion: version, currentBuild: build, systemVersion: system, runtime: runtime)
     }
     static func download(_ asset: UpdateAsset) async throws -> URL {
-        guard let url = URL(string: asset.url), UpdatePolicy.safeTransport(url) else {
-            throw UpdateError.invalid("Invalid download address.")
-        }
-        let session = session()
-        defer { session.invalidateAndCancel() }
-        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("Igloo-update-" + UUID().uuidString)
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false,
-                                                attributes: [.posixPermissions: 0o700])
-        defer { try? FileManager.default.removeItem(at: folder) }
-        let staged = folder.appendingPathComponent(asset.filename)
-        FileManager.default.createFile(atPath: staged.path, contents: nil, attributes: [.posixPermissions: 0o600])
-        let handle = try FileHandle(forWritingTo: staged)
-        defer { try? handle.close() }
-        let (stream, response) = try await session.bytes(for: request(url))
-        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
-            throw UpdateError.invalid("The release download is unavailable.")
-        }
-        var buffer = Data()
-        var count: Int64 = 0
-        for try await byte in stream {
+        do {
+            guard let url = URL(string: asset.url), UpdatePolicy.safeTransport(url) else {
+                throw UpdateError.invalid("Invalid download address.")
+            }
+            let session = session()
+            defer { session.invalidateAndCancel() }
+            let folder = FileManager.default.temporaryDirectory.appendingPathComponent("Igloo-update-" + UUID().uuidString)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false,
+                                                    attributes: [.posixPermissions: 0o700])
+            defer { try? FileManager.default.removeItem(at: folder) }
+            let staged = folder.appendingPathComponent(asset.filename)
+            FileManager.default.createFile(atPath: staged.path, contents: nil, attributes: [.posixPermissions: 0o600])
+            let handle = try FileHandle(forWritingTo: staged)
+            defer { try? handle.close() }
+            let (stream, response) = try await session.bytes(for: request(url))
+            guard let response = response as? HTTPURLResponse else {
+                throw UpdateError.invalid("The release download is unavailable.")
+            }
+            if response.statusCode != 200 {
+                if response.statusCode == 403 || (500...599).contains(response.statusCode) { throw responseError(response) }
+                throw UpdateError.invalid("The release download is unavailable.")
+            }
+            var buffer = Data()
+            var count: Int64 = 0
+            for try await byte in stream {
+                try Task.checkCancellation()
+                count += 1
+                guard count <= asset.size else { throw UpdateError.invalid("The download is larger than expected.") }
+                buffer.append(byte)
+                if buffer.count == 65_536 { try handle.write(contentsOf: buffer); buffer.removeAll(keepingCapacity: true) }
+            }
+            if !buffer.isEmpty { try handle.write(contentsOf: buffer) }
+            try handle.synchronize()
+            try UpdatePolicy.verify(file: staged, asset: asset)
             try Task.checkCancellation()
-            count += 1
-            guard count <= asset.size else { throw UpdateError.invalid("The download is larger than expected.") }
-            buffer.append(byte)
-            if buffer.count == 65_536 { try handle.write(contentsOf: buffer); buffer.removeAll(keepingCapacity: true) }
-        }
-        if !buffer.isEmpty { try handle.write(contentsOf: buffer) }
-        try handle.synchronize()
-        try UpdatePolicy.verify(file: staged, asset: asset)
-        try Task.checkCancellation()
-        let downloads = try FileManager.default.url(for: .downloadsDirectory, in: .userDomainMask,
-                                                    appropriateFor: nil, create: true)
-        var destination = downloads.appendingPathComponent(asset.filename)
-        if FileManager.default.fileExists(atPath: destination.path) {
-            destination = downloads.appendingPathComponent(asset.filename.replacingOccurrences(of: ".zip", with: "-" + UUID().uuidString + ".zip"))
-        }
-        try FileManager.default.moveItem(at: staged, to: destination)
-        return destination
+            let downloads = try FileManager.default.url(for: .downloadsDirectory, in: .userDomainMask,
+                                                        appropriateFor: nil, create: true)
+            var destination = downloads.appendingPathComponent(asset.filename)
+            if FileManager.default.fileExists(atPath: destination.path) {
+                destination = downloads.appendingPathComponent(asset.filename.replacingOccurrences(of: ".zip", with: "-" + UUID().uuidString + ".zip"))
+            }
+            try FileManager.default.moveItem(at: staged, to: destination)
+            return destination
+        } catch let error as URLError { throw transportError(error) }
     }
 }
 
@@ -250,13 +296,38 @@ import AppKit
     @Published var status = "Check for a published Igloo release."
     @Published var checking = false
     @Published var downloading = false
+    @Published var failed = false
+    var failureReleaseURL: URL? { failed ? UpdatePolicy.releasesPage : nil }
     @Published var available: AvailableUpdate?
     @Published var downloaded: URL?
     var downloadTask: Task<Void, Never>?
     var demo = false
+    static let demoFailureNames = ["quota", "quota-no-reset", "forbidden", "offline", "timeout", "server", "malformed", "cancelled-download", "digest-mismatch"]
+    static func demoFailure(_ name: String) -> AppUpdater? {
+        guard demoFailureNames.contains(name) else { return nil }
+        let updater = AppUpdater()
+        updater.demo = true
+        updater.failed = true
+        let response: (Int, [String: String]) -> HTTPURLResponse = { status, headers in
+            HTTPURLResponse(url: UpdatePolicy.api, statusCode: status, httpVersion: "HTTP/1.1", headerFields: headers)!
+        }
+        switch name {
+        case "quota": updater.status = UpdateService.responseError(response(403, ["x-ratelimit-remaining": "0", "x-ratelimit-reset": "1793145600"])).localizedDescription
+        case "quota-no-reset": updater.status = UpdateService.responseError(response(403, ["x-ratelimit-remaining": "0"])).localizedDescription
+        case "forbidden": updater.status = UpdateService.responseError(response(403, [:])).localizedDescription
+        case "offline": updater.status = UpdateService.transportError(URLError(.notConnectedToInternet)).localizedDescription
+        case "timeout": updater.status = UpdateService.transportError(URLError(.timedOut)).localizedDescription
+        case "server": updater.status = UpdateService.responseError(response(503, [:])).localizedDescription
+        case "malformed": updater.status = "The update information is invalid. Please try again later."
+        case "cancelled-download": updater.status = "Download canceled."
+        default: updater.status = "The download failed its checksum check. Please try again."
+        }
+        return updater
+    }
     func check() async {
         guard !checking, !downloading else { return }
         checking = true
+        failed = false
         available = nil
         downloaded = nil
         status = "Checking GitHub releases…"
@@ -269,19 +340,32 @@ import AppKit
                                                       system: ProcessInfo.processInfo.operatingSystemVersionStringValue,
                                                       runtime: info["IglooRuntime"] as? String ?? "bundled")
             status = available == nil ? "No newer published release is available." : "A new version of Igloo is available."
-        } catch { status = error.localizedDescription }
+        } catch {
+            failed = true
+            status = error.localizedDescription
+        }
     }
     func download() {
         guard let update = available, !downloading else { return }
         downloading = true
+        failed = false
         status = "Downloading and verifying Igloo…"
         downloadTask = Task {
             defer { downloading = false; downloadTask = nil }
             do {
                 downloaded = try await UpdateService.download(update.asset)
                 status = "Download verified. Open the ZIP, quit Igloo, and move the new app to Applications."
-            } catch is CancellationError { status = "Download canceled." }
-            catch { status = error.localizedDescription }
+            } catch is CancellationError {
+                failed = true
+                status = "Download canceled."
+            } catch let error as URLError where error.code == .cancelled {
+                failed = true
+                status = "Download canceled."
+            }
+            catch {
+                failed = true
+                status = error.localizedDescription
+            }
         }
     }
 }
@@ -298,6 +382,7 @@ struct UpdatesView: View {
         VStack(alignment: .leading, spacing: 18) {
             Text("Igloo updates").font(.title2).fontWeight(.semibold)
             Text(updater.status).font(.callout).textSelection(.enabled)
+            if let url = updater.failureReleaseURL { Link("View releases on GitHub", destination: url) }
             if updater.checking || updater.downloading { ProgressView().controlSize(.small) }
             if let update = updater.available {
                 Text("Version \(update.manifest.version) · \(update.asset.architecture) · \(bytes(update.asset.size))")

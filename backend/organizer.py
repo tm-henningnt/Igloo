@@ -134,9 +134,9 @@ def worktree_list(path):
 
 
 def process_cwds():
-    """No command-line arguments or environment values are collected."""
+    """Cheap cwd-only activity observation; full open-file checks belong to Freeze reviews."""
     try:
-        r = subprocess.run(["/usr/sbin/lsof", "-a", "-d", "cwd", "-Fpcn"],
+        r = subprocess.run(["/usr/sbin/lsof", "-nP", "-a", "-d", "cwd", "-Fpcn"],
                            capture_output=True, text=True, timeout=15)
     except (OSError, subprocess.TimeoutExpired):
         raise Refusal("Activity check failed. Close project sessions and try again.")
@@ -149,7 +149,8 @@ def process_cwds():
         elif line.startswith("c"):
             row["command"] = line[1:]
         elif line.startswith("n") and line[1:].startswith("/"):
-            results.append(dict(row, path=line[1:]))
+            if row.get("pid") != str(os.getpid()):
+                results.append(dict(row, path=line[1:]))
     return results
 
 
@@ -184,6 +185,7 @@ def is_template(path):
 
 
 def physical_size(path):
+    path = Path(path)
     if path.is_symlink():
         return 0
     total = 0
@@ -195,6 +197,32 @@ def physical_size(path):
             except OSError:
                 pass
     return total
+
+
+def outcome_summary(checkouts=(), estimate=0, freed=None, archives=(), refs=(), trash=0, held=(), observed=False,
+                    archive_count=None, used_estimate=0):
+    """One JSON shape for projected and observed maintenance outcomes."""
+    paths = list(dict.fromkeys(map(str, checkouts)))
+    archives = list(dict.fromkeys(map(str, archives)))
+    count = len(archives) if archive_count is None else archive_count
+    return {"checkoutsRemoved": {"count": len(paths), "paths": paths},
+            "bytesFreedEstimate": estimate, "bytesUsedEstimate": used_estimate, "bytesFreed": freed,
+            "archivesWritten": {"count": count, "location": str(VAULT),
+                                "paths": None if count and not observed else archives},
+            "refsPushed": list(refs), "movedToTrash": trash, "held": list(held), "observed": observed}
+
+
+def combine_outcomes(outcomes, held=(), observed=False):
+    values = [v for v in outcomes if v]
+    return outcome_summary(
+        checkouts=[p for v in values for p in v["checkoutsRemoved"]["paths"]],
+        estimate=sum(v["bytesFreedEstimate"] for v in values),
+        used_estimate=sum(v.get("bytesUsedEstimate", 0) for v in values),
+        freed=sum(v.get("bytesFreed") or 0 for v in values) if observed else None,
+        archives=[p for v in values for p in (v["archivesWritten"]["paths"] or [])],
+        archive_count=sum(v["archivesWritten"]["count"] for v in values),
+        refs=[r for v in values for r in v["refsPushed"]],
+        trash=sum(v["movedToTrash"] for v in values), held=held, observed=observed)
 
 
 def observe_files(root=ROOT):
@@ -424,12 +452,13 @@ def project_record(states, observation, cwds, live=True):
             **classification.detect(main["path"]),
             "ageDays": days, "fileAgeDays": file_age([observation.get("modified", {}).get(s["path"], 0) for s in roots]), "lastCommit": main["lastCommit"], "remoteStatus": status["status"],
             "verifiedAt": status["verifiedAt"], "remotes": main["remotes"],
-            "active": bool(active), "processes": [f'{p.get("command", "Process")} (PID {p.get("pid", "?")})' for p in active],
+            "active": bool(active), "processes": list(dict.fromkeys(f'{p.get("command", "Process")} (PID {p.get("pid", "?")})' for p in active)),
             "branches": main["branches"], "detachedHeads": detached, "worktrees": worktrees, "changes": changes,
             "stashes": main["stashes"], "refs": main["refs"], "localFiles": locals_,
             "ignoredFiles": [{"checkout": s["path"], "path": p} for s in states for p in s["ignored"]],
             "candidates": candidates, "holds": holds, "uncovered": uncovered, "unknown": unknown,
-            "error": "", "activityKnown": cwds is not None}
+            "error": "", "activityKnown": cwds is not None,
+            "blockers": lifecycle_module().blockers_for_states(states, active if cwds is not None else None)}
 
 
 def file_age(timestamps):
@@ -551,19 +580,26 @@ def snapshot():
     if result.get("root") != str(ROOT):
         result = {"version":1,"generated":"","root":str(ROOT),"source":"Run an analysis for this workspace",
                   "totalSize":0,"freeSpace":shutil.disk_usage(ROOT).free,"projects":[],"errors":[]}
-    decisions = load(STATE / "decisions.json", {})
+    decisions = project_settings()
     types = load(STATE / "classifications.json", {})
     for p in result["projects"]:
         p["detectedType"] = p.get("projectType", "Unclassified")
         if types.get(p["id"]) in classification.TYPES:
             p["projectType"] = types[p["id"]]
-        p["decision"] = decisions.get(p["id"], {}).get("decision", "Undecided")
+        p["hold"] = decisions.get(p["id"], {}).get("hold", False)
+        p.pop("decision", None)
         p["note"] = decisions.get(p["id"], {}).get("note", "")
     result["history"] = load(STATE / "trash.json", [])
     result["archives"] = lifecycle_module().vault_entries()
     dormant = {a["path"] for a in result["archives"] if a["state"] in {"frozen", "retiring", "removing", "rehydrating"}}
     result["projects"] = [p for p in result["projects"] if p["path"] not in dormant]
     return result
+
+
+def on_hold(path, data=None):
+    data = snapshot() if data is None else data
+    return any(p.get("hold", False) and (p.get("path") == str(path) or p.get("id") == str(path)
+               or any(w.get("path") == str(path) for w in p.get("worktrees", []))) for p in data["projects"])
 
 
 def require_project(path):
@@ -639,19 +675,23 @@ def preview_cleanup(paths):
             blocked.append({"path": path, "reason": str(e)})
     valid = [v for v in valid if not any(v["path"].startswith(w["path"] + "/") for w in valid if v != w)]
     plan = {"id": uuid.uuid4().hex, "created": now(), "items": valid, "blocked": blocked,
-            "totalSize": sum(v["size"] for v in valid)}
+            "totalSize": sum(v["size"] for v in valid),
+            "held": any(on_hold(v["owner"], snap) for v in valid)}
+    # Moving to Trash on the same volume frees no allocated blocks yet.
+    plan["outcome"] = outcome_summary(trash=len(valid),
+                                      held=[{"path": b["path"], "reason": b["reason"]} for b in blocked])
     save(STATE / "plans" / (plan["id"] + ".json"), plan)
     return plan
 
 
 def execute_cleanup(plan_id):
     if not re.fullmatch("[0-9a-f]{32}", plan_id):
-        raise Refusal("Invalid cleanup plan.")
+        raise Refusal("Invalid cleanup review.")
     plan = load(STATE / "plans" / (plan_id + ".json"))
     if not plan or age_seconds(plan["created"]) > 600:
-        raise Refusal("The preview expired. Review the cleanup again.")
+        raise Refusal("The review expired. Review the cleanup again.")
     if plan.get("executed"):
-        raise Refusal("This cleanup plan was already used.")
+        raise Refusal("This cleanup review was already used.")
     trash = Path.home() / ".Trash"
     if trash.is_symlink():
         raise Refusal("Trash is a symbolic link; cleanup was refused.")
@@ -661,7 +701,7 @@ def execute_cleanup(plan_id):
         try:
             fresh = validate_cache(item["path"], item["owner"])
             if any(fresh[k] != item[k] for k in ("device", "inode", "mtime", "fingerprint")):
-                raise Refusal("This directory changed since the preview. Run a new preview.")
+                raise Refusal("This directory changed since the review. Run a new review.")
             if os.stat(trash).st_dev != fresh["device"]:
                 raise Refusal("Trash is on another volume. Use Finder to review this directory.")
             token = uuid.uuid4().hex
@@ -680,7 +720,11 @@ def execute_cleanup(plan_id):
             results.append({"path": item["path"], "ok": False, "message": str(e) if isinstance(e, Refusal) else "Filesystem move failed. Nothing was permanently deleted; inspect History."})
     plan["executed"] = now()
     save(STATE / "plans" / (plan_id + ".json"), plan)
-    return {"results": results, "message": "Trash keeps these files until you empty it. Reanalyse to update disk estimates."}
+    outcome = outcome_summary(trash=sum(r["ok"] for r in results), freed=0, observed=True,
+                              held=[{"path": r["path"], "reason": r["message"]} for r in results if not r["ok"]]
+                                   + [{"path": b["path"], "reason": b["reason"]} for b in plan["blocked"]])
+    return {"results": results, "outcome": outcome,
+            "message": "Trash keeps these files until you empty it. Reanalyse to update disk estimates."}
 
 
 def age_seconds(value):
@@ -791,15 +835,39 @@ def push_branch(path, name, expected_sha, remote_name, expected_url):
     return {"message": "Pushed only " + name + " to " + remote_name + ". Uncommitted files were not included."}
 
 
-def decide(path, decision, note):
-    if decision not in {"Undecided", "Keep", "Archive", "Retire", "Review"}:
-        raise Refusal("Unknown decision.")
+def project_settings():
+    location = STATE / "decisions.json"
+    values = load(location, {})
+    changed = False
+    for path, row in list(values.items()):
+        if "decision" in row or "hold" not in row:
+            values[path] = {"hold": row.get("decision") == "Keep", "note": row.get("note", ""),
+                            "at": row.get("at", now())}
+            changed = True
+        elif type(row["hold"]) is not bool:
+            raise Refusal("A saved Hold setting is invalid. Review the project settings.")
+    if changed:
+        save(location, values)
+    return values
+
+
+def update_project_setting(path, **change):
     if path not in {p["id"] for p in snapshot()["projects"]}:
         raise Refusal("Unknown project.")
-    values = load(STATE / "decisions.json", {})
-    values[path] = {"decision": decision, "note": note[:20000], "at": now()}
+    values = project_settings()
+    values[path] = dict(values.get(path, {"hold": False, "note": ""}), **change, at=now())
     save(STATE / "decisions.json", values)
-    return {"message": "Review decision saved locally."}
+    return {"message": "Project setting saved locally."}
+
+
+def set_hold(path, value):
+    if value not in {"true", "false"}:
+        raise Refusal("Choose true or false for Hold.")
+    return update_project_setting(path, hold=value == "true")
+
+
+def set_note(path, text):
+    return update_project_setting(path, note=text[:20000])
 
 
 def categorize(path, kind):
@@ -816,7 +884,8 @@ def categorize(path, kind):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["snapshot", "scan", "refresh", "fetch", "preview", "trash", "restore", "decide", "push", "categorize"] + sorted(lifecycle_module().COMMANDS) + ["wizard-state", "wizard-scan", "wizard-prepare", "wizard-execute", "task-list", "task-save", "task-delete", "task-run", "task-apply", "task-history", "task-install-cli", "task-schedule", "task-unschedule", "task-plan"])
+    commands = ["snapshot", "scan", "refresh", "fetch", "preview", "trash", "restore", "hold", "note", "push", "categorize"] + sorted(lifecycle_module().COMMANDS) + ["wizard-state", "wizard-scan", "wizard-prepare", "wizard-execute", "task-list", "task-save", "task-delete", "task-run", "task-apply", "task-history", "task-install-cli", "task-schedule", "task-unschedule", "task-plan"]
+    parser.add_argument("command", choices=commands, metavar="{" + ",".join(commands) + "}")
     parser.add_argument("args", nargs="*")
     args = parser.parse_args()
     STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -835,7 +904,8 @@ def main():
             elif args.command == "preview": result = preview_cleanup(args.args)
             elif args.command == "trash": result = execute_cleanup(args.args[0])
             elif args.command == "restore": result = restore(args.args[0])
-            elif args.command == "decide": result = decide(*args.args)
+            elif args.command == "hold": result = set_hold(*args.args)
+            elif args.command == "note": result = set_note(*args.args)
             elif args.command == "push": result = push_branch(*args.args)
             elif args.command == "categorize": result = categorize(*args.args)
             elif args.command.startswith("task-"):
@@ -850,11 +920,17 @@ def main():
             print(json.dumps(result))
             return 0
         except Refusal as e:
-            print(json.dumps({"error": str(e)}))
+            result = {"error": str(e)}
+            if hasattr(e, "outcome"):
+                result["outcome"] = e.outcome
+            print(json.dumps(result))
             return 1
-        except Exception:
+        except Exception as e:
             # Do not echo credentials, file contents or arbitrary subprocess output.
-            print(json.dumps({"error": "The action could not complete. Existing snapshot and project files were preserved. Check permissions and reanalyse."}))
+            result = {"error": "The action could not complete. Existing snapshot and project files were preserved. Check permissions and reanalyse."}
+            if hasattr(e, "outcome"):
+                result["outcome"] = e.outcome
+            print(json.dumps(result))
             return 1
 
 

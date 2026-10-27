@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Prepare a reviewed public source snapshot and publish only an explicit release."""
+"""Preflight, prepare and stage reviewed releases for publication."""
 import argparse
+import fnmatch
 import hashlib
 import json
 import os
@@ -12,6 +13,7 @@ import subprocess
 import tempfile
 
 PUBLIC_REPO = "tm-henningnt/Igloo"
+PRIVATE_PATHS_FILE = Path(__file__).resolve().parents[1] / "private-paths.json"
 MAX_ZIP = 512 * 1024 * 1024
 VERSION = re.compile(r"(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})(\.(0|[1-9][0-9]{0,5}))?")
 SECRET_PATTERNS = [
@@ -61,6 +63,134 @@ def metadata(value):
         raise ValueError("Invalid release.json.")
     return value
 
+def preflight(repo, unnotarized=False):
+    """Read local and remote prerequisites without creating public resources."""
+    repo = Path(repo).resolve()
+    checks = []
+
+    def check(name, action):
+        try:
+            message = action()
+            passed = True
+        except (ValueError, OSError, KeyError, TypeError, AttributeError) as error:
+            message = str(error)
+            passed = False
+        checks.append({"check": name, "passed": passed, "message": message})
+
+    def require(condition, message):
+        if not condition:
+            raise ValueError(message)
+
+    def remote(args):
+        result = run(args, check=False)
+        require(result.returncode == 0, "Remote check unreadable; verify GitHub access before continuing.")
+        return result.stdout.decode()
+
+    def clean_tree():
+        require(not output(["git", "status", "--porcelain"], repo), "Working tree is dirty; commit or set aside local changes.")
+        return "Clean."
+
+    def release_metadata():
+        value = metadata(read_json(repo / "release.json"))
+        return "Version " + value["version"] + ", build " + str(value["build"]) + "."
+
+    def progression():
+        candidate = metadata(read_json(repo / "release.json"))
+        latest = run(["gh", "release", "view", "--repo", PUBLIC_REPO,
+                      "--json", "tagName,isDraft,isPrerelease"], check=False)
+        if latest.returncode:
+            # An empty successful list distinguishes no stable release from an unreadable latest release.
+            published_tags = remote(["gh", "api", "--method", "GET",
+                                     "repos/" + PUBLIC_REPO + "/releases?per_page=100", "--paginate",
+                                     "--jq", ".[] | select(.draft == false and .prerelease == false) | .tag_name"])
+            require(not published_tags.strip(), "Latest published release unreadable.")
+            return "No published release exists (drafts and prereleases excluded)."
+        latest = json.loads(latest.stdout)
+        require(latest.get("isDraft") is False and latest.get("isPrerelease") is False,
+                "Expected the latest stable published release.")
+        tag = latest["tagName"]
+        require(isinstance(tag, str) and tag.startswith("v") and VERSION.fullmatch(tag[1:]),
+                "Invalid published release tag.")
+        previous = metadata(json.loads(remote(["gh", "release", "download", tag, "--repo", PUBLIC_REPO,
+                                               "--pattern", "igloo-update.json", "--output", "-"])))
+        require(tag == "v" + previous["version"], "The published release and update manifest versions disagree.")
+        def version_parts(value):
+            parts = [int(part) for part in value.split(".")]
+            return tuple(parts + [0] * (3 - len(parts)))
+        require(version_parts(candidate["version"]) > version_parts(previous["version"]) and
+                candidate["build"] > previous["build"],
+                "Version and build must both be greater than the latest published release.")
+        return "Version and build exceed " + tag + " (build " + str(previous["build"]) + ")."
+
+    def notes():
+        value = metadata(read_json(repo / "release.json"))
+        path = repo / "release-notes" / (value["version"] + ".md")
+        require(path.is_file(), "Versioned release notes are missing.")
+        if unnotarized:
+            require("not notarized" in path.read_text().lower(), "Release notes must say the app is not notarized.")
+        return "Versioned notes exist" + (" and state the app is not notarized." if unnotarized else ".")
+
+    def allowlist():
+        names = read_json(repo / "public-files.json").get("files")
+        require(isinstance(names, list) and names and len(names) == len(set(names)),
+                "Choose an explicit, unique public file list.")
+        for name in names:
+            safe_name(name)
+            path = repo / name
+            require(path.is_file() and not path.is_symlink(), "An allowlisted path is missing or is not an ordinary file.")
+        return "All " + str(len(names)) + " allowlisted files exist."
+
+    def license_file():
+        path = repo / "LICENSE"
+        require(path.is_file() and not path.is_symlink(), "LICENSE is missing or is not an ordinary file.")
+        return "LICENSE exists."
+
+    def public_repository():
+        value = json.loads(remote(["gh", "repo", "view", PUBLIC_REPO, "--json", "nameWithOwner,isPrivate,defaultBranchRef"]))
+        require(value.get("nameWithOwner") == PUBLIC_REPO and value.get("isPrivate") is False,
+                "The public Igloo repository must already exist and be public.")
+        require((value.get("defaultBranchRef") or {}).get("name") == "main", "The public repository must use main.")
+        return "Expected public repository uses main."
+
+    def authentication():
+        require(run(["gh", "auth", "status", "--hostname", "github.com"], check=False).returncode == 0,
+                "gh is not authenticated to GitHub, or authentication is unreadable.")
+        return "gh is authenticated to GitHub."
+
+    def pages():
+        endpoint = "repos/" + PUBLIC_REPO + "/environments/github-pages"
+        environment = json.loads(remote(["gh", "api", "--method", "GET", endpoint]))
+        policy = environment["deployment_branch_policy"]
+        if policy is None:
+            return "All branches and tags are allowed, including main and v*."
+        require(policy.get("custom_branch_policies") is True and policy.get("protected_branches") is False,
+                "Pages must allow main and v* tags; protected-branch-only policy cannot assure tag deployments.")
+        pages = json.loads(remote(["gh", "api", "--method", "GET", endpoint + "/deployment-branch-policies?per_page=100",
+                                  "--paginate", "--slurp"]))
+        rules = [rule for page in pages for rule in page["branch_policies"]]
+        branches = [rule["name"] for rule in rules if rule.get("type") == "branch"]
+        tags = [rule["name"] for rule in rules if rule.get("type") == "tag"]
+        require(any(fnmatch.fnmatchcase("main", name) for name in branches) and any(name in {"v*", "*"} for name in tags),
+                "Pages deployment rules must allow branch main and tags matching v*.")
+        return "Deployment rules allow branch main and v* tags."
+
+    def tool_present(tool):
+        require(shutil.which(tool) is not None, "Required tool is missing: " + tool + ".")
+        return "Available."
+
+    check("working tree", clean_tree)
+    check("release metadata", release_metadata)
+    check("release progression", progression)
+    check("release notes", notes)
+    check("public allowlist", allowlist)
+    check("source license", license_file)
+    check("public repository", public_repository)
+    check("GitHub authentication", authentication)
+    check("Pages environment", pages)
+    for tool in ("git", "gh", "codesign", "xcrun", "python3"):
+        check("tool " + tool, lambda tool=tool: tool_present(tool))
+    return {"passed": all(item["passed"] for item in checks), "checks": checks}
+
 def digest(path):
     h = hashlib.sha256()
     with Path(path).open("rb") as handle:
@@ -80,6 +210,18 @@ def inventory(folder):
             result[name] = digest(path)
     return result
 
+def reject_private_paths(names, policy_path):
+    try:
+        policy = read_json(policy_path)
+    except FileNotFoundError:
+        return
+    patterns = policy.get("paths") if isinstance(policy, dict) else None
+    if not isinstance(patterns, list) or any(not isinstance(pattern, str) or not pattern for pattern in patterns):
+        raise ValueError("Invalid private-paths.json.")
+    for name in names:
+        if any(fnmatch.fnmatchcase(name, pattern) for pattern in patterns):
+            raise ValueError("A private development path was found in the export: " + name + ".")
+
 def export_snapshot(repo, destination, ref="HEAD"):
     repo, destination = Path(repo), Path(destination)
     if output(["git", "status", "--porcelain"], repo):
@@ -89,6 +231,7 @@ def export_snapshot(repo, destination, ref="HEAD"):
     names = policy.get("files")
     if not isinstance(names, list) or not names or len(names) != len(set(names)):
         raise ValueError("Choose an explicit, unique public file list.")
+    reject_private_paths(names, repo / "private-paths.json")
     destination.mkdir(parents=True, exist_ok=False)
     for name in names:
         safe_name(name)
@@ -196,7 +339,7 @@ def prepare(repo, destination, notes, architecture="universal", identity=None, p
     destination.mkdir(mode=0o700)
     commit, files = export_snapshot(repo, destination / "source")
     release = metadata(read_json(destination / "source/release.json"))
-    build_env = dict(os.environ, IGLOO_SIGNING_IDENTITY=identity or "-")
+    build_env = dict(os.environ, IGLOO_SIGNING_IDENTITY=identity or "-", IGLOO_RELEASE_BUILD="1")
     run(["/bin/zsh", "build.command", architecture], destination / "source", env=build_env)
     build = destination / "build"
     build.mkdir()
@@ -259,7 +402,10 @@ def prepare(repo, destination, notes, architecture="universal", identity=None, p
 def validate_prepared(folder):
     folder = Path(folder).resolve()
     review = read_json(folder / "review.json")
-    files = inventory(folder / "source")
+    source = folder / "source"
+    reject_private_paths(review["files"], PRIVATE_PATHS_FILE)
+    reject_private_paths((path.relative_to(source).as_posix() for path in sorted(source.rglob("*"))), PRIVATE_PATHS_FILE)
+    files = inventory(source)
     if files != review["files"] or digest(folder / "notes.md") != review["notesHash"] or \
        digest(folder / "assets/igloo-update.json") != review["manifestHash"]:
         raise ValueError("The prepared release changed. Prepare a fresh review.")
@@ -333,7 +479,7 @@ def sync_public(source, checkout, tag, commit_env=None):
     run(["git", "commit", "-m", "Igloo " + tag.removeprefix("v")], checkout, env=commit_env)
     run(["git", "tag", tag], checkout)
 
-def publish(folder, accept=False, allow_unnotarized=False):
+def stage(folder, accept=False, allow_unnotarized=False):
     if not accept:
         raise ValueError("Review the prepared source, notes and assets, then pass --accept-publication.")
     folder = Path(folder).resolve()
@@ -375,19 +521,24 @@ def publish(folder, accept=False, allow_unnotarized=False):
             run(["git", "symbolic-ref", "HEAD", "refs/heads/main"], checkout)
         sync_public(folder / "source", checkout, tag, commit_env=commit_env)
         run(["git", "push", "--atomic", "--no-follow-tags", "--recurse-submodules=no", "origin", "HEAD:refs/heads/main", "refs/tags/" + tag], checkout)
-    # A draft stays out of the updater until all assets have uploaded successfully.
-    run(["gh", "release", "create", tag, "--repo", PUBLIC_REPO, "--verify-tag", "--draft",
+    # The uploaded release remains a draft pending publication approval.
+    draft = run(["gh", "release", "create", tag, "--repo", PUBLIC_REPO, "--verify-tag", "--draft",
          "--title", "Igloo " + release["version"], "--notes-file", folder / "notes.md",
          folder / "assets/igloo-update.json",
          *[folder / "assets" / a["filename"] for a in manifest["assets"]],
          *[folder / "assets" / i["filename"] for i in review["diskImages"]]])
-    run(["gh", "release", "edit", tag, "--repo", PUBLIC_REPO, "--draft=false", "--latest"])
-    return {"published": "https://github.com/" + PUBLIC_REPO + "/releases/tag/" + tag}
+    return {"tag": tag, "draftUrl": draft.stdout.decode().strip(),
+            "nextStep": "Review the draft and request publication approval."}
+
+def publish(folder=None, accept=False, allow_unnotarized=False):
+    raise ValueError("Publication is disabled here. Stage a draft and use the approved publication process.")
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    p = commands.add_parser("prepare")
+    p = commands.add_parser("preflight", help="Check release prerequisites without publishing or changing remote settings.")
+    p.add_argument("--unnotarized", action="store_true", help="Require versioned notes to state the app is not notarized.")
+    p = commands.add_parser("prepare", help="Prepare local artifacts for review.")
     p.add_argument("--output", required=True)
     p.add_argument("--notes", required=True)
     p.add_argument("--architecture", choices=["arm64", "x86_64", "universal"], default="universal")
@@ -395,15 +546,31 @@ def main():
     p.add_argument("--signing-identity")
     p.add_argument("--notary-profile")
     p.add_argument("--unnotarized", action="store_true", help="Prepare an explicitly labeled public build without Developer ID signing or notarization.")
-    p = commands.add_parser("publish")
+    p = commands.add_parser("stage", help="Push the reviewed snapshot and upload a draft for Owner approval.")
     p.add_argument("folder")
     p.add_argument("--accept-publication", action="store_true")
     p.add_argument("--allow-unnotarized", action="store_true", help="Accept the reviewed unnotarized distribution and its documented macOS approval step.")
+    p = commands.add_parser("publish", help="Disabled: publication is handled separately.")
+    p.add_argument("folder", nargs="?")
+    p.add_argument("--accept-publication", action="store_true")
+    p.add_argument("--allow-unnotarized", action="store_true")
     args = parser.parse_args()
     try:
-        result = prepare(Path(__file__).resolve().parent.parent, args.output, args.notes,
-                         args.architecture, args.signing_identity, args.notary_profile, args.runtime, args.unnotarized) if args.command == "prepare" \
-                 else publish(args.folder, args.accept_publication, args.allow_unnotarized)
+        repo = Path(__file__).resolve().parent.parent
+        if args.command == "preflight":
+            result = preflight(repo, unnotarized=args.unnotarized)
+            for item in result["checks"]:
+                print(("PASS " if item["passed"] else "FAIL ") + item["check"] + ": " + item["message"])
+            if not result["passed"]:
+                parser.exit(1)
+            return
+        if args.command == "prepare":
+            result = prepare(repo, args.output, args.notes, args.architecture, args.signing_identity,
+                             args.notary_profile, args.runtime, args.unnotarized)
+        elif args.command == "stage":
+            result = stage(args.folder, args.accept_publication, args.allow_unnotarized)
+        else:
+            result = publish()
         print(json.dumps(result))
     except (ValueError, OSError, KeyError, TypeError) as error:
         parser.exit(1, "Stopped: " + str(error) + "\n")

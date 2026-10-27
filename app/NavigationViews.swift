@@ -5,7 +5,7 @@ struct OrganizerNavigation: View {
     var compact = false
     private let projects = [("All projects", "folder"), ("Quiet projects", "moon"), ("Active sessions", "bolt")]
     private let reviews = [("Needs preservation", "tray.full"), ("Cleanup opportunities", "externaldrive.badge.minus"),
-                           ("No remote", "network.slash"), ("No Git metadata", "folder.badge.questionmark"), ("Marked to retire", "archivebox")]
+                           ("No remote", "network.slash"), ("No Git metadata", "folder.badge.questionmark"), ("On hold", "archivebox")]
     var body: some View {
         if compact {
             VStack(spacing: 8) {
@@ -20,7 +20,7 @@ struct OrganizerNavigation: View {
                         railButton("Space explorer", "chart.pie") { store.explorerProjectIDs = nil; store.spaceShown = true }
                         railButton("GitHub repositories", "network") { store.repositoriesShown = true }
                         Divider().padding(.horizontal, 10)
-                        railButton("Frozen projects", "snowflake") { store.vaultShown = true }
+                        railButton("Freezer", "snowflake") { store.vaultShown = true }
                         railButton("Trash & restore history", "clock.arrow.circlepath") { store.historyShown = true }
                     }.padding(.top, 10)
                 }
@@ -39,7 +39,7 @@ struct OrganizerNavigation: View {
                         Button { store.repositoriesShown = true } label: { Label("GitHub repositories", systemImage: "network").frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle()) }
                     }.buttonStyle(.plain)
                     Section("Recovery") {
-                        Button { store.vaultShown = true } label: { Label("Frozen projects", systemImage: "snowflake").frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle()) }
+                        Button { store.vaultShown = true } label: { Label("Freezer", systemImage: "snowflake").frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle()) }
                         Button { store.historyShown = true } label: { Label("Trash & restore history", systemImage: "clock.arrow.circlepath").frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle()) }
                     }.buttonStyle(.plain)
                 }.listStyle(.sidebar)
@@ -76,5 +76,34 @@ struct OrganizerNavigation: View {
                 .background(selected ? Color.primary.opacity(0.10) : Color.clear, in: RoundedRectangle(cornerRadius: 6))
         }.buttonStyle(.plain).foregroundStyle(selected ? .primary : .secondary)
             .help(title).accessibilityLabel(title)
+    }
+}
+
+// ProjectRow supplies the blockers decoded from the catalog and the project's Hold state.
+struct ProjectBlockerBadges: View {
+    let blockers: [FreezeBlocker]
+    let held: Bool
+    private func label(_ code: String) -> String {
+        switch code {
+        case "no-remote": return "connect a remote"
+        case "no-files": return "add files"
+        case "no-commit": return "make an initial commit"
+        case "changed-source": return "commit changes"
+        case "open-processes": return "close open processes"
+        case "own-source": return "Igloo source is protected"
+        default: return "review requirements"
+        }
+    }
+    var body: some View {
+        HStack(spacing: 5) {
+            if let first = blockers.first {
+                Text("Blocked: " + label(first.code) + (blockers.count > 1 ? " +\(blockers.count - 1)" : ""))
+                    .lineLimit(1).truncationMode(.tail)
+                    .help(blockers.map(\.message).joined(separator: "\n"))
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel(Text("Blocked: " + blockers.map(\.message).joined(separator: " ")))
+            }
+            if held { Text("On hold").fixedSize().accessibilityLabel(Text("On hold")) }
+        }.font(.caption).foregroundStyle(.orange)
     }
 }

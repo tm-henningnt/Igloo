@@ -13,14 +13,18 @@ Igloo is a native macOS app that helps you sort it out. See what's taking up spa
 - Find large, inactive projects and explore disk use by age, project type, technology, or folder type.
 - Review uncommitted changes, unpushed branches, worktrees, stashes, and local files before cleaning up.
 - Remove old dependencies and caches, with a preview first and recovery through Trash.
-- Freeze a project: preserve local files, push reviewed source, and remove the checkout after verification. Thaw it when you want to work on it again.
+- Preserve local files and Git recovery in the Freezer and push reviewed source while keeping the checkout. Freeze also removes verified checkouts; thaw the project when you need it again.
+- Resolve requirements shown in the Freeze checklist, put projects on Hold, and review an outcome summary before accepting changes.
 - Connect Git remotes, create private GitHub repositories, commit selected files, and browse or clone your repositories.
 - Use the cleanup wizard to keep recent projects, clean older ones, and propose freezing projects past a second age threshold.
 - Save tasks, run them with the `igloo` CLI, and schedule daily or weekly reviews or cache cleanup.
 
-You choose the rules and review the plan. Scheduled cleanup needs your explicit permission; projects that need freezing stay held for review.
+You choose the rules and review the proposed changes. Scheduled cleanup needs your explicit permission; projects that need freezing stay held for review.
 
-![Space Explorer showing project sizes with warm-to-cold age colors](docs/screenshots/space-explorer.png)
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="docs/screenshots/space-explorer-light.png">
+  <img src="docs/screenshots/space-explorer.png" alt="Space Explorer showing project sizes with warm-to-cold age colors">
+</picture>
 
 [Website and downloads](https://tm-henningnt.github.io/Igloo/) · [Published releases](https://github.com/tm-henningnt/Igloo/releases)
 
@@ -36,26 +40,29 @@ Open **How to use** in the app, or read the [user guide](docs/guide.md), for cle
 
 ## CLI and scheduling
 
-Choose **Tasks → Install CLI** in the app. You can then save a task and generate a plan from Terminal:
+Choose **Tasks → Install CLI** in the app. You can then save a task and generate a review from Terminal:
 
 ```sh
 igloo create weekly-review --cache-days 45 --freeze-days 180
-igloo plan weekly-review
+igloo review weekly-review
 ```
 
 Set a daily or weekly schedule in the app or CLI. Start with a review task, then allow automatic cache cleanup when you're happy with its scope and limits.
 
 [Tasks, CLI, and scheduling guide](docs/tasks.md)
 
-![Task settings for age rules, exclusions, and cleanup limits](docs/screenshots/tasks.png)
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="docs/screenshots/tasks-light.png">
+  <img src="docs/screenshots/tasks.png" alt="Task settings for age rules, exclusions, and cleanup limits">
+</picture>
 
 ## Updates
 
-Choose **Igloo → Check for Updates** to check published releases and download a verified update. A smaller system-Python build is also supported for people who maintain Python 3.11 or later themselves. Updates keep your chosen variant.
+Choose **Igloo → Check for Updates** to check published releases and download a verified update. If a check fails, the window explains the problem and links to the releases page; a rate-limit message includes the reset time when available. A smaller system-Python build is also supported for people who maintain Python 3.11 or later themselves. Updates keep your chosen variant.
 
 ## Keep your recovery files safe
 
-Local files such as ignored configuration stay in a local archive when you freeze a project. Keep a separate backup of those archives: they are not uploaded to GitHub or encrypted. Reinstall dependencies after thawing.
+Local files such as ignored configuration stay in the Freezer when you preserve or freeze a project; they are not uploaded to GitHub or encrypted. Choose a Freezer backup folder in Settings to keep verified copies on a separate disk or in cloud storage. Cloud uploads are unencrypted and require your confirmation. Reinstall dependencies after thawing.
 
 ## Contributing
 

@@ -73,20 +73,20 @@ struct TasksView: View {
                 }.disabled(store.busy || store.isDemo)
                 Button("New task") { begin() }.disabled(store.busy || store.isDemo)
             }
-            Text("Save repeatable rules, review a fresh plan, or explicitly allow scheduled cache cleanup. Freeze candidates stay held for review.")
+            Text("Save repeatable rules, run a fresh review, or explicitly allow scheduled cache cleanup. Freeze candidates stay held for review.")
                 .font(.callout).foregroundStyle(.secondary)
             HSplitView {
                 List(items, selection: $selected) { task in
                     VStack(alignment: .leading, spacing: 5) {
                         Text(task.definition.name).fontWeight(.medium)
-                        Text(task.definition.mode == "review" ? "Plan only" : "Cache cleanup").font(.caption).foregroundStyle(.secondary)
+                        Text(task.definition.mode == "review" ? "Review only" : "Cache cleanup").font(.caption).foregroundStyle(.secondary)
                         if let schedule = task.schedule {
                             Text(schedule.stale ? "Schedule needs re-enabling" : schedule.loaded ? schedule.frequency.capitalized + " · " + schedule.time : "Schedule not loaded")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                         if let run = task.lastRun { Text("Last run: " + run.status).font(.caption).foregroundStyle(.secondary) }
                     }.padding(.vertical, 6).tag(task.id)
-                }.frame(minWidth: 230, idealWidth: 250, maxWidth: 280)
+                }.frame(minWidth: 150, idealWidth: 200, maxWidth: 240)
                 VStack(alignment: .leading, spacing: 14) {
                     if item != nil || newTask {
                         HStack {
@@ -100,7 +100,7 @@ struct TasksView: View {
                         else { ScrollView { if section == "Rules" { rulesView } else { scheduleView } } }
                         Spacer(minLength: 0)
                         HStack {
-                            Button("Plan now") { planNow() }.disabled(store.busy || dirty || store.isDemo || item?.compatible != true)
+                            Button("Review now") { planNow() }.disabled(store.busy || dirty || store.isDemo || item?.compatible != true)
                             Button("Delete task", role: .destructive) { deleteConfirm = true }
                                 .disabled(store.busy || item == nil || item?.schedule != nil || store.isDemo)
                                 .help("Disable an existing schedule before deleting its task.")
@@ -113,9 +113,9 @@ struct TasksView: View {
                         }
                     } else {
                         ContentUnavailableView("Save your first task", systemImage: "checklist",
-                            description: Text("Create a plan-only task first, then enable execution and scheduling when its rules suit you."))
+                            description: Text("Create a review-only task first, then enable execution and scheduling when its rules suit you."))
                     }
-                }.padding(.leading, 18).frame(minWidth: 650, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                }.padding(.leading, 18).frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
             Divider()
             HStack {
@@ -125,7 +125,7 @@ struct TasksView: View {
                 Spacer()
                 Button("Done") { dismiss() }.keyboardShortcut(.cancelAction).disabled(store.busy)
             }
-        }.padding(24).frame(width: 1120, height: 780).interactiveDismissDisabled(store.busy)
+        }.padding(24).frame(width: sheetWidth(1120), height: 780).interactiveDismissDisabled(store.busy)
             .confirmationDialog("Delete this saved task?", isPresented: $deleteConfirm, titleVisibility: .visible) {
                 Button("Delete task", role: .destructive) {
                     store.invoke(["task-delete", draft.id], as: Reply.self) { value in
@@ -133,7 +133,7 @@ struct TasksView: View {
                     }
                 }
                 Button("Cancel", role: .cancel) {}
-            } message: { Text("The task definition is removed. Run history and plans remain available.") }
+            } message: { Text("The task definition is removed. Run history and reviews remain available.") }
             .onAppear { reload() }
             .onChange(of: selected) { if let item = item { edit(item) } }
             .sheet(item: $review, onDismiss: { reload() }) { plan in
@@ -143,7 +143,7 @@ struct TasksView: View {
     var rulesView: some View {
         VStack(alignment: .leading, spacing: 18) {
             Picker("Mode", selection: $draft.mode) {
-                Text("Plan only").tag("review"); Text("Cache cleanup").tag("cleanup")
+                Text("Review only").tag("review"); Text("Cache cleanup").tag("cleanup")
             }
             Picker("Age measure", selection: $draft.rules.ageBasis) {
                 Text("Git activity").tag("git"); Text("Project file modification").tag("files")
@@ -227,7 +227,7 @@ struct TasksView: View {
                 TableColumn("Result", value: \.status).width(105)
                 TableColumn("Summary", value: \.message)
             }
-            Button("Review saved plan") {
+            Button("Open saved review") {
                 if let id = runs.first(where: { $0.id == selectedRun })?.planID { loadPlan(id) }
             }.disabled(store.busy || runs.first(where: { $0.id == selectedRun })?.planID == nil)
         }
@@ -275,7 +275,7 @@ struct TaskPlanReview: View {
     @LocalState var accepted = false
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Review task plan").font(.title2).fontWeight(.semibold)
+            Text("Review task actions").font(.title2).fontWeight(.semibold)
             Text("Only ready cache rows can run. Held freeze candidates remain untouched.").font(.callout).foregroundStyle(.secondary)
             List(plan.rows) { row in
                 VStack(alignment: .leading, spacing: 6) {
@@ -283,17 +283,20 @@ struct TaskPlanReview: View {
                     Text(row.message).font(.caption).foregroundStyle(.secondary)
                     if let cleanup = row.cleanup {
                         ForEach(cleanup.items) { Text($0.path + " · " + bytes($0.size)).font(.caption).textSelection(.enabled) }
-                        ForEach(cleanup.blocked) { Text("Held: " + $0.path + " · " + $0.reason).font(.caption) }
+                        ForEach(cleanup.blocked) { Text("Not run: " + $0.path + " · " + $0.reason).font(.caption) }
                     }
                 }.padding(.vertical, 6)
             }
+            if let outcome = plan.outcome {
+                ScrollView { OutcomeSummaryView(outcome: outcome) }.frame(maxHeight: 220)
+            }
             if allowApply && plan.status == "review" {
                 Toggle("Move the listed ready cache folders to Trash; I reviewed them for custom edits.", isOn: $accepted)
-            } else { Text("This is a plan-only task or an already accepted plan.").font(.caption).foregroundStyle(.secondary) }
+            } else { Text("This is a review-only task or an already accepted review.").font(.caption).foregroundStyle(.secondary) }
             HStack {
                 Button("Close") { dismiss() }.keyboardShortcut(.cancelAction).disabled(store.busy)
                 Spacer()
-                Button("Apply reviewed cleanup") {
+                Button(plan.outcome?.actionLabel ?? "Move reviewed folders to Trash") {
                     store.invoke(["task-apply", plan.id], as: TaskRun.self) { _ in dismiss(); completed() }
                 }.buttonStyle(.borderedProminent).disabled(store.busy || !accepted || !allowApply || plan.status != "review" || !plan.rows.contains { $0.status == "ready" } || store.isDemo)
             }

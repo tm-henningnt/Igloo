@@ -9,8 +9,9 @@ import organizer as O
 import automation as tasks
 
 def parser():
-    p=argparse.ArgumentParser(prog="igloo",description="Plan, execute and schedule saved project-maintenance tasks.")
-    sub=p.add_subparsers(dest="command",required=True)
+    p=argparse.ArgumentParser(prog="igloo",description="Review, execute and schedule saved project-maintenance tasks.")
+    sub=p.add_subparsers(dest="command",required=True,
+                        metavar="{tasks,install-cli,create,show,delete,review,run,unschedule,apply,history,schedule}")
     for name in ("tasks","install-cli"):
         q=sub.add_parser(name);q.add_argument("--json",action="store_true")
     new=sub.add_parser("create",help="Save a task; this never enables a schedule.")
@@ -23,14 +24,14 @@ def parser():
     new.add_argument("--max-projects",type=int,default=5);new.add_argument("--max-gib",type=float,default=10)
     new.add_argument("--allow-unattended",action="store_true")
     new.add_argument("--json",action="store_true")
-    for name in ("show","delete","plan","run","unschedule"):
+    for name in ("show","delete","review","run","unschedule","plan"):
         q=sub.add_parser(name);q.add_argument("id");q.add_argument("--json",action="store_true")
         if name=="run":
             q.add_argument("--apply",action="store_true",help="Execute fresh matching cache cleanup under this task's saved limits.")
             q.add_argument("--scheduled",action="store_true",help=argparse.SUPPRESS)
             q.add_argument("--policy-hash",default="",help=argparse.SUPPRESS)
-    q=sub.add_parser("apply",help="Accept an existing reviewed task plan.")
-    q.add_argument("plan");q.add_argument("--accept",action="store_true",required=True);q.add_argument("--json",action="store_true")
+    q=sub.add_parser("apply",help="Accept a saved task review.")
+    q.add_argument("plan",metavar="REVIEW_ID");q.add_argument("--accept",action="store_true",required=True);q.add_argument("--json",action="store_true")
     q=sub.add_parser("history");q.add_argument("id",nargs="?");q.add_argument("--json",action="store_true")
     q=sub.add_parser("schedule");q.add_argument("id")
     q.add_argument("--frequency",choices=["daily","weekly"],default="weekly")
@@ -48,7 +49,7 @@ def dispatch(a):
                                       ageBasis=a.age,cacheKinds=a.cache_kind or sorted(O.CACHE_KINDS)),
              "include":a.include,"exclude":a.exclude,"projectTypes":a.types,"maxProjects":a.max_projects,
              "maxBytes":int(a.max_gib*1024**3),"unattended":a.allow_unattended})
-    if a.command in {"plan","run"}:
+    if a.command in {"review","plan","run"}:
         return tasks.run_task(a.id,apply=getattr(a,"apply",False),scheduled=getattr(a,"scheduled",False),expected_hash=getattr(a,"policy_hash",""))
     if a.command=="apply":return tasks.apply_plan(a.plan)
     if a.command=="history":return tasks.history(a.id)
@@ -89,7 +90,7 @@ def emit(a,value):
         for run in value["runs"]:print(run["started"][:19]+"  "+run["taskID"]+"  "+run["status"]+"  "+run["message"])
     elif "status" in value:
         print(value["taskName"]+": "+value["status"]+"\n"+value["message"])
-        if value.get("planID"):print("Plan: "+value["planID"])
+        if value.get("planID"):print("Review: "+value["planID"])
         print(str(value["ready"])+" ready, "+str(value["blocked"])+" held")
     elif "message" in value:print(value["message"])
     else:print(json.dumps(value,indent=2))

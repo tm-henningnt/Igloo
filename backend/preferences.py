@@ -20,16 +20,33 @@ def defaults(home=None):
     return {"version": 1, "projectsRoot": str(root),
             "archiveRoot": str(home / ".igloo/vault"), "cloneRoot": str(root),
             "stateRoot": str(home / ".igloo"),
+            "freezerBackupRoot": "", "freezerBackupCloudAcceptedRoot": "",
             "quietDays": 60, "githubOwner": "",
             "pythonExecutable": executable("python3", ["/opt/homebrew/bin/python3", "/usr/local/bin/python3", "/usr/bin/python3"]),
             "gitExecutable": executable("git", ["/usr/bin/git"]),
             "githubExecutable": executable("gh", ["/opt/homebrew/bin/gh", "/usr/local/bin/gh"])}
 
 
+def backup_root_identity(value):
+    """Stable destination identity for consent on case-insensitive macOS disks."""
+    return str(Path(value).expanduser().resolve()).casefold()
+
+
 def validate(value):
     if value.get("version") != 1:
         raise ValueError("Unsupported Igloo configuration version.")
     result = dict(value)
+    # A legacy global flag cannot authorize an unidentified destination.
+    result.pop("freezerBackupCloudAccepted", None)
+    for key in ("freezerBackupRoot", "freezerBackupCloudAcceptedRoot"):
+        raw = result.setdefault(key, "")
+        if not isinstance(raw, str) or "\x00" in raw or (raw and not raw.strip()):
+            raise ValueError("Set a valid path for " + key + ", or leave it empty.")
+        if raw:
+            p = Path(raw).expanduser()
+            if not p.is_absolute() or ".." in p.parts:
+                raise ValueError(key + " must be an absolute path without traversal.")
+            result[key] = backup_root_identity(p) if key == "freezerBackupCloudAcceptedRoot" else str(p)
     for key in ("projectsRoot", "archiveRoot", "stateRoot", "cloneRoot", "pythonExecutable", "gitExecutable", "githubExecutable"):
         raw = result.get(key)
         if not isinstance(raw, str) or not raw.strip() or "\x00" in raw:

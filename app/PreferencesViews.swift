@@ -7,6 +7,8 @@ struct UserPreferences: Codable {
     var archiveRoot: String
     var stateRoot: String
     var cloneRoot: String
+    var freezerBackupRoot = ""
+    var freezerBackupCloudAcceptedRoot = ""
     var quietDays = 60
     var githubOwner = ""
     var pythonExecutable: String
@@ -50,6 +52,13 @@ struct UserPreferences: Codable {
         func expand(_ value: String) -> String { (value as NSString).expandingTildeInPath }
         p.projectsRoot = expand(p.projectsRoot); p.archiveRoot = expand(p.archiveRoot)
         p.stateRoot = expand(p.stateRoot); p.cloneRoot = expand(p.cloneRoot)
+        p.freezerBackupRoot = expand(p.freezerBackupRoot)
+        p.freezerBackupCloudAcceptedRoot = expand(p.freezerBackupCloudAcceptedRoot)
+        for path in [p.freezerBackupRoot, p.freezerBackupCloudAcceptedRoot] where !path.isEmpty {
+            guard path.hasPrefix("/"), !path.split(separator: "/").contains("..") else {
+                throw NSError(domain: "Settings", code: 1, userInfo: [NSLocalizedDescriptionKey: "Use an absolute Freezer backup path without traversal."])
+            }
+        }
         p.pythonExecutable = Self.bundledPython ?? expand(p.pythonExecutable); p.gitExecutable = expand(p.gitExecutable)
         p.githubExecutable = expand(p.githubExecutable)
         let home = FileManager.default.homeDirectoryForCurrentUser.path
@@ -94,16 +103,104 @@ struct UserPreferences: Codable {
     }
 }
 
+struct BackupLocation: Identifiable {
+    var url: URL
+    var title: String
+    var provider: String?
+    var id: String { url.path }
+}
+
+enum BackupLocations {
+    private static func normalized(_ url: URL, resolve: Bool) -> String {
+        let standardized = url.standardizedFileURL
+        let path = (resolve ? standardized.resolvingSymlinksInPath() : standardized).path
+        let prefix = "/system/volumes/data/"
+        let folded = path.lowercased()
+        return folded.hasPrefix(prefix) ? "/" + String(folded.dropFirst(prefix.count)) : folded
+    }
+    private static func contains(_ path: String, in parent: String) -> Bool {
+        path == parent || path.hasPrefix(parent + "/")
+    }
+    static func provider(for url: URL) -> String? {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let paths = [normalized(url, resolve: false), normalized(url, resolve: true)]
+        let mobile = home.appendingPathComponent("Library/Mobile Documents")
+        let mobileParents = [normalized(mobile, resolve: false), normalized(mobile, resolve: true)]
+        if paths.contains(where: { path in mobileParents.contains(where: { contains(path, in: $0) }) }) { return "iCloud Drive" }
+        let cloudURL = home.appendingPathComponent("Library/CloudStorage")
+        let cloudParents = [normalized(cloudURL, resolve: false), normalized(cloudURL, resolve: true)]
+        for path in paths {
+            guard let cloud = cloudParents.first(where: { contains(path, in: $0) }) else { continue }
+            let relative = String(path.dropFirst(cloud.count)).split(separator: "/").first.map(String.init) ?? ""
+            let parts = relative.split(separator: "-", maxSplits: 1).map(String.init)
+            let provider = parts.first ?? ""
+            switch provider.lowercased() {
+            case "googledrive": return "Google Drive"
+            case "onedrive": return "OneDrive"
+            case "dropbox": return "Dropbox"
+            case "box": return "Box"
+            default:
+                if parts.count > 1 && !provider.contains("@") && provider.range(of: "^[a-z0-9_ ]+$", options: .regularExpression) != nil {
+                    return provider.capitalized
+                }
+                return "Cloud storage"
+            }
+        }
+        return nil
+    }
+    static func identity(for url: URL) -> String {
+        url.standardizedFileURL.resolvingSymlinksInPath().path.lowercased()
+    }
+    static func detected() -> [BackupLocation] {
+        let fm = FileManager.default
+        let keys: [URLResourceKey] = [.volumeIsInternalKey, .volumeIsLocalKey, .volumeNameKey]
+        let disks = (fm.mountedVolumeURLs(includingResourceValuesForKeys: keys, options: [.skipHiddenVolumes]) ?? []).compactMap { url -> BackupLocation? in
+            guard let values = try? url.resourceValues(forKeys: Set(keys)), values.volumeIsInternal == false,
+                  values.volumeIsLocal == true, url.path != "/" else { return nil }
+            return BackupLocation(url: url, title: values.volumeName ?? "External disk", provider: nil)
+        }
+        let home = fm.homeDirectoryForCurrentUser
+        let iCloud = home.appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs")
+        var result = disks
+        if fm.fileExists(atPath: iCloud.path) { result.append(BackupLocation(url: iCloud, title: "iCloud Drive", provider: "iCloud Drive")) }
+        let cloud = home.appendingPathComponent("Library/CloudStorage")
+        for url in (try? fm.contentsOfDirectory(at: cloud, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])) ?? [] {
+            guard (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true,
+                  let provider = provider(for: url) else { continue }
+            result.append(BackupLocation(url: url, title: provider, provider: provider))
+        }
+        return result
+    }
+}
+
 struct AppSettingsView: View {
     @EnvironmentObject var store: OrganizerStore
     @LocalState var draft = UserPreferences.read()
     @LocalState var message = ""
+    @LocalState var backupLocations: [BackupLocation] = []
+    @LocalState var pendingCloud: BackupLocation?
+    @LocalState var confirmCloud = false
+    var backupTitle: String {
+        if draft.freezerBackupRoot.isEmpty { return "None" }
+        let url = URL(fileURLWithPath: draft.freezerBackupRoot)
+        return BackupLocations.provider(for: url) ?? backupLocations.first(where: { $0.url.path == url.path })?.title ?? "Chosen folder"
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Igloo Settings").font(.title2).fontWeight(.semibold)
             Form {
                 pathField("Projects root", value: $draft.projectsRoot)
-                pathField("Archive vault", value: $draft.archiveRoot)
+                pathField("Freezer", value: $draft.archiveRoot)
+                HStack {
+                    Text("Freezer backup folder")
+                    Spacer()
+                    Menu(backupTitle) {
+                        Button("None") { draft.freezerBackupRoot = ""; draft.freezerBackupCloudAcceptedRoot = "" }
+                        ForEach(backupLocations) { location in Button(location.title) { chooseBackup(location) } }
+                        Divider()
+                        Button("Choose…") { chooseBackupFolder() }
+                    }.accessibilityLabel(Text("Freezer backup folder, " + backupTitle))
+                }
                 pathField("Runtime state", value: $draft.stateRoot)
                 pathField("Default clone folder", value: $draft.cloneRoot)
                 Stepper("Quiet project threshold: \(draft.quietDays) days", value: $draft.quietDays, in: 1...3650)
@@ -131,7 +228,48 @@ struct AppSettingsView: View {
                     } catch { message = error.localizedDescription }
                 }.buttonStyle(.borderedProminent).disabled(store.busy || store.isDemo)
             }
-        }.padding(24).frame(width: 760).onAppear { draft = store.preferences }
+        }.padding(24).frame(width: 760)
+            .onAppear {
+                draft = store.preferences
+                backupLocations = store.isDemo
+                    ? [BackupLocation(url: URL(fileURLWithPath: "/Users/demo/Library/CloudStorage/Example-account"),
+                                      title: "Cloud storage", provider: "Cloud storage")]
+                    : BackupLocations.detected()
+                if store.isDemo && DemoCapture.options?.view == "settings-cloud" {
+                    pendingCloud = BackupLocation(url: URL(fileURLWithPath: "/Users/demo/Library/CloudStorage/Example-account"),
+                                                  title: "Cloud storage", provider: "Cloud storage")
+                    confirmCloud = true
+                }
+            }
+            .confirmationDialog("Confirm cloud backup", isPresented: $confirmCloud, titleVisibility: .visible) {
+                Button("Allow unencrypted upload") {
+                    if let location = pendingCloud {
+                        draft.freezerBackupRoot = location.url.path
+                        draft.freezerBackupCloudAcceptedRoot = BackupLocations.identity(for: location.url)
+                    }
+                    pendingCloud = nil
+                }
+                Button("Cancel", role: .cancel) { pendingCloud = nil }
+            } message: {
+                Text("Backups include local-only files such as environment and key files. They are uploaded unencrypted to " + (pendingCloud?.provider ?? "cloud storage") + ".")
+            }
+    }
+    private func chooseBackup(_ location: BackupLocation) {
+        let identity = BackupLocations.identity(for: location.url)
+        if location.provider != nil && identity != draft.freezerBackupCloudAcceptedRoot {
+            pendingCloud = location; confirmCloud = true
+        } else {
+            draft.freezerBackupRoot = location.url.path
+            if location.provider == nil { draft.freezerBackupCloudAcceptedRoot = "" }
+        }
+    }
+    private func chooseBackupFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.canCreateDirectories = true
+        if panel.runModal() == .OK, let url = panel.url {
+            let provider = BackupLocations.provider(for: url)
+            chooseBackup(BackupLocation(url: url, title: provider ?? "Chosen folder", provider: provider))
+        }
     }
     private func pathField(_ title: String, value: Binding<String>) -> some View {
         HStack {
@@ -249,7 +387,7 @@ struct RemoteRepositoriesView: View {
                     }.buttonStyle(.borderedProminent).disabled(store.busy || selected.isEmpty)
                 }
             }
-        }.padding(24).frame(width: 1120, height: 720)
+        }.padding(24).frame(width: sheetWidth(1120), height: 720)
             .onAppear {
                 parent = store.preferences.cloneRoot
                 owner = store.preferences.githubOwner

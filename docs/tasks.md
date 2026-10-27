@@ -2,7 +2,7 @@
 
 Save a task when you want to repeat the same cleanup rules. Each run scans your projects again and records what it found and what happened.
 
-Start with **Plan only** to see the suggestions without moving files. Choose **Cache cleanup** when you want to apply a reviewed plan or allow scheduled cleanup.
+Start with **Review only** to see the suggestions without moving files. Choose **Cache cleanup** when you want to accept a Review or allow scheduled cleanup.
 
 ## Set up a task in the app
 
@@ -12,17 +12,25 @@ Open **Tools → Tasks** and create a task:
 2. Choose Git activity or source-file age, then set cleanup and freeze ages.
 3. Pick the cache types and projects to include. Add exclusions for anything you want left alone.
 4. Set limits on projects and disk space per run.
-5. Save, then choose **Plan now**.
+5. Save, then choose **Review now**.
 
 Recent projects stay as they are. Projects between the two ages get cache cleanup; older projects are held for freeze review. Tasks never commit, push, freeze, remove project checkouts, or empty Trash.
 
-The wizard's **Save rules as a task** button is another starting point. It creates a plan-only task from those rules; individual project overrides are not copied.
+Put a project on **Hold** to exclude it from wizard proposals and task actions, including scheduled cleanup. The review lists it with “On hold.” Notes stay with the project. Existing Keep decisions become Hold; the other old decisions become unheld and keep their notes. Manual cleanup, Preserve and Freeze remain available and show the Hold in their Review.
+
+The wizard's **Save rules as a task** button is another starting point. It creates a review-only task from those rules; individual project overrides are not copied.
 
 ## Review and run
 
-Open a saved plan from the task's history to see the exact folders and any held projects. For a cleanup task, choose **Apply reviewed cleanup** to accept it.
+Open a saved review from the task's history to see the exact folders and any held projects. For a cleanup task, choose **Apply reviewed cleanup** to accept it.
 
-Reviews expire after ten minutes. If you change the rules or the project changes, prepare a new plan.
+Reviews expire after ten minutes. If you change the rules or the project changes, prepare a new review.
+
+Preserve keeps the checkout after verifying local recovery and the reviewed remote refs. Freeze uses one Review and one acceptance: it runs Preserve, verifies recovery again, then removes the checkouts. If a process opens files, content changes, or verification fails before removal, the checkout stays and the Freezer records why Freeze stopped. A remote is required for both actions.
+
+Every Review summarizes the outcome: checkout paths to remove, estimates of space freed and additional space used, recovery sets written to the Freezer, exact refs and their remote destination, folders moved to Trash, and projects left out. Wizard and task summaries add their ready rows. Results report observed actions alongside the original space estimates. Moving folders to Trash frees no disk space until Trash is emptied. Preserve estimates zero bytes freed and reports its additional recovery space separately as `bytesUsedEstimate`. Both estimates are nonnegative; the observed net `bytesFreed` can be negative when recovery uses additional space. Freeze estimates use allocated file bytes and an uncompressed recovery estimate; compression and filesystem allocation can change the observed result.
+
+The Review states the number of recovery sets and their Freezer location. Exact recovery paths are assigned during execution and appear in the result.
 
 Only allow automatic cleanup for folders you're willing to regenerate. Igloo checks for active sessions, tracked files, and local configuration, but dependencies can still contain custom edits you care about.
 
@@ -34,25 +42,25 @@ Choose **Tasks → Install CLI**. The command is installed at `~/.local/bin/iglo
 
 ```sh
 igloo create weekly-review --cache-days 45 --freeze-days 180
-igloo plan weekly-review
+igloo review weekly-review
 igloo history weekly-review
 ```
 
-The default is plan-only, using Git activity, with limits of five projects and ten GiB per run. Nothing is scheduled automatically.
+The default is review-only, using Git activity, with limits of five projects and ten GiB per run. Nothing is scheduled automatically.
 
 Use `igloo tasks` to list tasks and `igloo show weekly-review` to inspect one. Creating a task with an existing ID replaces its saved rules.
 
-### Clean up after reviewing a plan
+### Clean up after a Review
 
 ```sh
 igloo create weekly-caches --mode cleanup --cache-days 45 --freeze-days 180
-igloo plan weekly-caches
+igloo review weekly-caches
 ```
 
-Review the plan in the app's task history. The CLI prints its ID. To accept that exact plan:
+Inspect the Review in the app's task history. The CLI prints its ID. To accept that exact Review:
 
 ```sh
-igloo apply PLAN_ID --accept
+igloo apply REVIEW_ID --accept
 ```
 
 To scan and execute directly under the saved task rules:
@@ -61,7 +69,7 @@ To scan and execute directly under the saved task rules:
 igloo run weekly-caches --apply
 ```
 
-Without `--apply`, running a task only saves a plan.
+Without `--apply`, running a task only saves a review.
 
 ### Limit what a task can touch
 
@@ -73,11 +81,11 @@ igloo create python-caches --mode cleanup --age files --cache-kind .venv --cache
 
 Folders must be inside your configured projects folder. Empty include and project-type lists mean all projects; exclusions always win. A project's known linked worktree caches are reviewed with it.
 
-Extra projects beyond the project limit are held. If the proposed batch exceeds the space limit, the whole batch is held. Changing your workspace or archive location requires updating the task.
+Extra projects beyond the project limit are held. If the proposed Review exceeds the space limit, the whole selection is held. Changing your workspace or Freezer location requires updating the task.
 
 ## Schedule a task
 
-In the app, choose the task's **Schedule** section and set a daily or weekly time. Plan-only tasks produce reports. Cleanup tasks also need unattended cleanup enabled in their saved rules.
+In the app, choose the task's **Schedule** section and set a daily or weekly time. Review-only tasks produce reports. Cleanup tasks also need unattended cleanup enabled in their saved rules.
 
 From the CLI, schedule the review task above:
 
@@ -107,8 +115,8 @@ Deleting a task keeps its run history.
 
 ## Check results and recover files
 
-Use the task's **History** section or `igloo history TASK_ID` to see completed, held, skipped, and failed runs. Open the saved plan for details. Caches moved to Trash can be restored through **Trash & restore history**.
+Use the task's **History** section or `igloo history TASK_ID` to see completed, held, skipped, and failed runs. Open the saved review for details. Caches moved to Trash can be restored through **Trash & restore history**.
 
-If a run stops unexpectedly, inspect its plan and recovery history before running a fresh plan. Don't assume an interrupted run completed everything.
+If a run stops unexpectedly, inspect its review and recovery history before running a fresh review. Don't assume an interrupted run completed everything.
 
-For scripts, add `--json` to task or history commands. Exit codes are 0 for a saved plan, completed run, or nothing to do; 1 for a refusal, failure, held, or partial result; and 75 when another operation is running.
+For scripts, add `--json` to task or history commands. Exit codes are 0 for a saved review, completed run, or nothing to do; 1 for a refusal, failure, held, or partial result; and 75 when another operation is running.

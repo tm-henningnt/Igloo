@@ -3,7 +3,7 @@
   "generated": "2026-09-21T10:00:00+00:00",
   "root": "/Users/demo/Projects",
   "source": "Fictional example catalog",
-  "totalSize": 25769803774,
+  "totalSize": 27487790692,
   "freeSpace": 193273528320,
   "projects": [
     {
@@ -30,8 +30,8 @@
       "remotes": [
         {
           "name": "origin",
-          "url": "https://github.com/example/aurora notes.git",
-          "pushURL": "https://github.com/example/aurora notes.git"
+          "url": "https://github.com/example/aurora-notes.git",
+          "pushURL": "https://github.com/example/aurora-notes.git"
         }
       ],
       "active": true,
@@ -42,7 +42,7 @@
       "branches": [
         {
           "name": "main",
-          "sha": "1111111111111111111111111111111111111111",
+          "sha": "a1b2c3d000000000000000000000000000000000",
           "upstream": "origin/main",
           "tracking": "",
           "date": "2026-09-20",
@@ -123,8 +123,20 @@
       ],
       "uncovered": 1,
       "unknown": 0,
-      "decision": "Keep",
-      "note": ""
+      "note": "",
+      "blockers": [
+        {
+          "code": "changed-source",
+          "message": "Commit or resolve changed/untracked source first. Ignored local-only files will be preserved separately.",
+          "fix": "commit"
+        },
+        {
+          "code": "open-processes",
+          "message": "A process still has files open in this project. Close it before freezing.",
+          "fix": null
+        }
+      ],
+      "hold": false
     },
     {
       "id": "/Users/demo/Projects/Paper Trail",
@@ -147,20 +159,14 @@
       "lastCommit": "2026-09-20",
       "remoteStatus": "Verified",
       "verifiedAt": "2026-09-21",
-      "remotes": [
-        {
-          "name": "origin",
-          "url": "https://github.com/example/paper trail.git",
-          "pushURL": "https://github.com/example/paper trail.git"
-        }
-      ],
+      "remotes": [],
       "active": false,
       "activityKnown": true,
       "processes": [],
       "branches": [
         {
           "name": "main",
-          "sha": "1111111111111111111111111111111111111111",
+          "sha": "b2c3d4e000000000000000000000000000000000",
           "upstream": "origin/main",
           "tracking": "",
           "date": "2026-09-20",
@@ -217,8 +223,15 @@
       ],
       "uncovered": 0,
       "unknown": 0,
-      "decision": "Undecided",
-      "note": ""
+      "note": "",
+      "blockers": [
+        {
+          "code": "no-remote",
+          "message": "Connect a remote before preserving or freezing this project.",
+          "fix": "connect-remote"
+        }
+      ],
+      "hold": false
     },
     {
       "id": "/Users/demo/Projects/Stone Bridge",
@@ -244,8 +257,8 @@
       "remotes": [
         {
           "name": "origin",
-          "url": "https://github.com/example/stone bridge.git",
-          "pushURL": "https://github.com/example/stone bridge.git"
+          "url": "https://github.com/example/stone-bridge.git",
+          "pushURL": "https://github.com/example/stone-bridge.git"
         }
       ],
       "active": false,
@@ -254,7 +267,7 @@
       "branches": [
         {
           "name": "main",
-          "sha": "1111111111111111111111111111111111111111",
+          "sha": "c3d4e5f000000000000000000000000000000000",
           "upstream": "origin/main",
           "tracking": "",
           "date": "2026-09-20",
@@ -311,8 +324,20 @@
       ],
       "uncovered": 0,
       "unknown": 0,
-      "decision": "Undecided",
-      "note": ""
+      "note": "",
+      "blockers": [
+        {
+          "code": "no-commit",
+          "message": "Make an initial commit before freezing this project.",
+          "fix": "commit"
+        },
+        {
+          "code": "own-source",
+          "message": "The running Igloo app is protected from freezing. Its Git setup and source commits are available.",
+          "fix": null
+        }
+      ],
+      "hold": false
     },
     {
       "id": "/Users/demo/Projects/Signal Lab",
@@ -338,8 +363,8 @@
       "remotes": [
         {
           "name": "origin",
-          "url": "https://github.com/example/signal lab.git",
-          "pushURL": "https://github.com/example/signal lab.git"
+          "url": "https://github.com/example/signal-lab.git",
+          "pushURL": "https://github.com/example/signal-lab.git"
         }
       ],
       "active": false,
@@ -348,7 +373,7 @@
       "branches": [
         {
           "name": "main",
-          "sha": "1111111111111111111111111111111111111111",
+          "sha": "d4e5f60000000000000000000000000000000000",
           "upstream": "origin/main",
           "tracking": "",
           "date": "2026-09-20",
@@ -405,8 +430,9 @@
       ],
       "uncovered": 0,
       "unknown": 0,
-      "decision": "Undecided",
-      "note": ""
+      "note": "",
+      "blockers": [],
+      "hold": true
     },
     {
       "id": "/Users/demo/Projects/Harbor CLI",
@@ -432,8 +458,8 @@
       "remotes": [
         {
           "name": "origin",
-          "url": "https://github.com/example/harbor cli.git",
-          "pushURL": "https://github.com/example/harbor cli.git"
+          "url": "https://github.com/example/harbor-cli.git",
+          "pushURL": "https://github.com/example/harbor-cli.git"
         }
       ],
       "active": false,
@@ -442,7 +468,7 @@
       "branches": [
         {
           "name": "main",
-          "sha": "1111111111111111111111111111111111111111",
+          "sha": "e5f6071000000000000000000000000000000000",
           "upstream": "origin/main",
           "tracking": "",
           "date": "2026-09-20",
@@ -499,11 +525,368 @@
       ],
       "uncovered": 0,
       "unknown": 0,
-      "decision": "Undecided",
-      "note": ""
+      "note": "",
+      "blockers": [],
+      "hold": false
+    },
+    {
+      "id": "/Users/demo/Projects/Harbor CLI Copy",
+      "name": "Harbor CLI Copy",
+      "path": "/Users/demo/Projects/Harbor CLI Copy",
+      "common": "/Users/demo/Projects/Harbor CLI Copy/.git",
+      "category": "Examples",
+      "projectType": "Command-line tool",
+      "detectedType": "Command-line tool",
+      "languages": [
+        "Python"
+      ],
+      "typeEvidence": [
+        "Example project metadata"
+      ],
+      "size": 1717986918,
+      "git": true,
+      "ageDays": 230,
+      "fileAgeDays": 230,
+      "lastCommit": "2026-09-20",
+      "remoteStatus": "Verified",
+      "verifiedAt": "2026-09-21",
+      "remotes": [
+        {
+          "name": "origin",
+          "url": "https://github.com/example/harbor-cli.git",
+          "pushURL": "https://github.com/example/harbor-cli.git"
+        }
+      ],
+      "active": false,
+      "activityKnown": true,
+      "processes": [],
+      "branches": [
+        {
+          "name": "main",
+          "sha": "f607182000000000000000000000000000000000",
+          "upstream": "origin/main",
+          "tracking": "",
+          "date": "2026-09-20",
+          "uncovered": 0,
+          "privateHistory": false
+        }
+      ],
+      "worktrees": [
+        {
+          "path": "/Users/demo/Projects/Harbor CLI Copy",
+          "branch": "main",
+          "exists": true,
+          "changes": 0,
+          "locked": false,
+          "prunable": ""
+        }
+      ],
+      "changes": [],
+      "stashes": [],
+      "refs": [],
+      "detachedHeads": [],
+      "localFiles": [
+        {
+          "path": "/Users/demo/Projects/Harbor CLI Copy/.env.local",
+          "size": 512,
+          "template": false,
+          "tracked": false,
+          "ignored": true
+        }
+      ],
+      "ignoredFiles": [
+        {
+          "checkout": "/Users/demo/Projects/Harbor CLI Copy",
+          "path": ".env.local"
+        },
+        {
+          "checkout": "/Users/demo/Projects/Harbor CLI Copy",
+          "path": ".venv/"
+        }
+      ],
+      "candidates": [
+        {
+          "id": "/Users/demo/Projects/Harbor CLI Copy/.venv",
+          "path": "/Users/demo/Projects/Harbor CLI Copy/.venv",
+          "kind": ".venv",
+          "size": 966367641,
+          "owner": "/Users/demo/Projects/Harbor CLI Copy",
+          "eligible": true,
+          "reason": "Ignored dependency; review custom edits"
+        }
+      ],
+      "holds": [
+        "Local configuration to preserve"
+      ],
+      "uncovered": 0,
+      "unknown": 0,
+      "note": "",
+      "blockers": [],
+      "hold": false
+    },
+    {
+      "id": "/Users/demo/Projects/New Empty Project",
+      "name": "New Empty Project",
+      "path": "/Users/demo/Projects/New Empty Project",
+      "common": "/Users/demo/Projects/New Empty Project/.git",
+      "category": "Examples",
+      "projectType": "Web app",
+      "detectedType": "Web app",
+      "languages": [
+        "TypeScript"
+      ],
+      "typeEvidence": [
+        "Example project metadata"
+      ],
+      "size": 0,
+      "git": true,
+      "ageDays": 14,
+      "fileAgeDays": 14,
+      "lastCommit": "",
+      "remoteStatus": "No remote",
+      "verifiedAt": "",
+      "remotes": [],
+      "active": false,
+      "activityKnown": true,
+      "processes": [],
+      "branches": [],
+      "worktrees": [
+        {
+          "path": "/Users/demo/Projects/New Empty Project",
+          "branch": "main",
+          "exists": true,
+          "changes": 0,
+          "locked": false,
+          "prunable": ""
+        }
+      ],
+      "changes": [],
+      "stashes": [],
+      "refs": [],
+      "detachedHeads": [],
+      "localFiles": [],
+      "ignoredFiles": [],
+      "candidates": [],
+      "holds": [],
+      "uncovered": 0,
+      "unknown": 0,
+      "note": "",
+      "blockers": [
+        {
+          "code": "no-remote",
+          "message": "Connect a remote before preserving or freezing this project.",
+          "fix": "connect-remote"
+        },
+        {
+          "code": "no-files",
+          "message": "Add files to this project, then commit them.",
+          "fix": null
+        }
+      ],
+      "hold": false
     }
   ],
   "errors": [],
   "history": [],
-  "archives": []
+  "archives": [
+    {
+      "id": "demo-backed-up",
+      "name": "Glacier Notes",
+      "path": "/Users/demo/Projects/Glacier Notes",
+      "state": "ready",
+      "created": "2026-10-01T10:00:00+00:00",
+      "destination": "Example remote",
+      "message": "Fictional demo archive.",
+      "archiveLocation": "/Users/demo/Project Recovery/demo-backed-up",
+      "checkouts": 1,
+      "paths": [
+        "/Users/demo/Projects/Glacier Notes"
+      ],
+      "leftovers": []
+    },
+    {
+      "id": "demo-unavailable",
+      "name": "North Star",
+      "path": "/Users/demo/Projects/North Star",
+      "state": "ready",
+      "created": "2026-10-01T10:00:00+00:00",
+      "destination": "Example remote",
+      "message": "Fictional demo archive.",
+      "archiveLocation": "/Users/demo/Project Recovery/demo-unavailable",
+      "checkouts": 1,
+      "paths": [
+        "/Users/demo/Projects/North Star"
+      ],
+      "leftovers": []
+    },
+    {
+      "id": "demo-changed",
+      "name": "Ice Garden",
+      "path": "/Users/demo/Projects/Ice Garden",
+      "state": "frozen",
+      "created": "2026-10-01T10:00:00+00:00",
+      "destination": "Example remote",
+      "message": "Fictional demo archive.",
+      "archiveLocation": "/Users/demo/Project Recovery/demo-changed",
+      "checkouts": 1,
+      "paths": [
+        "/Users/demo/Projects/Ice Garden"
+      ],
+      "leftovers": []
+    }
+  ],
+  "reviewOutcomes": {
+    "cleanup": {
+      "checkoutsRemoved": {
+        "count": 0,
+        "paths": []
+      },
+      "bytesFreedEstimate": 0,
+      "bytesUsedEstimate": 0,
+      "bytesFreed": null,
+      "archivesWritten": {
+        "count": 0,
+        "location": "/Users/demo/Project Recovery",
+        "paths": []
+      },
+      "refsPushed": [],
+      "movedToTrash": 2,
+      "held": [
+        {
+          "path": "/Users/demo/Projects/Signal Lab",
+          "reason": "This project is on Hold."
+        }
+      ],
+      "observed": false
+    },
+    "preserve": {
+      "checkoutsRemoved": {
+        "count": 0,
+        "paths": []
+      },
+      "bytesFreedEstimate": 0,
+      "bytesUsedEstimate": 2048,
+      "bytesFreed": null,
+      "archivesWritten": {
+        "count": 1,
+        "location": "/Users/demo/Project Recovery",
+        "paths": null
+      },
+      "refsPushed": [
+        {
+          "ref": "refs/heads/main",
+          "sha": "0718293000000000000000000000000000000000",
+          "destination": "https://github.com/example/demo.git"
+        }
+      ],
+      "movedToTrash": 0,
+      "held": [],
+      "observed": false
+    },
+    "freeze": {
+      "checkoutsRemoved": {
+        "count": 1,
+        "paths": [
+          "/Users/demo/Projects/Paper Trail"
+        ]
+      },
+      "bytesFreedEstimate": 1717986918,
+      "bytesUsedEstimate": 0,
+      "bytesFreed": null,
+      "archivesWritten": {
+        "count": 1,
+        "location": "/Users/demo/Project Recovery",
+        "paths": null
+      },
+      "refsPushed": [
+        {
+          "ref": "refs/heads/main",
+          "sha": "1829304000000000000000000000000000000000",
+          "destination": "https://github.com/example/demo.git"
+        }
+      ],
+      "movedToTrash": 0,
+      "held": [],
+      "observed": false
+    },
+    "wizard": {
+      "checkoutsRemoved": {
+        "count": 1,
+        "paths": [
+          "/Users/demo/Projects/Paper Trail"
+        ]
+      },
+      "bytesFreedEstimate": 1717986918,
+      "bytesUsedEstimate": 0,
+      "bytesFreed": null,
+      "archivesWritten": {
+        "count": 1,
+        "location": "/Users/demo/Project Recovery",
+        "paths": null
+      },
+      "refsPushed": [
+        {
+          "ref": "refs/heads/main",
+          "sha": "2930415000000000000000000000000000000000",
+          "destination": "https://github.com/example/demo.git"
+        }
+      ],
+      "movedToTrash": 2,
+      "held": [
+        {
+          "path": "/Users/demo/Projects/Signal Lab",
+          "reason": "This project is on Hold."
+        }
+      ],
+      "observed": false
+    }
+  },
+  "backupStatus": {
+    "configured": true,
+    "available": true,
+    "reason": "",
+    "cloud": false,
+    "acceptanceRoot": "",
+    "cloudAccepted": false,
+    "archives": [
+      {
+        "id": "demo-backed-up",
+        "copyID": "demo-backed-up",
+        "backedUp": true,
+        "lastVerified": "2026-10-01T10:00:00+00:00",
+        "missing": false,
+        "status": "Backed up",
+        "reason": ""
+      },
+      {
+        "id": "demo-unavailable",
+        "copyID": "demo-unavailable",
+        "backedUp": false,
+        "lastVerified": null,
+        "missing": true,
+        "status": "Not backed up",
+        "reason": "The backup folder is disconnected."
+      },
+      {
+        "id": "demo-changed",
+        "copyID": "demo-changed",
+        "backedUp": false,
+        "lastVerified": null,
+        "missing": true,
+        "status": "Not backed up",
+        "reason": "The backup copy does not match the Freezer archive."
+      }
+    ],
+    "orphans": [
+      {
+        "id": "demo-old-copy",
+        "copyID": "demo-old-copy",
+        "backedUp": true,
+        "lastVerified": "2026-10-01T10:00:00+00:00",
+        "missing": false,
+        "status": "Backed up",
+        "reason": ""
+      }
+    ]
+  }
 }

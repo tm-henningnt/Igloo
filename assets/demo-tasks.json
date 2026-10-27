@@ -50,14 +50,247 @@
         "started": "2026-09-21T09:00:00+00:00",
         "status": "planned",
         "message": "Plan saved. One cache candidate and one project held for freeze review.",
-        "planID": null,
+        "planID": "demo-task-review",
         "ready": 1,
         "blocked": 1,
-        "cacheBytes": 3113851289
+        "cacheBytes": 1610612736
       },
       "compatible": true
     }
   ],
   "cliPath": "/Users/demo/.local/bin/igloo",
-  "cliInstalled": true
+  "cliInstalled": true,
+  "demoWizardReview": {
+    "id": "demo-review",
+    "created": "2026-10-01T10:00:00+00:00",
+    "root": "/Users/demo/Projects",
+    "vault": "/Users/demo/Project Recovery",
+    "rules": {
+      "cacheDays": 30,
+      "freezeDays": 180,
+      "ignoreActive": true,
+      "ageBasis": "git",
+      "cacheKinds": [
+        "node_modules",
+        ".venv",
+        "venv",
+        ".turbo",
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".next",
+        ".nuxt",
+        ".svelte-kit",
+        ".parcel-cache"
+      ]
+    },
+    "status": "review",
+    "message": "Fictional demo review; no project files will change.",
+    "rows": [
+      {
+        "id": "/Users/demo/Projects/Harbor CLI Copy",
+        "path": "/Users/demo/Projects/Harbor CLI Copy",
+        "name": "Harbor CLI Copy",
+        "action": "cleanup",
+        "status": "ready",
+        "message": "Fictional cleanup example.",
+        "cleanup": {
+          "id": "demo-cleanup",
+          "created": "2026-10-01T10:00:00+00:00",
+          "items": [
+            {
+              "path": "/Users/demo/Projects/Harbor CLI Copy/node_modules",
+              "owner": "/Users/demo/Projects/Harbor CLI Copy",
+              "size": 1073741824
+            },
+            {
+              "path": "/Users/demo/Projects/Harbor CLI Copy/.cache",
+              "owner": "/Users/demo/Projects/Harbor CLI Copy",
+              "size": 536870912
+            }
+          ],
+          "blocked": [],
+          "totalSize": 1610612736,
+          "held": false,
+          "outcome": {
+            "checkoutsRemoved": {
+              "count": 0,
+              "paths": []
+            },
+            "bytesFreedEstimate": 0,
+            "bytesUsedEstimate": 0,
+            "bytesFreed": null,
+            "archivesWritten": {
+              "count": 0,
+              "location": "/Users/demo/Project Recovery",
+              "paths": []
+            },
+            "refsPushed": [],
+            "movedToTrash": 2,
+            "held": [],
+            "observed": false
+          }
+        },
+        "freeze": null,
+        "archiveID": null,
+        "results": null
+      },
+      {
+        "id": "/Users/demo/Projects/Harbor CLI",
+        "path": "/Users/demo/Projects/Harbor CLI",
+        "name": "Harbor CLI",
+        "action": "freeze",
+        "status": "ready",
+        "message": "Fictional freeze example.",
+        "cleanup": null,
+        "freeze": {
+          "id": "demo-freeze",
+          "created": "2026-10-01T10:00:00+00:00",
+          "name": "Harbor CLI",
+          "path": "/Users/demo/Projects/Harbor CLI",
+          "destination": "Example remote",
+          "publish": [],
+          "localRefs": [],
+          "checkouts": [
+            "/Users/demo/Projects/Harbor CLI"
+          ],
+          "localCount": 1,
+          "localSize": 4096,
+          "localFiles": [
+            "/Users/demo/Projects/Harbor CLI/settings.local"
+          ],
+          "excluded": [
+            "/Users/demo/Projects/Harbor CLI/node_modules"
+          ],
+          "archiveLocation": "/Users/demo/Project Recovery",
+          "message": "Fictional demo archive."
+        },
+        "archiveID": null,
+        "results": null
+      }
+    ],
+    "outcome": {
+      "checkoutsRemoved": {
+        "count": 1,
+        "paths": [
+          "/Users/demo/Projects/Harbor CLI"
+        ]
+      },
+      "bytesFreedEstimate": 4509715660,
+      "bytesUsedEstimate": 0,
+      "bytesFreed": null,
+      "archivesWritten": {
+        "count": 1,
+        "location": "/Users/demo/Project Recovery",
+        "paths": null
+      },
+      "refsPushed": [
+        {
+          "ref": "refs/heads/main",
+          "sha": "a1b2c3d",
+          "destination": "https://github.com/example/harbor-cli.git"
+        }
+      ],
+      "movedToTrash": 2,
+      "held": [],
+      "observed": false
+    }
+  },
+  "demoTaskReview": {
+    "id": "demo-task-review",
+    "created": "2026-10-01T10:00:00+00:00",
+    "root": "/Users/demo/Projects",
+    "vault": "/Users/demo/Project Recovery",
+    "rules": {
+      "cacheDays": 30,
+      "freezeDays": 180,
+      "ignoreActive": true,
+      "ageBasis": "git",
+      "cacheKinds": [
+        "node_modules",
+        ".venv",
+        "venv",
+        ".turbo",
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".next",
+        ".nuxt",
+        ".svelte-kit",
+        ".parcel-cache"
+      ]
+    },
+    "status": "review",
+    "message": "Fictional demo review; no project files will change.",
+    "rows": [
+      {
+        "id": "/Users/demo/Projects/Harbor CLI Copy",
+        "path": "/Users/demo/Projects/Harbor CLI Copy",
+        "name": "Harbor CLI Copy",
+        "action": "cleanup",
+        "status": "ready",
+        "message": "Fictional cleanup example.",
+        "cleanup": {
+          "id": "demo-cleanup",
+          "created": "2026-10-01T10:00:00+00:00",
+          "items": [
+            {
+              "path": "/Users/demo/Projects/Harbor CLI Copy/node_modules",
+              "owner": "/Users/demo/Projects/Harbor CLI Copy",
+              "size": 1073741824
+            },
+            {
+              "path": "/Users/demo/Projects/Harbor CLI Copy/.cache",
+              "owner": "/Users/demo/Projects/Harbor CLI Copy",
+              "size": 536870912
+            }
+          ],
+          "blocked": [],
+          "totalSize": 1610612736,
+          "held": false,
+          "outcome": {
+            "checkoutsRemoved": {
+              "count": 0,
+              "paths": []
+            },
+            "bytesFreedEstimate": 0,
+            "bytesUsedEstimate": 0,
+            "bytesFreed": null,
+            "archivesWritten": {
+              "count": 0,
+              "location": "/Users/demo/Project Recovery",
+              "paths": []
+            },
+            "refsPushed": [],
+            "movedToTrash": 2,
+            "held": [],
+            "observed": false
+          }
+        },
+        "freeze": null,
+        "archiveID": null,
+        "results": null
+      }
+    ],
+    "outcome": {
+      "checkoutsRemoved": {
+        "count": 0,
+        "paths": []
+      },
+      "bytesFreedEstimate": 0,
+      "bytesUsedEstimate": 0,
+      "bytesFreed": null,
+      "archivesWritten": {
+        "count": 0,
+        "location": "/Users/demo/Project Recovery",
+        "paths": []
+      },
+      "refsPushed": [],
+      "movedToTrash": 2,
+      "held": [],
+      "observed": false
+    }
+  }
 }

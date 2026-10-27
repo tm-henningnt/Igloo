@@ -1,11 +1,13 @@
 """Task tests use disposable projects, temporary homes and mocked LaunchAgents."""
 import json
+import ast
 import os
 from pathlib import Path
 import plistlib
 import shutil
 import subprocess
 import sys
+import re
 import unittest
 from unittest.mock import patch
 from tests.test_planning import PlanningTests, o
@@ -95,6 +97,30 @@ class TaskTests(unittest.TestCase):
         tasks.save(dict(self.definition,unattended=True))
         run=tasks.run_task("weekly-cleanup",scheduled=True,expected_hash=tasks.policy_hash(tasks.get("weekly-cleanup")))
         self.assertEqual(run["status"],"completed");self.assertFalse(self.cache.exists())
+
+    def test_scheduled_hold_leaves_project_and_cache_unchanged(self):
+        self.records = [self.project(ageDays=70, hold=True)]
+        tasks.save(dict(self.definition, unattended=True))
+        before = {str(p.relative_to(self.repo)): p.read_bytes()
+                  for p in self.repo.rglob("*") if p.is_file()}
+        run = tasks.run_task("weekly-cleanup", scheduled=True,
+                             expected_hash=tasks.policy_hash(tasks.get("weekly-cleanup")))
+        review = o.load(tasks.planning.location(run["planID"]))
+        self.assertEqual(run["ready"], 0)
+        self.assertEqual(review["held"][0]["reason"], "On hold.")
+        after = {str(p.relative_to(self.repo)): p.read_bytes()
+                 for p in self.repo.rglob("*") if p.is_file()}
+        self.assertEqual(before, after)
+
+    def test_task_review_and_execution_include_outcome(self):
+        review_run = tasks.run_task("weekly-cleanup")
+        estimate = review_run["outcome"]
+        self.assertEqual(estimate["movedToTrash"], 1)
+        self.assertIsNone(estimate["bytesFreed"])
+        result = tasks.apply_plan(review_run["planID"])["outcome"]
+        self.assertTrue(result["observed"])
+        self.assertEqual(result["movedToTrash"], estimate["movedToTrash"])
+        self.assertEqual(result["bytesFreed"], 0)
     def test_calendar_uses_strict_local_time_and_weekday(self):
         self.assertEqual(tasks.calendar({"frequency":"weekly","time":"09:30","weekday":0}),{"Hour":9,"Minute":30,"Weekday":0})
         self.assertEqual(tasks.calendar({"frequency":"daily","time":"22:10"}),{"Hour":22,"Minute":10})
@@ -141,6 +167,50 @@ class TaskTests(unittest.TestCase):
         other.write_text("unrelated executable")
         tasks.install_cli()
         self.assertEqual(other.read_text(), "unrelated executable")
+
+    def test_review_command_and_hidden_plan_alias_have_the_same_result(self):
+        self.sources()
+        home = self.root / "users/isolated-user"
+        home.mkdir(parents=True)
+        config = dict(o.CONFIG, projectsRoot=str(self.root), cloneRoot=str(self.root),
+                      stateRoot=str(o.STATE), archiveRoot=str(o.VAULT), pythonExecutable=sys.executable)
+        o.save(home / ".config/igloo/config.json", config)
+        o.save(home / ".config/igloo/tasks.json", tasks.config())
+        cli = tasks.install_cli()["path"]
+        replies = []
+        for command in ("review", "plan"):
+            result = subprocess.run([cli, command, "weekly-cleanup", "--json"],
+                                    capture_output=True, text=True, env=dict(os.environ, HOME=str(home)))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            run = json.loads(result.stdout)
+            review = o.load(tasks.planning.location(run["planID"]))
+            for row in review["rows"]:
+                if row.get("cleanup"):
+                    row["cleanup"].pop("id", None)
+                    row["cleanup"].pop("created", None)
+            replies.append((run["status"], run["message"], run["ready"], run["blocked"], review["rows"]))
+        self.assertEqual(replies[0], replies[1])
+        help_result = subprocess.run([cli, "--help"], capture_output=True, text=True,
+                                     env=dict(os.environ, HOME=str(home)))
+        self.assertEqual(help_result.returncode, 0, help_result.stderr)
+        self.assertRegex(help_result.stdout, r"\breview\b")
+        self.assertNotRegex(help_result.stdout, r"\bplan\b")
+        self.assertTrue(self.cache.exists())
+
+    def test_backend_message_literals_use_glossary_terms(self):
+        backend = Path(__file__).resolve().parents[1] / "backend"
+        for path in backend.glob("*.py"):
+            tree = ast.parse(path.read_text())
+            docstrings = {id(node.body[0].value) for node in ast.walk(tree)
+                          if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+                          and node.body and isinstance(node.body[0], ast.Expr)
+                          and isinstance(node.body[0].value, ast.Constant)}
+            for node in ast.walk(tree):
+                if (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                        and id(node) not in docstrings and " " in node.value):
+                    with self.subTest(path=path.name, line=node.lineno):
+                        self.assertIsNone(re.search(r"\b(?:vault|retire|retirement)\b|Ready to freeze",
+                                                    node.value, re.I))
 
     def test_busy_skip_and_failure_results_are_persisted(self):
         run=tasks.record_busy("weekly-cleanup")
