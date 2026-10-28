@@ -1,6 +1,6 @@
 {
-  "version": "0.2.1",
-  "build": 15,
+  "version": "0.3.0",
+  "build": 16,
   "minimumSystemVersion": "14.0",
   "repository": "tm-henningnt/Igloo"
 }

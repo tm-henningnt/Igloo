@@ -9,7 +9,8 @@ def compile_update_check(root, checks, *, include_updater=False, compiler_flags=
     """Compile checks against the production updater, without the window view."""
     source = (Path(__file__).resolve().parents[1] / "app/Updates.swift").read_text()
     boundary = "struct UpdatesView: View" if include_updater else "// MARK: - Interface"
-    (root / "main.swift").write_text(source.split(boundary)[0] + checks)
+    helper = (Path(__file__).resolve().parents[1] / "app/UpdateInstaller.swift").read_text() if include_updater else ""
+    (root / "main.swift").write_text(source.split(boundary)[0] + helper + checks)
     executable = root / "check"
     build = subprocess.run(["/usr/bin/swiftc", *compiler_flags, root / "main.swift", "-o", executable],
                            capture_output=True, text=True, timeout=120)
@@ -21,6 +22,12 @@ def compile_update_check(root, checks, *, include_updater=False, compiler_flags=
 
 SWIFT_FIXTURES = r'''
 import ObjectiveC
+
+struct UserPreferences {
+    var pythonExecutable = "/usr/bin/python3"
+    static var bundledPython: String? { nil }
+    static func read() -> UserPreferences { UserPreferences() }
+}
 
 enum FixtureReply {
     case response(Int, [String: String], Data)
@@ -323,6 +330,28 @@ struct ReleaseFixture {
     }
 }
 '''
+
+
+class UpdatePresentationContractTests(unittest.TestCase):
+    def test_ready_update_copy_explains_install_and_plain_language_notes(self):
+        source = (Path(__file__).resolve().parents[1] / "app/Updates.swift").read_text()
+        view = source.split("struct UpdatesView: View", 1)[1].split("private struct ReleaseNotesView", 1)[0]
+        self.assertIn("Save your work first.", view)
+        self.assertIn("Igloo checks the download, quits, replaces the app and opens it again.", view)
+        self.assertIn("macOS may ask you to approve privacy access again after an update.", view)
+        self.assertNotIn("ad-hoc-signed", view)
+        self.assertNotIn("Python included", view)
+        self.assertNotIn("update.asset.architecture", view)
+        self.assertNotIn(".frame(height: 180)", view)
+
+    def test_demo_update_notes_keep_formatted_https_example_without_test_line(self):
+        source = (Path(__file__).resolve().parents[1] / "app/Updates.swift").read_text()
+        demo = source.split("static func demoMarkdownUpdate()", 1)[1].split("static func demoFailure(", 1)[0]
+        self.assertIn("# Igloo 0.2.1", demo)
+        self.assertIn("**Updated:**", demo)
+        self.assertIn("[the release guide](https://", demo)
+        self.assertNotIn("This non-HTTPS link", demo)
+        self.assertNotIn("http://", demo)
 
 
 class UpdateTransportTests(unittest.TestCase):

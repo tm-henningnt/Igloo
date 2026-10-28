@@ -200,20 +200,35 @@ def physical_size(path):
 
 
 def outcome_summary(checkouts=(), estimate=0, freed=None, archives=(), refs=(), trash=0, held=(), observed=False,
-                    archive_count=None, used_estimate=0):
+                    archive_count=None, used_estimate=0, observed_space=None,
+                    checkouts_restored=(), archives_used=(), archives_used_count=None, refs_restored=()):
     """One JSON shape for projected and observed maintenance outcomes."""
     paths = list(dict.fromkeys(map(str, checkouts)))
     archives = list(dict.fromkeys(map(str, archives)))
+    restored_paths = list(dict.fromkeys(map(str, checkouts_restored)))
+    used_archives = list(dict.fromkeys(map(str, archives_used)))
     count = len(archives) if archive_count is None else archive_count
+    used_count = len(used_archives) if archives_used_count is None else archives_used_count
     return {"checkoutsRemoved": {"count": len(paths), "paths": paths},
             "bytesFreedEstimate": estimate, "bytesUsedEstimate": used_estimate, "bytesFreed": freed,
             "archivesWritten": {"count": count, "location": str(VAULT),
                                 "paths": None if count and not observed else archives},
-            "refsPushed": list(refs), "movedToTrash": trash, "held": list(held), "observed": observed}
+            "checkoutsRestored": {"count": len(restored_paths), "paths": restored_paths},
+            "archivesUsed": {"count": used_count, "location": str(VAULT), "paths": used_archives},
+            "refsRestored": list(refs_restored),
+            "refsPushed": list(refs), "movedToTrash": trash, "held": list(held), "observed": observed,
+            "observedSpace": observed_space}
 
 
 def combine_outcomes(outcomes, held=(), observed=False):
     values = [v for v in outcomes if v]
+    spaces = [v["observedSpace"] for v in values if isinstance(v.get("observedSpace"), dict)]
+    observed_space = None
+    if spaces:
+        observed_space = {key: sum(row.get(key, 0) for row in spaces)
+                          for key in ("freedBytes", "inTrashBytes", "restoredBytes")}
+    elif observed and not values:
+        observed_space = {"freedBytes": 0, "inTrashBytes": 0, "restoredBytes": 0}
     return outcome_summary(
         checkouts=[p for v in values for p in v["checkoutsRemoved"]["paths"]],
         estimate=sum(v["bytesFreedEstimate"] for v in values),
@@ -222,7 +237,156 @@ def combine_outcomes(outcomes, held=(), observed=False):
         archives=[p for v in values for p in (v["archivesWritten"]["paths"] or [])],
         archive_count=sum(v["archivesWritten"]["count"] for v in values),
         refs=[r for v in values for r in v["refsPushed"]],
-        trash=sum(v["movedToTrash"] for v in values), held=held, observed=observed)
+        trash=sum(v["movedToTrash"] for v in values), held=held, observed=observed,
+        observed_space=observed_space,
+        checkouts_restored=[p for v in values for p in v.get("checkoutsRestored", {}).get("paths", [])],
+        archives_used=[p for v in values for p in (v.get("archivesUsed", {}).get("paths") or [])],
+        archives_used_count=sum(v.get("archivesUsed", {}).get("count", 0) for v in values),
+        refs_restored=[ref for v in values for ref in v.get("refsRestored", [])])
+
+
+SPACE_FIELDS = ("freedBytes", "inTrashBytes", "restoredBytes")
+
+
+def space_run_path(run_id):
+    if not isinstance(run_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", run_id):
+        raise Refusal("The space report run ID is invalid.")
+    return STATE / "space-runs" / (run_id + ".json")
+
+
+def _space_mirror_path(value):
+    path = Path(value)
+    if path.is_absolute() or ".." in path.parts or not path.parts:
+        raise Refusal("A space report record path is invalid.")
+    return path.as_posix()
+
+
+def _sync_space_run_mirrors(run):
+    observed = run.get("observed")
+    if not isinstance(observed, dict):
+        return
+    for relative in run.get("mirrorPaths", []):
+        path = _space_mirror_path(relative)
+        target = STATE / path
+        current = STATE
+        for part in Path(path).parts:
+            current = current / part
+            if current.is_symlink():
+                raise Refusal("A space report record path is a symbolic link.")
+        value = load(target)
+        if not isinstance(value, dict):
+            continue
+        value["observed"] = observed
+        outcome = value.get("outcome")
+        if isinstance(outcome, dict):
+            outcome["observedSpace"] = observed
+        save(target, value)
+
+
+def record_space_run(run_id, kind, *, started=None, status=None, label=None, estimate_bytes=None,
+                     observed=None, mirror_paths=()):
+    """Persist measured space for one maintenance run and its state-root records."""
+    location = space_run_path(run_id)
+    value = load(location, {})
+    if not isinstance(value, dict):
+        value = {}
+    value.update(id=run_id, kind=kind, updated=now())
+    if started is not None:
+        value["started"] = started
+    if status is not None:
+        value["status"] = status
+    if label is not None:
+        value["label"] = label
+    if estimate_bytes is not None:
+        value["estimateBytes"] = max(0, int(estimate_bytes))
+    if isinstance(observed, dict):
+        if any(type(observed.get(field)) is not int or observed[field] < 0 for field in SPACE_FIELDS):
+            raise ValueError("Observed space values must be nonnegative integer byte counts.")
+        value["observed"] = {field: observed[field] for field in SPACE_FIELDS}
+    paths = list(value.get("mirrorPaths", []))
+    for path in mirror_paths:
+        path = _space_mirror_path(path)
+        if path not in paths:
+            paths.append(path)
+    value["mirrorPaths"] = paths
+    save(location, value)
+    _sync_space_run_mirrors(value)
+    return value
+
+
+def space_report():
+    """Return per-run space values and all-time and rolling 30-day totals."""
+    rows = {}
+    for path in (STATE / "space-runs").glob("*.json"):
+        value = load(path)
+        if isinstance(value, dict) and isinstance(value.get("id"), str):
+            rows[value["id"]] = value
+    # Older versions stored task history without a space record. Keep those runs visible.
+    for path in (STATE / "task-runs").glob("*/*.json"):
+        value = load(path)
+        if not isinstance(value, dict) or not isinstance(value.get("id"), str) or value["id"] in rows:
+            continue
+        outcome = value.get("outcome") if isinstance(value.get("outcome"), dict) else {}
+        observed = value.get("observed", outcome.get("observedSpace"))
+        rows[value["id"]] = {
+            "id": value["id"], "kind": "task", "label": value.get("taskName", "Task"),
+            "started": value.get("started", ""), "status": value.get("status", "unknown"),
+            "estimateBytes": outcome.get("bytesFreedEstimate", 0),
+            "observed": observed if isinstance(observed, dict) else None,
+        }
+    # Older accepted reviews are durable run records too, even though they predate this report.
+    for path in (STATE / "plans").glob("*.json"):
+        value = load(path)
+        if not isinstance(value, dict) or not isinstance(value.get("id"), str) or value["id"] in rows:
+            continue
+        outcome = value.get("outcome") if isinstance(value.get("outcome"), dict) else {}
+        if path.name.startswith("freeze-") and value.get("executed"):
+            kind = "freeze"
+        elif isinstance(value.get("rows"), list) and value.get("status") == "finished":
+            kind = "wizard"
+        elif isinstance(value.get("items"), list) and value.get("executed"):
+            kind = "cleanup"
+        else:
+            continue
+        observed = value.get("observed", outcome.get("observedSpace"))
+        rows[value["id"]] = {
+            "id": value["id"], "kind": kind,
+            "label": value.get("name", "Cleanup wizard" if kind == "wizard" else kind.title()),
+            "started": value.get("created", ""), "status": value.get("status", "completed"),
+            "estimateBytes": outcome.get("bytesFreedEstimate", 0),
+            "observed": observed if isinstance(observed, dict) else None,
+        }
+    ordered = sorted(rows.values(), key=lambda row: row.get("started", ""), reverse=True)
+    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=30)
+
+    def totals(selected):
+        estimate = 0
+        observed_totals = {field: 0 for field in SPACE_FIELDS}
+        measured = unmeasured = 0
+        for row in selected:
+            if type(row.get("estimateBytes")) is int:
+                estimate += max(0, row["estimateBytes"])
+            observed = row.get("observed")
+            if isinstance(observed, dict) and all(type(observed.get(field)) is int for field in SPACE_FIELDS):
+                measured += 1
+                for field in SPACE_FIELDS:
+                    observed_totals[field] += max(0, observed[field])
+            else:
+                unmeasured += 1
+        return {"estimateBytes": estimate, "observed": observed_totals,
+                "measuredRuns": measured, "unmeasuredRuns": unmeasured}
+
+    recent = []
+    for row in ordered:
+        try:
+            started = dt.datetime.fromisoformat(row["started"])
+            if started.tzinfo is None:
+                started = started.replace(tzinfo=dt.timezone.utc)
+            if started.astimezone(dt.timezone.utc) >= cutoff:
+                recent.append(row)
+        except (KeyError, TypeError, ValueError):
+            continue
+    return {"runs": ordered, "totals": {"last30Days": totals(recent), "allTime": totals(ordered)}}
 
 
 def observe_files(root=ROOT):
@@ -684,7 +848,7 @@ def preview_cleanup(paths):
     return plan
 
 
-def execute_cleanup(plan_id):
+def execute_cleanup(plan_id, run_id=None, run_kind="cleanup"):
     if not re.fullmatch("[0-9a-f]{32}", plan_id):
         raise Refusal("Invalid cleanup review.")
     plan = load(STATE / "plans" / (plan_id + ".json"))
@@ -692,11 +856,19 @@ def execute_cleanup(plan_id):
         raise Refusal("The review expired. Review the cleanup again.")
     if plan.get("executed"):
         raise Refusal("This cleanup review was already used.")
+    direct_run = run_id is None
+    run_id = plan_id if direct_run else run_id
+    mirror_paths = [Path("plans") / (plan_id + ".json")] if direct_run else []
+    if direct_run:
+        record_space_run(run_id, "cleanup", started=plan.get("created"), status="running",
+                         label="Cleanup", estimate_bytes=plan.get("outcome", {}).get("bytesFreedEstimate", 0),
+                         mirror_paths=mirror_paths)
     trash = Path.home() / ".Trash"
     if trash.is_symlink():
         raise Refusal("Trash is a symbolic link; cleanup was refused.")
     trash.mkdir(mode=0o700, exist_ok=True)
     results = []
+    in_trash_bytes = 0
     for item in plan["items"]:
         try:
             fresh = validate_cache(item["path"], item["owner"])
@@ -704,10 +876,11 @@ def execute_cleanup(plan_id):
                 raise Refusal("This directory changed since the review. Run a new review.")
             if os.stat(trash).st_dev != fresh["device"]:
                 raise Refusal("Trash is on another volume. Use Finder to review this directory.")
+            allocated = physical_size(item["path"])
             token = uuid.uuid4().hex
             destination = trash / (Path(item["path"]).name + " — " + Path(item["owner"]).name + " — " + token[:8])
             row = {"id": token, "original": item["path"], "destination": str(destination),
-                   "owner": item["owner"], "size": fresh["size"], "at": now(), "status": "prepared"}
+                   "owner": item["owner"], "size": allocated, "runID": run_id, "at": now(), "status": "prepared"}
             history = load(STATE / "trash.json", [])
             history.append(row)
             save(STATE / "trash.json", history)  # Write recoverable intent before the atomic rename.
@@ -715,14 +888,29 @@ def execute_cleanup(plan_id):
             row["status"] = "trashed"
             history[-1] = row
             save(STATE / "trash.json", history)
-            results.append({"path": item["path"], "ok": True, "message": "Moved to Trash. Restore from History."})
+            in_trash_bytes += allocated
+            if direct_run:
+                record_space_run(run_id, "cleanup", started=plan.get("created"), status="running",
+                                 label="Cleanup", estimate_bytes=plan.get("outcome", {}).get("bytesFreedEstimate", 0),
+                                 observed={"freedBytes": 0, "inTrashBytes": in_trash_bytes, "restoredBytes": 0},
+                                 mirror_paths=mirror_paths)
+            results.append({"path": item["path"], "ok": True, "message": "Moved to Trash. Restore from History.",
+                            "size": allocated})
         except (Refusal, OSError) as e:
             results.append({"path": item["path"], "ok": False, "message": str(e) if isinstance(e, Refusal) else "Filesystem move failed. Nothing was permanently deleted; inspect History."})
     plan["executed"] = now()
-    save(STATE / "plans" / (plan_id + ".json"), plan)
+    observed_space = {"freedBytes": 0, "inTrashBytes": in_trash_bytes, "restoredBytes": 0}
     outcome = outcome_summary(trash=sum(r["ok"] for r in results), freed=0, observed=True,
                               held=[{"path": r["path"], "reason": r["message"]} for r in results if not r["ok"]]
-                                   + [{"path": b["path"], "reason": b["reason"]} for b in plan["blocked"]])
+                                   + [{"path": b["path"], "reason": b["reason"]} for b in plan["blocked"]],
+                              observed_space=observed_space)
+    plan.update(outcome=outcome, observed=observed_space, spaceRunID=run_id)
+    save(STATE / "plans" / (plan_id + ".json"), plan)
+    if direct_run:
+        status = "completed" if all(row["ok"] for row in results) else "partial"
+        record_space_run(run_id, "cleanup", started=plan.get("created"), status=status,
+                         label="Cleanup", estimate_bytes=plan.get("outcome", {}).get("bytesFreedEstimate", 0),
+                         observed=observed_space, mirror_paths=mirror_paths)
     return {"results": results, "outcome": outcome,
             "message": "Trash keeps these files until you empty it. Reanalyze to update disk estimates."}
 
@@ -749,6 +937,19 @@ def restore(item_id):
     item["status"] = "restored"
     item["restoredAt"] = now()
     save(STATE / "trash.json", history)
+    run_id = item.get("runID")
+    if run_id:
+        try:
+            run = load(space_run_path(run_id))
+        except Refusal:
+            run = None
+        observed = run.get("observed") if isinstance(run, dict) else None
+        if isinstance(observed, dict) and all(type(observed.get(field)) is int for field in SPACE_FIELDS):
+            restored_space = dict(observed)
+            restored_space["inTrashBytes"] = max(0, restored_space["inTrashBytes"] - item.get("size", 0))
+            restored_space["restoredBytes"] += item.get("size", 0)
+            record_space_run(run_id, run.get("kind", "cleanup"), observed=restored_space,
+                             mirror_paths=run.get("mirrorPaths", []))
     return {"message": "Restored to " + str(original)}
 
 
@@ -884,7 +1085,7 @@ def categorize(path, kind):
 
 def main():
     parser = argparse.ArgumentParser()
-    commands = ["snapshot", "scan", "refresh", "fetch", "preview", "trash", "restore", "hold", "note", "push", "categorize"] + sorted(lifecycle_module().COMMANDS) + ["wizard-state", "wizard-scan", "wizard-prepare", "wizard-execute", "task-list", "task-save", "task-delete", "task-run", "task-apply", "task-history", "task-install-cli", "task-schedule", "task-unschedule", "task-plan"]
+    commands = ["snapshot", "scan", "refresh", "fetch", "preview", "trash", "restore", "hold", "note", "push", "categorize", "space-report"] + sorted(lifecycle_module().COMMANDS) + ["wizard-state", "wizard-scan", "wizard-prepare", "wizard-execute", "wizard-thaw-prepare", "wizard-thaw-execute", "task-list", "task-save", "task-delete", "task-run", "task-apply", "task-history", "task-install-cli", "task-schedule", "task-unschedule", "task-plan"]
     parser.add_argument("command", choices=commands, metavar="{" + ",".join(commands) + "}")
     parser.add_argument("args", nargs="*")
     args = parser.parse_args()
@@ -904,6 +1105,7 @@ def main():
             elif args.command == "preview": result = preview_cleanup(args.args)
             elif args.command == "trash": result = execute_cleanup(args.args[0])
             elif args.command == "restore": result = restore(args.args[0])
+            elif args.command == "space-report": result = space_report()
             elif args.command == "hold": result = set_hold(*args.args)
             elif args.command == "note": result = set_note(*args.args)
             elif args.command == "push": result = push_branch(*args.args)

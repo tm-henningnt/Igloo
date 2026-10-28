@@ -355,12 +355,56 @@ import AppKit
     @Published var status = "Check for a published Igloo release."
     @Published var checking = false
     @Published var downloading = false
+    @Published var installing = false
     @Published var failed = false
     var failureReleaseURL: URL? { failed ? UpdatePolicy.releasesPage : nil }
     @Published var available: AvailableUpdate?
     @Published var downloaded: URL?
     var downloadTask: Task<Void, Never>?
+    var installProcess: Process?
     var demo = false
+    init() {
+        let failureReason = Self.installFailureReason()
+        if CommandLine.arguments.contains("--update-install-failed") || failureReason != nil {
+            failed = true
+            status = failureReason ??
+                "The update could not be installed. The previous version of Igloo was reopened."
+        }
+    }
+    private static func installFailureReason() -> String? {
+        let arguments = CommandLine.arguments
+        let fileManager = FileManager.default
+        let bundleParent = Bundle.main.bundleURL.deletingLastPathComponent()
+            .standardizedFileURL.resolvingSymlinksInPath()
+        var candidates: [URL] = []
+        if let option = arguments.firstIndex(of: "--update-install-failure-file"),
+           arguments.indices.contains(option + 1) {
+            candidates = [URL(fileURLWithPath: arguments[option + 1]).standardizedFileURL]
+        } else {
+            candidates = (try? fileManager.contentsOfDirectory(
+                at: bundleParent, includingPropertiesForKeys: nil))?.filter {
+                    $0.lastPathComponent.hasPrefix(".Igloo-update-failure-")
+                } ?? []
+        }
+        for file in candidates {
+            guard file.deletingLastPathComponent().resolvingSymlinksInPath().path == bundleParent.path,
+                  file.lastPathComponent.hasPrefix(".Igloo-update-failure-") else { continue }
+            do {
+                let attributes = try fileManager.attributesOfItem(atPath: file.path)
+                let size = (attributes[.size] as? NSNumber)?.intValue ?? Int.max
+                guard attributes[.type] as? FileAttributeType == .typeRegular,
+                      size <= 2048 else { continue }
+                let data = try Data(contentsOf: file)
+                try? fileManager.removeItem(at: file)
+                guard let reason = String(data: data, encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines), !reason.isEmpty else { continue }
+                return reason
+            } catch {
+                continue
+            }
+        }
+        return nil
+    }
     static let demoFailureNames = ["quota", "quota-no-reset", "forbidden", "offline", "timeout", "server", "malformed", "cancelled-download", "digest-mismatch"]
     static func demoMarkdownUpdate() -> AppUpdater {
         let tag = "v0.2.1"
@@ -374,7 +418,6 @@ import AppKit
 
         - **Updated:** Release notes now use readable headings, bullets, and emphasis.
         - Review [the release guide](https://example.com/updates) for the change list.
-        - [This non-HTTPS link](http://example.com/updates) is displayed as text.
         """
         let updater = AppUpdater()
         updater.demo = true
@@ -434,7 +477,7 @@ import AppKit
             defer { downloading = false; downloadTask = nil }
             do {
                 downloaded = try await UpdateService.download(update.asset)
-                status = "Download verified. Open the ZIP, quit Igloo, and move the new app to Applications."
+                status = "Download verified. Ready to install and relaunch Igloo."
             } catch is CancellationError {
                 failed = true
                 status = "Download canceled."
@@ -446,6 +489,35 @@ import AppKit
                 failed = true
                 status = error.localizedDescription
             }
+        }
+    }
+    func install() {
+        guard let update = available, let downloaded, installProcess == nil,
+              !installing, !downloading, !demo else { return }
+        installing = true
+        failed = false
+        status = "Preparing the verified update…"
+        do {
+            installProcess = try UpdateInstaller.start(archive: downloaded, update: update, onReady: { [weak self] in
+                self?.status = "Installing the update and reopening Igloo…"
+                NSApp.terminate(nil)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+                    guard let self, self.installing, NSApp.isRunning else { return }
+                    self.installing = false
+                    self.failed = true
+                    self.status = "Igloo is still open. Close open dialogs or choose Quit to let the installer continue."
+                }
+            }, onFailure: { [weak self] message in
+                self?.installing = false
+                self?.failed = true
+                self?.status = message
+                self?.installProcess = nil
+            })
+        } catch {
+            installing = false
+            failed = true
+            status = error.localizedDescription
+            installProcess = nil
         }
     }
 }
@@ -473,36 +545,52 @@ struct UpdatesView: View {
                 Text(updater.status).font(.callout).textSelection(.enabled)
             }
             if let url = updater.failureReleaseURL { Link("View releases on GitHub", destination: url) }
-            if updater.checking || updater.downloading { ProgressView().controlSize(.small) }
+            if updater.checking || updater.downloading || updater.installing { ProgressView().controlSize(.small) }
             if let update = updater.available {
-                Text("Version \(update.manifest.version) · \(update.asset.architecture) · \(bytes(update.asset.size))")
-                Text(update.asset.runtime == "bundled" ? "Python included" : "Uses your installed Python")
-                    .font(.caption).foregroundStyle(.secondary)
+                Text("Version \(update.manifest.version) · \(bytes(update.asset.size))")
+                    .font(.callout).fontWeight(.medium)
                 ScrollView {
                     ReleaseNotesView(markdown: update.notes.isEmpty ? "No release notes were provided." : update.notes)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                .frame(height: 180)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxHeight: 180)
                 .accessibilityIdentifier("updates.releaseNotes")
                 Link("Release on GitHub", destination: update.releaseURL)
+                Text("Project files, settings, and local archives stay in place.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
-            Text("Updates come from published GitHub releases. Project files, settings, and local archives stay in place.")
-                .font(.caption).foregroundStyle(.secondary)
+            if updater.downloaded != nil {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Save your work first. Igloo checks the download, quits, replaces the app and opens it again.")
+                        .font(.callout)
+                    Text("macOS may ask you to approve privacy access again after an update.")
+                        .font(.callout).foregroundStyle(.secondary)
+                }
+            }
             Divider()
             HStack {
                 Button("Close") { dismiss() }.keyboardShortcut(.cancelAction)
                     .accessibilityIdentifier("updates.close")
                 Spacer()
                 if updater.downloading { Button("Cancel download") { updater.downloadTask?.cancel() } }
-                else if let downloaded = updater.downloaded {
-                    Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([downloaded]) }
-                        .buttonStyle(.borderedProminent)
+                else if updater.downloaded != nil {
+                    Button(updater.installing ? "Preparing install…" :
+                           updater.installProcess == nil ? "Install and relaunch" : "Waiting to close…") {
+                        updater.install()
+                    }
+                        .buttonStyle(WizardPrimaryButtonStyle())
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(updater.demo || updater.installing || updater.installProcess != nil)
+                        .accessibilityIdentifier("updates.install")
                 } else if updater.available != nil {
-                    Button("Download update") { updater.download() }.buttonStyle(.borderedProminent)
+                    Button("Download update") { updater.download() }.buttonStyle(WizardPrimaryButtonStyle())
+                        .keyboardShortcut(.defaultAction)
                         .disabled(updater.demo)
                         .accessibilityIdentifier("updates.download")
                 }
                 Button("Check again") { Task { await updater.check() } }
-                    .disabled(updater.checking || updater.downloading)
+                    .disabled(updater.checking || updater.downloading || updater.installing)
                     .accessibilityIdentifier("updates.checkAgain")
             }
         }.padding(24).frame(width: 540)
@@ -532,5 +620,6 @@ private struct ReleaseNotesView: View {
                 }
             }
         }.frame(maxWidth: .infinity, alignment: .leading)
+            .fixedSize(horizontal: false, vertical: true)
     }
 }

@@ -276,7 +276,8 @@ struct BranchesView: View {
                 VStack(alignment: .leading, spacing: 5) {
                     Text(b.name).font(.callout).fontWeight(.medium).textSelection(.enabled)
                     Text("Upstream: " + (b.upstream.isEmpty ? "None" : b.upstream) + " · Cached state: " + (b.tracking.isEmpty ? "—" : b.tracking)).font(.caption)
-                    Text(b.sha).font(.caption).textSelection(.enabled)
+                    let hash = shortGitHash(b.sha)
+                    if !hash.isEmpty { Text(hash).font(.caption).textSelection(.enabled) }
                 }
             }
             DisclosureGroup("How branch coverage works") {
@@ -325,7 +326,9 @@ struct SavedHistoryView: View {
                 if rows.isEmpty { ContentUnavailableView("No matching saved history", systemImage: "tray", description: Text("Stashes, refs and detached checkouts appear here when present.")) }
             }
             if let row = rows.first(where: { $0.id == selected }) {
-                Text(row.sha + (row.path.isEmpty ? "" : "\n" + row.path)).font(.caption).textSelection(.enabled)
+                let hash = shortGitHash(row.sha)
+                if !hash.isEmpty { Text(hash).font(.caption).textSelection(.enabled) }
+                if !row.path.isEmpty { Text(row.path).font(.caption).textSelection(.enabled) }
             }
             Text("An ordinary source push does not preserve stashes or reflogs. Freezing includes them in local Git recovery; private and archive refs stay local.")
                 .font(.caption).foregroundStyle(.secondary)

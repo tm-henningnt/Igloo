@@ -14,6 +14,7 @@ mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources/backend"
 IGLOO_PYTHON="$(command -v python3)"
 cp backend/organizer.py backend/lifecycle.py backend/preferences.py backend/planning.py backend/classification.py backend/automation.py backend/task_cli.py LICENSE "$APP_BUNDLE/Contents/Resources/backend/"
 cp LICENSE "$APP_BUNDLE/Contents/Resources/LICENSE"
+cp scripts/update_installer.py "$APP_BUNDLE/Contents/Resources/"
 cp assets/demo-catalog.json assets/demo-tasks.json "$APP_BUNDLE/Contents/Resources/"
 "$IGLOO_PYTHON" scripts/build_icon.py assets/IglooIcon.png "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
 if [[ "$BUILD_RUNTIME" == bundled ]]; then
@@ -24,7 +25,7 @@ fi
 BUILD_TMP="$(mktemp -d)"
 trap 'rm -rf -- "$BUILD_TMP"' EXIT
 SDK_PATH="$(xcrun --sdk macosx --show-sdk-path)"
-SOURCES=(app/Igloo.swift app/LifecycleViews.swift app/ReviewViews.swift app/PreferencesViews.swift app/SpaceViews.swift app/WizardViews.swift app/AboutView.swift app/DetailViews.swift app/NavigationViews.swift app/TasksView.swift app/DemoCatalog.swift app/ScopeInspector.swift app/Updates.swift)
+SOURCES=(app/Igloo.swift app/LifecycleViews.swift app/ReviewViews.swift app/PreferencesViews.swift app/SpaceViews.swift app/WizardViews.swift app/AboutView.swift app/DetailViews.swift app/NavigationViews.swift app/TasksView.swift app/DemoCatalog.swift app/ScopeInspector.swift app/UpdateInstaller.swift app/Updates.swift)
 for TARGET_ARCH in arm64 x86_64; do
   if [[ "$BUILD_ARCH" == "$TARGET_ARCH" || "$BUILD_ARCH" == universal ]]; then
     /usr/bin/swiftc -swift-version 5 -O -parse-as-library -sdk "$SDK_PATH" -target "$TARGET_ARCH-apple-macos14.0" "${SOURCES[@]}" -o "$BUILD_TMP/Igloo-$TARGET_ARCH" -framework SwiftUI -framework AppKit

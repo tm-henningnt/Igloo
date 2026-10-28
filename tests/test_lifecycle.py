@@ -558,6 +558,17 @@ class LifecycleTests(unittest.TestCase):
                 self.assertEqual(result["bytesFreedEstimate"], estimate["bytesFreedEstimate"])
                 self.assertEqual(result["bytesUsedEstimate"], estimate["bytesUsedEstimate"])
 
+    def test_freeze_run_records_allocated_checkout_bytes(self):
+        review = life.preview_freeze(str(self.repo), "origin", "freeze")
+        result = life.execute_freeze(review["id"])
+        location, manifest = life.archive_record(review["id"])
+        run = o.load(o.STATE / "space-runs" / (review["id"] + ".json"))
+        self.assertEqual(run["kind"], "freeze")
+        self.assertEqual(run["observed"], {
+            "freedBytes": manifest["removedCheckoutBytes"], "inTrashBytes": 0, "restoredBytes": 0})
+        self.assertEqual(result["outcome"]["observedSpace"], run["observed"])
+        self.assertEqual(run["observed"]["freedBytes"], manifest["removedCheckoutBytes"])
+
     def test_legacy_preserved_manifest_without_allocation_fields_can_freeze(self):
         identifier, (location, manifest) = self.freeze()
         for role in manifest["capture"]["roles"]:
@@ -598,15 +609,15 @@ class LifecycleTests(unittest.TestCase):
 
     def test_freeze_removal_stops_leave_preserved_entry_and_reason(self):
         original = life.freeze_retire
-        def verify_failure(identifier):
+        def verify_failure(identifier, **kwargs):
             with patch.object(life, "verify_archives", side_effect=o.Refusal("Recovery verification failed.")):
-                return original(identifier)
-        def process_open(identifier):
+                return original(identifier, **kwargs)
+        def process_open(identifier, **kwargs):
             with patch.object(life, "open_files", side_effect=o.Refusal(life.BLOCKERS["open-processes"][0])):
-                return original(identifier)
-        def file_changed(identifier):
+                return original(identifier, **kwargs)
+        def file_changed(identifier, **kwargs):
             (self.repo / ".env").write_text("new work after review")
-            return original(identifier)
+            return original(identifier, **kwargs)
         for failure, reason in ((verify_failure, "verification failed"), (process_open, "Close the terminals"),
                                 (file_changed, "changed")):
             with self.subTest(failure=failure.__name__):

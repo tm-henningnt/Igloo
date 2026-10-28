@@ -2,6 +2,7 @@
 import copy
 import os
 from pathlib import Path
+import shutil
 import time
 import unittest
 from unittest.mock import patch
@@ -44,6 +45,24 @@ class PlanningTests(unittest.TestCase):
     def prepare(self,action,policy=None):
         return wizard.prepare({"rules":policy or wizard.defaults(),
                                "choices":[{"path":str(self.repo),"action":action,"remote":"origin"}]})
+    def freeze_for_thaw(self, count=1):
+        paths = [self.repo]
+        for index in range(1, count):
+            second = self.root / f"second-{index}"
+            rc, _ = o.run_git(self.repo, "clone", "--", str(self.repo), str(second))
+            self.assertEqual(rc, 0)
+            o.run_git(second, "remote", "set-url", "origin", str(self.bare))
+            self.records.append(self.project(id=str(second), path=str(second), name=f"Second {index}",
+                                             candidates=[], worktrees=[dict(path=str(second), exists=True)]))
+            paths.append(second)
+        identifiers = []
+        for index, path in enumerate(paths[:count]):
+            (path / ".env").write_text(f"local fixture {index}")
+            review = life.preview_freeze(str(path), "origin", "freeze")
+            result = life.execute_freeze(review["id"], "freeze")
+            self.assertEqual(result["state"], "frozen", result["message"])
+            identifiers.append(review["id"])
+        return identifiers
     def test_age_bands_and_freeze_precedence_at_boundaries(self):
         policy=wizard.defaults()
         for age,action in [(0,"keep"),(29,"keep"),(30,"cleanup"),(179,"cleanup"),(180,"freeze"),(500,"freeze")]:
@@ -101,6 +120,17 @@ class PlanningTests(unittest.TestCase):
         self.assertEqual(result["bytesFreed"], outcome["bytesFreedEstimate"])
         self.assertFalse(self.cache.exists())
 
+    def test_wizard_run_records_cleanup_space(self):
+        allocated = o.physical_size(self.cache)
+        review = self.prepare("cleanup")
+        result = wizard.execute(review["id"])
+        self.assertEqual(result["outcome"]["observedSpace"], {
+            "freedBytes": 0, "inTrashBytes": allocated, "restoredBytes": 0})
+        run = o.load(o.STATE / "space-runs" / (review["id"] + ".json"))
+        self.assertEqual(run["kind"], "wizard")
+        self.assertEqual(run["observed"], {
+            "freedBytes": 0, "inTrashBytes": allocated, "restoredBytes": 0})
+
     def test_mixed_wizard_outcome_sums_ready_rows_and_records_blocked_projects(self):
         second = self.root / "second"
         rc, _ = o.run_git(self.repo, "clone", "--", str(self.repo), str(second))
@@ -122,6 +152,8 @@ class PlanningTests(unittest.TestCase):
         self.assertEqual(estimate["movedToTrash"], 1)
         self.assertEqual(estimate["held"], [{"path": str(third), "reason": "On hold."}])
         executed = wizard.execute(review["id"])
+        self.assertEqual(executed["message"],
+                         "Wizard actions completed. Changed or blocked projects were held; completed actions remain recorded.")
         result = executed["outcome"]
         for field in ("checkoutsRemoved", "refsPushed", "movedToTrash", "held"):
             self.assertEqual(result[field], estimate[field])
@@ -250,6 +282,231 @@ class PlanningTests(unittest.TestCase):
         row=wizard.suggest({"projects":[self.project(active=True)]},policy)[0]
         self.assertEqual(row["action"],"freeze")
         self.assertIn("processes must close",row["reason"])
+
+    def test_batch_thaw_restores_two_projects_and_reports_each_result(self):
+        identifiers = self.freeze_for_thaw(2)
+        with patch.object(o, "on_hold", return_value=True):
+            review = wizard.prepare_thaw(identifiers)
+        self.assertEqual([row["status"] for row in review["rows"]], ["ready", "ready"])
+        self.assertTrue(all(row["destination"] == str(self.bare) for row in review["rows"]))
+        self.assertTrue(all(row["refs"] and row["localFiles"] for row in review["rows"]))
+        self.assertEqual(review["outcome"]["archivesUsed"]["paths"],
+                         [row["archiveLocation"] for row in review["rows"]])
+
+        with patch.object(o, "on_hold", return_value=True):
+            result = wizard.execute_thaw(review["id"])
+
+        self.assertEqual([row["status"] for row in result["rows"]], ["done", "done"])
+        self.assertEqual(result["message"],
+                         "Thaw completed. Inspect each project result; completed projects remain restored.")
+        self.assertTrue(all("Checkout and remote refs were restored." in row["message"] for row in result["rows"]))
+        self.assertTrue(all("Dependencies remain uninstalled." in row["message"] for row in result["rows"]))
+        self.assertTrue(all((Path(row["path"]) / ".git").is_dir() for row in result["rows"]))
+        self.assertEqual(result["outcome"]["checkoutsRestored"]["count"], 2)
+        self.assertEqual(result["outcome"]["archivesUsed"]["count"], 2)
+        restored_refs = result["outcome"]["refsRestored"]
+        self.assertEqual([ref["path"] for ref in restored_refs], [row["path"] for row in result["rows"]])
+        self.assertTrue(all(ref["ref"] == "refs/heads/main" and len(ref["sha"]) >= 7 for ref in restored_refs))
+        self.assertIsNone(result["outcome"]["bytesFreed"])
+        with self.assertRaisesRegex(o.Refusal, "already accepted"):
+            wizard.execute_thaw(review["id"])
+
+    def test_batch_thaw_blocks_an_occupied_destination(self):
+        identifier = self.freeze_for_thaw()[0]
+        occupied = self.repo / "work added after Freeze"
+        occupied.write_text("keep")
+
+        review = wizard.prepare_thaw([identifier])
+
+        self.assertEqual(review["rows"][0]["status"], "blocked")
+        self.assertEqual(review["rows"][0]["message"],
+                         "The original path is occupied. Inspect its contents in Finder before Thaw.")
+        self.assertEqual(wizard.execute_thaw(review["id"])["rows"][0]["status"], "blocked")
+        self.assertEqual(occupied.read_text(), "keep")
+
+    def test_batch_thaw_blocks_a_corrupted_archive(self):
+        identifier = self.freeze_for_thaw()[0]
+        location, _ = life.archive_record(identifier)
+        (location / "local-files.tar.gz").write_bytes(b"corrupt")
+
+        review = wizard.prepare_thaw([identifier])
+
+        self.assertEqual(review["rows"][0]["status"], "blocked")
+        self.assertEqual(review["rows"][0]["message"],
+                         "The archive failed its checksum check. Keep the Freezer copy and use Open Freezer to inspect it.")
+
+    def test_missing_thaw_parent_suggests_the_available_finder_action(self):
+        path = self.root / "missing-parent" / "checkout"
+        manifest = {"path": str(path), "roots": [str(path)]}
+
+        self.assertEqual(wizard.thaw_blocker(manifest, "a" * 32),
+                         "The original parent folder is missing. Use Show path in Finder to inspect its location.")
+
+    def test_unreachable_remote_blocker_offers_a_check_again_action(self):
+        identifier = self.freeze_for_thaw()[0]
+
+        with patch.object(wizard, "thaw_remote_ready", return_value=False):
+            review = wizard.prepare_thaw([identifier])
+
+        self.assertEqual(review["rows"][0]["message"],
+                         "The remote is unreachable. Restore remote access, then use Check remote again.")
+
+    def test_batch_thaw_blocks_an_entry_that_is_no_longer_frozen(self):
+        identifier = self.freeze_for_thaw()[0]
+        location, manifest = life.archive_record(identifier)
+        manifest["state"] = "rehydrated"
+        o.save(location / "manifest.json", manifest)
+
+        review = wizard.prepare_thaw([identifier])
+
+        self.assertEqual(review["rows"][0]["status"], "blocked")
+        self.assertEqual(review["rows"][0]["message"],
+                         "This project is no longer Frozen. Its Freezer entry changed after you selected it. Use Open Freezer to inspect it.")
+        self.assertEqual(review["rows"][0]["destination"], str(self.bare))
+
+    def test_rehydrating_archive_points_to_freezer_recovery(self):
+        identifier = self.freeze_for_thaw()[0]
+        location, manifest = life.archive_record(identifier)
+        manifest.update(state="rehydrating", restoredRoots=[])
+        o.save(location / "manifest.json", manifest)
+
+        review = wizard.prepare_thaw([identifier])
+
+        row = review["rows"][0]
+        self.assertEqual(row["status"], "blocked")
+        self.assertEqual(row["restoredRoots"], [])
+        self.assertIn("Open Freezer", row["message"])
+
+    def test_expired_thaw_review_is_refused_without_restoring_paths(self):
+        identifier = self.freeze_for_thaw()[0]
+        review = wizard.prepare_thaw([identifier])
+
+        with patch.object(o, "age_seconds", return_value=601):
+            with self.assertRaisesRegex(o.Refusal, "Thaw plan expired"):
+                wizard.execute_thaw(review["id"])
+
+        self.assertTrue(life.is_stub(Path(review["rows"][0]["path"]), identifier))
+
+    def test_overlapping_thaw_destinations_block_the_later_row(self):
+        first, second = "a" * 32, "b" * 32
+        paths = {first: str(self.repo), second: str(self.repo / "nested")}
+
+        def ready_row(identifier):
+            path = paths[identifier]
+            return {"id": identifier, "archiveID": identifier, "name": identifier,
+                    "path": path, "status": "ready", "message": "Ready.", "destination": str(self.bare),
+                    "refs": [], "checkouts": [path], "localFiles": [],
+                    "restoredRoots": [], "archiveAttempted": False,
+                    "archiveLocation": str(self.root / "Freezer" / identifier), "checksums": {},
+                    "manifestFingerprint": "", "destinationStates": []}
+
+        with patch.object(wizard, "thaw_row", side_effect=ready_row):
+            review = wizard.prepare_thaw([first, second])
+
+        self.assertEqual([row["status"] for row in review["rows"]], ["ready", "blocked"])
+        self.assertEqual(review["rows"][1]["message"],
+                         "Overlaps another selected Thaw destination. Use Change selection to keep one project.")
+
+    def test_manifest_change_after_thaw_review_refuses_the_whole_review(self):
+        identifier = self.freeze_for_thaw()[0]
+        review = wizard.prepare_thaw([identifier])
+        location, manifest = life.archive_record(identifier)
+        manifest["destination"] = str(self.root / "changed-remote.git")
+        o.save(location / "manifest.json", manifest)
+
+        with self.assertRaisesRegex(o.Refusal, "stale"):
+            wizard.execute_thaw(review["id"])
+
+        stale = wizard.thaw_location(review["id"])
+        self.assertIn("Thaw plan", o.load(stale)["message"])
+        self.assertTrue(life.is_stub(Path(review["rows"][0]["path"]), identifier))
+
+    def test_partial_root_restore_names_restored_roots_and_freezer_recovery(self):
+        linked = self.root / "linked-worktree"
+        self.git("worktree", "add", "-b", "linked", str(linked))
+        identifier = self.freeze_for_thaw()[0]
+        location, manifest = life.archive_record(identifier)
+        roots = manifest["roots"]
+        self.assertEqual(len(roots), 2)
+        review = wizard.prepare_thaw([identifier])
+        original_rename = life.rename_exclusive
+        fail_root = roots[1]
+
+        def fail_later_root(source, destination):
+            if str(destination) == fail_root:
+                raise OSError("injected later root publication failure")
+            return original_rename(source, destination)
+
+        with patch.object(life, "rename_exclusive", side_effect=fail_later_root):
+            result = wizard.execute_thaw(review["id"])
+
+        row = result["rows"][0]
+        self.assertEqual(row["status"], "failed")
+        self.assertEqual(row["restoredRoots"], [roots[0]])
+        self.assertIn(roots[0], row["message"])
+        self.assertIn("Use Open Freezer", row["message"])
+        self.assertEqual(result["outcome"]["checkoutsRestored"]["count"], 1)
+        self.assertEqual([ref["path"] for ref in result["outcome"]["refsRestored"]], [roots[0]])
+
+    def test_unreachable_remote_does_not_stop_other_project_from_thawing(self):
+        first, second = self.freeze_for_thaw(2)
+        first_remote = self.make_bare("late-remote.git")
+        location, manifest = life.archive_record(first)
+        manifest["destination"] = str(first_remote)
+        o.save(location / "manifest.json", manifest)
+
+        review = wizard.prepare_thaw([first, second])
+
+        self.assertEqual([row["status"] for row in review["rows"]], ["ready", "ready"])
+        shutil.rmtree(first_remote)
+        result = wizard.execute_thaw(review["id"])
+
+        self.assertEqual([row["status"] for row in result["rows"]], ["failed", "done"])
+        self.assertEqual(result["rows"][0]["message"],
+                         "The remote is unreachable. The archive is intact; restore remote access, then use Check remote again.")
+        self.assertTrue((Path(result["rows"][1]["path"]) / ".git").is_dir())
+        self.assertTrue(life.is_stub(Path(result["rows"][0]["path"]), first))
+
+    def test_failure_of_second_project_does_not_stop_the_third(self):
+        first, second, third = self.freeze_for_thaw(3)
+        review = wizard.prepare_thaw([first, second, third])
+        original_rehydrate = life.rehydrate
+
+        def fail_second(identifier, offline=False):
+            if identifier == second:
+                raise o.Refusal("Injected second-project failure.")
+            return original_rehydrate(identifier, offline=offline)
+
+        with patch.object(life, "rehydrate", side_effect=fail_second):
+            result = wizard.execute_thaw(review["id"])
+
+        self.assertEqual([row["status"] for row in result["rows"]], ["done", "failed", "done"])
+        self.assertTrue((Path(result["rows"][0]["path"]) / ".git").is_dir())
+        self.assertTrue(life.is_stub(Path(result["rows"][1]["path"]), second))
+        self.assertTrue((Path(result["rows"][2]["path"]) / ".git").is_dir())
+
+    def test_destination_change_after_thaw_review_refuses_the_whole_review(self):
+        first, second = self.freeze_for_thaw(2)
+        review = wizard.prepare_thaw([first, second])
+        (Path(review["rows"][0]["path"]) / "new file").write_text("keep")
+
+        with self.assertRaisesRegex(o.Refusal, "stale"):
+            wizard.execute_thaw(review["id"])
+
+        self.assertTrue((Path(review["rows"][0]["path"]) / "new file").is_file())
+        self.assertTrue(life.is_stub(Path(review["rows"][1]["path"]), second))
+
+    def test_interrupted_thaw_is_recorded_and_cannot_be_replayed(self):
+        identifier = self.freeze_for_thaw()[0]
+        review = wizard.prepare_thaw([identifier])
+        with patch.object(life, "rehydrate", side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                wizard.execute_thaw(review["id"])
+
+        saved = o.load(wizard.thaw_location(review["id"]))
+        self.assertEqual((saved["status"], saved["rows"][0]["status"]), ("running", "running"))
+        with self.assertRaisesRegex(o.Refusal, "already accepted"):
+            wizard.execute_thaw(review["id"])
 
     def test_file_age_ignores_dependencies_git_metadata_and_build_output(self):
         old=time.time()-90*86400

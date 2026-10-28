@@ -17,11 +17,15 @@ import sys
 
 SHEET_VIEWS = {"freeze", "shelf", "freeze-review", "preserve-review", "freeze-result", "freeze-failure",
                "freeze-hold", "freeze-no-remote", "freeze-no-files", "freeze-no-commit", "freeze-own-source", "freeze-process",
-               "cleanup-review", "cleanup-hold", "wizard-review", "task-review", "settings", "settings-cloud"}
+               "cleanup-review", "cleanup-result", "cleanup-hold", "trash-history", "wizard-review", "wizard-result",
+               "wizard-start", "wizard-thaw-selection", "wizard-thaw-review", "wizard-thaw-ready", "wizard-thaw-result",
+               "wizard-thaw-occupied", "wizard-thaw-remote", "wizard-thaw-corrupt", "wizard-thaw-not-frozen",
+               "wizard-thaw-rehydrating",
+               "task-review", "task-history", "settings", "settings-cloud"}
 UPDATE_FAILURES = ("quota", "quota-no-reset", "forbidden", "offline", "timeout", "server", "malformed",
                    "cancelled-download", "digest-mismatch")
 SHEET_VIEWS.update("update-" + name for name in UPDATE_FAILURES)
-SHEET_VIEWS.add("update-markdown")
+SHEET_VIEWS.update({"update-markdown", "update-ready"})
 
 
 def has_sheet_image(view):
@@ -38,6 +42,7 @@ def scenarios():
                   for name in UPDATE_FAILURES for size in ("850x700", "1440x900")]
         cases += [("update-markdown", size, "hidden", "compact", "normal")
                   for size in ("850x700", "1440x900")]
+        cases.append(("update-ready", "1440x900", "shown", "full", "normal"))
         cases += [("overview", "850x700", "hidden", "compact", "normal"),
                   ("plan", "850x700", "hidden", "compact", "normal"),
                   ("overview", "1100x700", "shown", "compact", "normal"),
@@ -46,6 +51,8 @@ def scenarios():
                   ("plan", "1300x700", "shown", "full", "normal"),
                   ("overview", "1440x900", "hidden", "compact", "long"),
                   ("overview", "1440x900", "shown", "full", "empty")]
+        cases += [(view, "1300x700", "shown", "full", "normal")
+                  for view in ("cleanup-result", "freeze-result", "wizard-result", "task-history", "trash-history")]
         # Project-row badges need every rail/scope combination at both sizes,
         # including a long name to expose truncation problems.
         for size in ("850x700", "1440x900"):
@@ -307,10 +314,26 @@ def accessibility_missing(tree, scenario):
                 "freeze-hold": ["This project is on Hold", "Requirements"],
                 "freeze-review": ["Expected outcome", "Git history"],
                 "preserve-review": ["Expected outcome", "Git history"],
-                "freeze-result": ["Outcome", "Done"], "freeze-failure": ["Outcome", "Done"],
+                "freeze-result": ["Outcome", "Checkout removed", "Net space change after the archive copy", "Done"],
+                "freeze-failure": ["Outcome", "Done"],
+                "cleanup-result": ["Cleanup result", "Freed from disk", "In Trash (can be restored)", "Done"],
+                "trash-history": ["Trash & restore history", "Space report", "Last 30 days", "All time"],
+                "wizard-result": ["Cleanup wizard", "Results", "Estimate", "Checkout removed", "Freed from disk", "In Trash (can be restored)"],
+                "task-history": ["Task run history", "Space", "Estimate"],
                 "cleanup-review": ["Review cleanup", "Expected outcome"],
                 "cleanup-hold": ["Review cleanup", "This project is on Hold"],
                 "wizard-review": ["Expected outcome", "Review"],
+                "wizard-start": ["Make space", "Thaw projects"],
+                "wizard-thaw-selection": ["Frozen projects", "Create Thaw plan"],
+                "wizard-thaw-review": ["Thaw plan", "Expected outcome"],
+                "wizard-thaw-ready": ["Thaw projects", "Only ready projects will run", "Harbor CLI",
+                                      "I reviewed the remote refs", "Thaw 1 ready project"],
+                "wizard-thaw-occupied": ["Thaw plan", "Path occupied", "Show path in Finder"],
+                "wizard-thaw-remote": ["Thaw plan", "Remote unavailable", "Check remote again"],
+                "wizard-thaw-corrupt": ["Thaw plan", "Archive needs attention", "Open Freezer"],
+                "wizard-thaw-not-frozen": ["Thaw plan", "No longer Frozen", "Open Freezer"],
+                "wizard-thaw-rehydrating": ["Thawing Harbor CLI"],
+                "wizard-thaw-result": ["Checkouts restored", "Remote refs restored", "Start a new Thaw plan", "Done"],
                 "task-review": ["Review task actions", "Expected outcome"],
                 "settings": ["Igloo Settings", "Freezer backup folder"],
                 "settings-cloud": ["Confirm cloud backup"],
@@ -340,6 +363,15 @@ def accessibility_control_issues(tree, scenario):
             ("shelf.freeze", "AXButton"), ("shelf.offlineRecovery", "AXButton"),
             ("shelf.thawRemote", "AXButton"),
         ],
+        "wizard-start": [("wizard.start.makeSpace", "AXButton"), ("wizard.start.thaw", "AXButton")],
+        "wizard-thaw-selection": [("wizard.thaw.back", "AXButton"), ("wizard.thaw.prepare", "AXButton")],
+        "wizard-thaw-review": [("wizard.thaw.acceptance", "AXButton"), ("wizard.thaw.execute", "AXButton")],
+        "wizard-thaw-ready": [("wizard.thaw.acceptance", "AXCheckBox"), ("wizard.thaw.execute", "AXButton")],
+        "wizard-thaw-occupied": [("wizard.thaw.showPath", "AXButton")],
+        "wizard-thaw-remote": [("wizard.thaw.checkRemote", "AXButton")],
+        "wizard-thaw-corrupt": [("wizard.thaw.openFreezer", "AXButton")],
+        "wizard-thaw-not-frozen": [("wizard.thaw.openFreezer", "AXButton")],
+        "wizard-thaw-result": [("wizard.thaw.newPlan", "AXButton")],
     }.get(scenario["view"], [])
     if not required:
         return None
@@ -366,8 +398,19 @@ def accessibility_control_issues(tree, scenario):
                         for key in ("x", "y", "width", "height"))
                 and frame["width"] > 0 and frame["height"] > 0)
 
-    return [identifier for identifier, role in required
-            if not any(valid(node, identifier, role) for node in captured)]
+    issues = [identifier for identifier, role in required
+              if not any(valid(node, identifier, role) for node in captured)]
+    if scenario["view"] == "wizard-thaw-ready":
+        expected_enabled = {"wizard.thaw.acceptance": True, "wizard.thaw.execute": False}
+        for identifier, enabled in expected_enabled.items():
+            node = next((item for item in captured if item.get("identifier") == identifier), None)
+            if node is None or node.get("enabled") is not enabled:
+                issues.append(identifier)
+        node = next((item for item in captured if item.get("identifier") == "wizard.thaw.acceptance"), None)
+        value = node.get("value") if node else None
+        if not (value is False or type(value) is int and value == 0):
+            issues.append("wizard.thaw.acceptance")
+    return list(dict.fromkeys(issues))
 
 
 def accessibility_node_counts(tree):

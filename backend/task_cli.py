@@ -11,7 +11,7 @@ import automation as tasks
 def parser():
     p=argparse.ArgumentParser(prog="igloo",description="Review, execute and schedule saved project-maintenance tasks.")
     sub=p.add_subparsers(dest="command",required=True,
-                        metavar="{tasks,install-cli,create,show,delete,review,run,unschedule,apply,history,schedule}")
+                        metavar="{tasks,install-cli,create,show,delete,review,run,unschedule,apply,history,space-report,schedule}")
     for name in ("tasks","install-cli"):
         q=sub.add_parser(name);q.add_argument("--json",action="store_true")
     new=sub.add_parser("create",help="Save a task; this never enables a schedule.")
@@ -33,6 +33,7 @@ def parser():
     q=sub.add_parser("apply",help="Accept a saved task review.")
     q.add_argument("plan",metavar="REVIEW_ID");q.add_argument("--accept",action="store_true",required=True);q.add_argument("--json",action="store_true")
     q=sub.add_parser("history");q.add_argument("id",nargs="?");q.add_argument("--json",action="store_true")
+    q=sub.add_parser("space-report",help="Show observed space by run and rolling totals.");q.add_argument("--json",action="store_true")
     q=sub.add_parser("schedule");q.add_argument("id")
     q.add_argument("--frequency",choices=["daily","weekly"],default="weekly")
     q.add_argument("--day",choices=["sun","mon","tue","wed","thu","fri","sat"],default="sun")
@@ -53,6 +54,7 @@ def dispatch(a):
         return tasks.run_task(a.id,apply=getattr(a,"apply",False),scheduled=getattr(a,"scheduled",False),expected_hash=getattr(a,"policy_hash",""))
     if a.command=="apply":return tasks.apply_plan(a.plan)
     if a.command=="history":return tasks.history(a.id)
+    if a.command=="space-report":return O.space_report()
     if a.command=="schedule":return tasks.schedule_task(a.id,{"frequency":a.frequency,"time":a.at,"weekday":["sun","mon","tue","wed","thu","fri","sat"].index(a.day)})
     if a.command=="unschedule":return tasks.unschedule(a.id)
     if a.command=="delete":return tasks.delete(a.id)
@@ -86,13 +88,32 @@ def emit(a,value):
             t=item["definition"];s=item["schedule"]
             print(t["id"]+"  "+t["name"]+"  ["+t["mode"]+"]"+("  schedule: "+("needs re-enabling" if s["stale"] else s["frequency"]+" "+s["time"]) if s else ""))
         if not value["tasks"]:print("No saved tasks. Use igloo create --help.")
+    elif "totals" in value:
+        for label,key in (("Last 30 days","last30Days"),("All time","allTime")):
+            total=value["totals"][key];observed=total["observed"]
+            print(label+": Estimate: "+str(total["estimateBytes"])+" bytes · Freed from disk: "+str(observed["freedBytes"])+
+                  " · In Trash: "+str(observed["inTrashBytes"])+" · Restored from Trash: "+str(observed["restoredBytes"])+
+                  " · "+str(total["measuredRuns"])+" measured, "+str(total["unmeasuredRuns"])+" not measured")
+        for run in value["runs"]:
+            print(run.get("started", "")[:19]+"  "+run.get("kind", "run")+"  "+run.get("status", "unknown")+
+                  "  "+space_line(run))
     elif "runs" in value:
-        for run in value["runs"]:print(run["started"][:19]+"  "+run["taskID"]+"  "+run["status"]+"  "+run["message"])
+        for run in value["runs"]:
+            print(run["started"][:19]+"  "+run["taskID"]+"  "+run["status"]+"  "+run["message"]+
+                  "  "+space_line(run))
     elif "status" in value:
         print(value["taskName"]+": "+value["status"]+"\n"+value["message"])
         if value.get("planID"):print("Review: "+value["planID"])
         print(str(value["ready"])+" ready, "+str(value["blocked"])+" held")
     elif "message" in value:print(value["message"])
     else:print(json.dumps(value,indent=2))
+
+def space_line(run):
+    outcome=run.get("outcome") if isinstance(run.get("outcome"),dict) else {}
+    estimate=("Estimate: "+str(outcome["bytesFreedEstimate"])+" bytes") if type(outcome.get("bytesFreedEstimate")) is int else "Estimate: not measured"
+    observed=run.get("observed",outcome.get("observedSpace"))
+    if not isinstance(observed,dict):return estimate+" · not measured"
+    return (estimate+" · Freed from disk: "+str(observed.get("freedBytes",0))+
+            " · In Trash: "+str(observed.get("inTrashBytes",0))+" · Restored from Trash: "+str(observed.get("restoredBytes",0)))
 
 if __name__=="__main__":raise SystemExit(main())

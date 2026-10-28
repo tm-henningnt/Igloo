@@ -42,7 +42,7 @@
       "branches": [
         {
           "name": "main",
-          "sha": "a1b2c3d000000000000000000000000000000000",
+          "sha": "a1b2c3d",
           "upstream": "origin/main",
           "tracking": "",
           "date": "2026-09-20",
@@ -51,7 +51,7 @@
         },
         {
           "name": "feature/search",
-          "sha": "2222222222222222222222222222222222222222",
+          "sha": "",
           "upstream": "",
           "tracking": "",
           "date": "2026-09-20",
@@ -166,7 +166,7 @@
       "branches": [
         {
           "name": "main",
-          "sha": "b2c3d4e000000000000000000000000000000000",
+          "sha": "b2c3d4e",
           "upstream": "origin/main",
           "tracking": "",
           "date": "2026-09-20",
@@ -267,7 +267,7 @@
       "branches": [
         {
           "name": "main",
-          "sha": "c3d4e5f000000000000000000000000000000000",
+          "sha": "c3d4e5f",
           "upstream": "origin/main",
           "tracking": "",
           "date": "2026-09-20",
@@ -373,7 +373,7 @@
       "branches": [
         {
           "name": "main",
-          "sha": "d4e5f60000000000000000000000000000000000",
+          "sha": "d4e5f60",
           "upstream": "origin/main",
           "tracking": "",
           "date": "2026-09-20",
@@ -468,7 +468,7 @@
       "branches": [
         {
           "name": "main",
-          "sha": "e5f6071000000000000000000000000000000000",
+          "sha": "e5f6071",
           "upstream": "origin/main",
           "tracking": "",
           "date": "2026-09-20",
@@ -563,7 +563,7 @@
       "branches": [
         {
           "name": "main",
-          "sha": "f607182000000000000000000000000000000000",
+          "sha": "f607182",
           "upstream": "origin/main",
           "tracking": "",
           "date": "2026-09-20",
@@ -687,7 +687,28 @@
     }
   ],
   "errors": [],
-  "history": [],
+  "history": [
+    {
+      "id": "demo-restored-item",
+      "original": "/Users/demo/Projects/Harbor CLI/node_modules",
+      "destination": "/Users/demo/.Trash/node_modules — Harbor CLI — 00000001",
+      "owner": "/Users/demo/Projects/Harbor CLI",
+      "size": 1073741824,
+      "runID": "demo-cleanup-run",
+      "at": "2026-10-01T10:00:00+00:00",
+      "status": "restored"
+    },
+    {
+      "id": "demo-trash-item",
+      "original": "/Users/demo/Projects/Signal Lab/.cache",
+      "destination": "/Users/demo/.Trash/.cache — Signal Lab — 00000002",
+      "owner": "/Users/demo/Projects/Signal Lab",
+      "size": 2147483648,
+      "runID": "demo-cleanup-run",
+      "at": "2026-10-01T10:00:00+00:00",
+      "status": "trashed"
+    }
+  ],
   "archives": [
     {
       "id": "demo-backed-up",
@@ -775,7 +796,7 @@
       "refsPushed": [
         {
           "ref": "refs/heads/main",
-          "sha": "0718293000000000000000000000000000000000",
+          "sha": "0718293",
           "destination": "https://github.com/example/demo.git"
         }
       ],
@@ -801,7 +822,7 @@
       "refsPushed": [
         {
           "ref": "refs/heads/main",
-          "sha": "1829304000000000000000000000000000000000",
+          "sha": "1829304",
           "destination": "https://github.com/example/demo.git"
         }
       ],
@@ -827,7 +848,7 @@
       "refsPushed": [
         {
           "ref": "refs/heads/main",
-          "sha": "2930415000000000000000000000000000000000",
+          "sha": "2930415",
           "destination": "https://github.com/example/demo.git"
         }
       ],
@@ -839,6 +860,120 @@
         }
       ],
       "observed": false
+    }
+  },
+  "demoResults": {
+    "cleanup": {
+      "bytesFreedEstimate": 0,
+      "bytesUsedEstimate": 0,
+      "bytesFreed": 0,
+      "movedToTrash": 2,
+      "observed": true,
+      "observedSpace": {
+        "freedBytes": 0,
+        "inTrashBytes": 2147483648,
+        "restoredBytes": 0
+      }
+    },
+    "freeze": {
+      "checkoutsRemoved": {
+        "count": 1,
+        "paths": [
+          "/Users/demo/Projects/Paper Trail"
+        ]
+      },
+      "bytesFreedEstimate": 1717986918,
+      "bytesUsedEstimate": 0,
+      "bytesFreed": 1610612736,
+      "observed": true,
+      "observedSpace": {
+        "freedBytes": 1717986918,
+        "inTrashBytes": 0,
+        "restoredBytes": 0
+      }
+    },
+    "wizard": {
+      "checkoutsRemoved": {
+        "count": 1,
+        "paths": [
+          "/Users/demo/Projects/Harbor CLI"
+        ]
+      },
+      "bytesFreedEstimate": 1717986918,
+      "bytesUsedEstimate": 0,
+      "bytesFreed": 1610612736,
+      "movedToTrash": 2,
+      "observed": true,
+      "observedSpace": {
+        "freedBytes": 1717986918,
+        "inTrashBytes": 1610612736,
+        "restoredBytes": 0
+      }
+    }
+  },
+  "spaceReport": {
+    "runs": [
+      {
+        "id": "demo-wizard-run",
+        "kind": "wizard",
+        "label": "Cleanup wizard",
+        "started": "2026-10-01T10:00:00+00:00",
+        "status": "completed",
+        "estimateBytes": 1717986918,
+        "observed": {
+          "freedBytes": 1717986918,
+          "inTrashBytes": 1610612736,
+          "restoredBytes": 0
+        }
+      },
+      {
+        "id": "demo-freeze-run",
+        "kind": "freeze",
+        "label": "Paper Trail",
+        "started": "2026-10-01T10:00:00+00:00",
+        "status": "completed",
+        "estimateBytes": 1717986918,
+        "observed": {
+          "freedBytes": 1717986918,
+          "inTrashBytes": 0,
+          "restoredBytes": 0
+        }
+      },
+      {
+        "id": "demo-cleanup-run",
+        "kind": "cleanup",
+        "label": "Harbor CLI cleanup",
+        "started": "2026-10-01T10:00:00+00:00",
+        "status": "completed",
+        "estimateBytes": 0,
+        "observed": {
+          "freedBytes": 0,
+          "inTrashBytes": 2147483648,
+          "restoredBytes": 1073741824
+        }
+      }
+    ],
+    "totals": {
+      "last30Days": {
+        "estimateBytes": 3435973836,
+        "observed": {
+          "freedBytes": 3435973836,
+          "inTrashBytes": 4294967296,
+          "restoredBytes": 2147483648
+        },
+        "measuredRuns": 3,
+        "unmeasuredRuns": 0
+      },
+      "allTime": {
+        "estimateBytes": 3435973836,
+        "observed": {
+          "freedBytes": 3435973836,
+          "inTrashBytes": 4294967296,
+          "restoredBytes": 2147483648
+        },
+        "measuredRuns": 3,
+        "unmeasuredRuns": 0
+      }
     }
   },
   "backupStatus": {

@@ -15,6 +15,7 @@
     "app/ScopeInspector.swift",
     "app/SpaceViews.swift",
     "app/TasksView.swift",
+    "app/UpdateInstaller.swift",
     "app/Updates.swift",
     "app/WizardViews.swift",
     "assets/IglooIcon.png",
@@ -52,6 +53,7 @@
     "release-notes/0.1.0.md",
     "release-notes/0.2.0.md",
     "release-notes/0.2.1.md",
+    "release-notes/0.3.0.md",
     "release.json",
     "scripts/build_favicons.py",
     "scripts/build_icon.py",
@@ -61,6 +63,7 @@
     "scripts/python-runtime.json",
     "scripts/release-requirements.txt",
     "scripts/release.py",
+    "scripts/update_installer.py",
     "scripts/verify.py",
     "site/app.js",
     "site/index.html",
@@ -77,6 +80,7 @@
     "tests/test_site.py",
     "tests/test_space.py",
     "tests/test_tasks.py",
+    "tests/test_update_installer.py",
     "tests/test_updates.py",
     "tests/test_verify.py"
   ]

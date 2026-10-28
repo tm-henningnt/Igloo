@@ -696,15 +696,21 @@ def current_matches(plan):
     return primary, common, states
 
 
-def record_freeze_outcome(plan, manifest, location, refs):
+def record_freeze_outcome(plan, manifest, location, refs, removed_checkout_bytes=None):
     removed = manifest["state"] == "frozen"
+    if removed_checkout_bytes is None:
+        removed_checkout_bytes = manifest.get("removedCheckoutBytes", 0)
+    observed_space = {"freedBytes": removed_checkout_bytes if removed else 0,
+                      "inTrashBytes": 0, "restoredBytes": 0}
     wrote_archive = any((location / name).is_file() for name in
                         ("source.bundle", "git-metadata.tar.gz", "local-files.tar.gz"))
     outcome = O.outcome_summary(
         checkouts=[r["path"] for r in manifest["capture"]["roles"]] if removed else [],
         estimate=plan.get("outcome", {}).get("bytesFreedEstimate", 0),
         used_estimate=plan.get("outcome", {}).get("bytesUsedEstimate", 0),
-        archives=[location] if wrote_archive else [], refs=refs, observed=True)
+        archives=[location] if wrote_archive else [], refs=refs, observed=True,
+        observed_space=observed_space)
+    manifest["observed"] = observed_space
     if manifest["state"] != ("frozen" if plan.get("mode") == "freeze" else "ready"):
         outcome["held"] = [{"path": plan["path"], "reason": manifest["message"]}]
     manifest["outcome"] = outcome
@@ -721,13 +727,22 @@ def record_freeze_outcome(plan, manifest, location, refs):
     return outcome
 
 
-def execute_freeze(identifier, mode=None):
+def execute_freeze(identifier, mode=None, run_id=None, run_kind=None):
     plan_location, plan = reviewed_plan("freeze", identifier)
     accepted_mode = plan.get("mode", "preserve")
     if accepted_mode not in {"preserve", "freeze"} or mode is not None and mode != accepted_mode:
         refuse("The requested mode does not match this review. Make a new review.")
     primary, common, states = current_matches(plan)
     open_files([Path(p) for p in plan["roots"]])
+    direct_run = run_id is None
+    run_id = identifier if direct_run else run_id
+    run_kind = run_kind or ("freeze" if accepted_mode == "freeze" else "preserve")
+    plan_mirror = [Path("plans") / ("freeze-" + identifier + ".json")]
+    if direct_run:
+        O.record_space_run(run_id, run_kind, started=plan.get("created"), status="running",
+                           label=plan.get("name", run_kind.title()),
+                           estimate_bytes=plan.get("outcome", {}).get("bytesFreedEstimate", 0),
+                           mirror_paths=plan_mirror)
     captured = plan["capture"]
     # Space for archives and one proof checkout. Dependencies are not duplicated.
     retained = sum(e["size"] for r in captured["roles"] for e in r["entries"].values())
@@ -808,10 +823,17 @@ def execute_freeze(identifier, mode=None):
         manifest["message"] = str(e) if isinstance(e, O.Refusal) else "Preservation did not finish. Source checkouts were not removed."
         O.save(location / "manifest.json", manifest)
         e.outcome = record_freeze_outcome(plan, manifest, location, confirmed_refs)
+        if direct_run:
+            O.record_space_run(run_id, run_kind, started=plan.get("created"), status="partial",
+                               label=plan.get("name", run_kind.title()),
+                               estimate_bytes=plan.get("outcome", {}).get("bytesFreedEstimate", 0),
+                               observed=e.outcome["observedSpace"], mirror_paths=plan_mirror)
         raise
+    removed_checkout_bytes = 0
     if accepted_mode == "freeze":
         try:
-            freeze_retire(identifier)
+            retired = freeze_retire(identifier, track_run=False)
+            removed_checkout_bytes = retired["outcome"]["observedSpace"]["freedBytes"]
         except (O.Refusal, OSError) as e:
             # Preserve has completed. A refused removal keeps its exact recovery
             # state and reason, including an interrupted move journal if present.
@@ -821,7 +843,13 @@ def execute_freeze(identifier, mode=None):
                                    else "Freeze was interrupted: ") + reason
             O.save(location / "manifest.json", manifest)
     manifest = O.load(location / "manifest.json")
-    outcome = record_freeze_outcome(plan, manifest, location, confirmed_refs)
+    outcome = record_freeze_outcome(plan, manifest, location, confirmed_refs, removed_checkout_bytes)
+    if direct_run:
+        final_status = "completed" if manifest["state"] == ("frozen" if accepted_mode == "freeze" else "ready") else "partial"
+        O.record_space_run(run_id, run_kind, started=plan.get("created"), status=final_status,
+                           label=plan.get("name", run_kind.title()),
+                           estimate_bytes=plan.get("outcome", {}).get("bytesFreedEstimate", 0),
+                           observed=outcome["observedSpace"], mirror_paths=plan_mirror)
     result = {"archiveID": identifier, "mode": accepted_mode, "state": manifest["state"],
               "outcome": outcome, "message": manifest["message"]}
     if O.CONFIG.get("freezerBackupRoot"):
@@ -871,7 +899,7 @@ def is_stub(path, identifier):
             and O.load(path / MARKER, {}).get("id") == identifier)
 
 
-def freeze_retire(identifier):
+def freeze_retire(identifier, track_run=True):
     location, manifest = archive_record(identifier)
     if manifest["state"] != "ready":
         refuse("Only a fully verified archive is ready for checkout removal.")
@@ -892,6 +920,7 @@ def freeze_retire(identifier):
     O.save(location / "manifest.json", manifest)
     # All checkouts move before deletion. A crash leaves an explicit recovery journal.
     renamed = []
+    measured_checkout_bytes = 0
     def mapped(original):
         for move in manifest["moves"]:
             if O.under(original, Path(move["original"])):
@@ -902,7 +931,10 @@ def freeze_retire(identifier):
             original, temporary = Path(move["original"]), Path(move["temporary"])
             if temporary.exists() or temporary.is_symlink():
                 refuse("A checkout removal staging path already exists. Source was not overwritten.")
+            move["allocatedBytes"] = O.physical_size(original)
+            O.save(location / "manifest.json", manifest)
             rename_exclusive(original, temporary)
+            measured_checkout_bytes += move["allocatedBytes"]
             renamed.append(move)
         for role in manifest["capture"]["roles"]:
             root = mapped(Path(role["path"]))
@@ -934,11 +966,24 @@ def freeze_retire(identifier):
         if temporary.is_symlink() or not temporary.is_dir():
             refuse("A removal staging directory changed. Keep the verified archive and use recovery.")
         shutil.rmtree(temporary)
-    manifest.update(state="frozen", frozenAt=O.now(), message="Checkouts removed; local archives and a project marker remain.")
+    manifest.update(state="frozen", frozenAt=O.now(), removedCheckoutBytes=measured_checkout_bytes,
+                    message="Checkouts removed; local archives and a project marker remain.")
     O.save(location / "manifest.json", manifest)
     remaining = sum(O.physical_size(p) for p in manifest["roots"])
-    return {"outcome": O.outcome_summary(checkouts=[r["path"] for r in manifest["capture"]["roles"]],
-                                         estimate=checkout_bytes, freed=checkout_bytes - remaining, observed=True),
+    observed_space = {"freedBytes": measured_checkout_bytes, "inTrashBytes": 0, "restoredBytes": 0}
+    outcome = O.outcome_summary(checkouts=[r["path"] for r in manifest["capture"]["roles"]],
+                                estimate=checkout_bytes, freed=checkout_bytes - remaining, observed=True,
+                                observed_space=observed_space)
+    manifest["observed"] = observed_space
+    O.save(location / "manifest.json", manifest)
+    if track_run:
+        plan = O.load(plan_path("freeze", identifier), {})
+        O.record_space_run(identifier, "freeze", started=manifest.get("created"), status="completed",
+                           label=manifest.get("name", "Freeze"),
+                           estimate_bytes=plan.get("outcome", {}).get("bytesFreedEstimate", 0),
+                           observed=observed_space,
+                           mirror_paths=[Path("plans") / ("freeze-" + identifier + ".json")])
+    return {"outcome": outcome,
             "message": "Safely frozen. Local-only files and Git recovery are in the Freezer; the marker can be thawed whenever you are ready."}
 
 

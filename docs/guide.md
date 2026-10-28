@@ -22,15 +22,16 @@ Check for custom changes before removing dependencies you normally regenerate. A
 
 For a larger cleanup, open **Cleanup wizard**:
 
-1. Choose how to measure age: Git activity or source-file modification time.
-2. Set a cleanup age and a later freeze age.
-3. Scan, then adjust the proposed action for each project.
-4. Review the folders, Git destinations, local archives, and checkout removals.
-5. Accept the review to run its ready actions.
+1. Choose **Make space**.
+2. Choose how to measure age: Git activity or source-file modification time.
+3. Set a cleanup age and a later freeze age.
+4. Scan, then adjust the proposed action for each project.
+5. Review the folders, Git destinations, local archives, and checkout removals.
+6. Accept the review to run its ready actions.
 
 Projects younger than the first threshold stay as they are. Between thresholds, Igloo proposes cache cleanup. Past the second threshold, it proposes Freeze for your Review. Active sessions and unknown age or activity stay unchanged by default. Igloo checks again for terminals, agents, and applications using a project before it prepares or runs cleanup or Freeze; close them first.
 
-The results show what completed, stopped, or failed. If something changes during the run, inspect the result and make a fresh Review for the remaining work.
+The results show what completed, stopped, or failed. They keep the **Estimate** beside measured **Freed from disk**, **In Trash**, and **Restored from Trash** values. Moving folders to Trash does not free that space; restore an item through **Trash & restore history** to lower its run's In Trash value. Freeze's net space change is measured after the local archive copy, so it can be lower than the bytes freed from the checkout. If something changes during the run, inspect the result and prepare a fresh review for the remaining work.
 
 ## Preserve work before putting a project away
 
@@ -49,7 +50,7 @@ Freezing is for projects you want to keep but no longer need on disk as a workin
 1. Commit the source changes you want to keep and close applications or terminals using the project.
 2. Choose **Preservation → Freeze**. The Requirements checklist shows blockers and, where available, actions to fix them. A remote and committed source are required. Choose a publish destination, then **Build review**.
 3. Review the branches and tags to publish, local files to keep, folders to reinstall or rebuild, and affected checkouts. The outcome summary shows the expected recovery sets, refs, checkout removals, and estimated space.
-4. Accept the action in the Review once. Igloo creates local recovery archives, tests restoration, pushes the reviewed source, verifies it remotely, and then removes the reviewed checkouts. If verification or removal cannot finish, inspect the result in **Freezer**.
+4. Accept the action in the Review once. Igloo creates local recovery archives, tests restoration, pushes the reviewed source, verifies it remotely, and then removes the reviewed checkouts. The result shows the estimate and allocated bytes freed from removed checkouts. If verification or removal cannot finish, inspect the result in **Freezer**.
 
 Choose **Preserve** when you want the same recovery and publication steps while keeping the checkout.
 
@@ -61,7 +62,9 @@ Ignored local files, stashes, and other local Git state stay in your recovery ar
 
 ## Thaw a project
 
-Open **Freezer**, select the project, and choose **Thaw from remote**. Igloo restores the frozen source state, local files, and worktrees. **Offline recovery** uses the local recovery copy when you don't have remote access.
+For one project, open **Freezer**, select it, and choose **Thaw from remote**. To restore several at once, open **Cleanup wizard → Thaw projects**, select the Frozen projects, inspect each ready project's remote refs, original path, and local-only files, then confirm each project's details before the single acceptance. Blocked projects and their archives are left untouched while the other ready projects continue; check each result.
+
+Wizard Thaw checks remote access and restores refs from the remote when available. The Freezer archive supplies Frozen refs missing from the remote and stays available after Thaw. Wizard Thaw does not install dependencies or run project code. Results list the checkouts and remote refs restored. Reinstall dependencies for each restored project, then pull newer remote changes when you're ready. **Offline recovery** remains a per-project action in Freezer when remote access is unavailable.
 
 ![Freezer showing fictional preserved and frozen projects and their backup status](screenshots/freezer.png)
 
@@ -85,7 +88,7 @@ Choose **Igloo → Check for Updates** from the app menu or About screen. Igloo 
 
 If a check or download fails, the update window explains the problem and links to the published releases. If GitHub's request limit is exhausted, wait until the displayed UTC reset time, when available, before trying again. For an offline connection or timeout, check your connection; for a denied request or server error, try again later. Igloo does not retry automatically.
 
-After the checksum has been verified, choose **Show in Finder**. Open the ZIP, quit Igloo, and move the new app into Applications. Your projects, settings, and local archives stay where they are. If you use the CLI, choose **Tasks → Reinstall CLI** after updating.
+After the checksum has been verified, choose **Install and relaunch**. Igloo verifies the downloaded app signature, checks the release version and app identity again, replaces the app from a writable, non-translocated location, and reopens it. The previous app stays in its backup until the new process has remained open briefly. The installer never asks for an administrator password. If installation fails, Igloo restores and reopens the previous app, then shows the failure in the update window. If Igloo cannot close because a dialog blocks termination, the update window says it is still open; close the dialog or choose Quit and the installer will continue. If the previous app cannot be reopened automatically, start it manually; the update window shows the failure details on its next launch. Move Igloo to a folder your account can write to if the current location is read-only. macOS privacy permissions may need approval again after an ad-hoc-signed update. Your projects, settings, and local archives stay where they are. If you use the CLI, choose **Tasks → Reinstall CLI** after updating.
 
 The standard app keeps its own Python inside the app bundle and leaves your system Python and PATH alone. The optional System Python build uses the Python installed on your Mac (Python 3.11 or later); its path can be changed in Settings.
 

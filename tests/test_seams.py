@@ -53,6 +53,17 @@ def swift_sources(root):
         raise AssertionError(f"Swift sources missing from public export: {missing}")
 
 
+def update_installer_contract(root):
+    if not (root / "scripts/update_installer.py").is_file():
+        raise AssertionError("the update installer helper is missing")
+    build = read(root, "build.command")
+    if 'cp scripts/update_installer.py "$APP_BUNDLE/Contents/Resources/"' not in build:
+        raise AssertionError("the update installer helper is not copied into the app bundle")
+    exported = set(json.loads(read(root, "public-files.json"))["files"])
+    if "scripts/update_installer.py" not in exported:
+        raise AssertionError("the update installer helper is missing from the public export")
+
+
 def app_commands(root):
     found = set()
     for path in (root / "app").glob("*.swift"):
@@ -111,6 +122,8 @@ class SeamTests(unittest.TestCase):
         root = Path(temporary.name)
         shutil.copyfile(ROOT / "build.command", root / "build.command")
         shutil.copyfile(ROOT / "public-files.json", root / "public-files.json")
+        (root / "scripts").mkdir()
+        shutil.copyfile(ROOT / "scripts/update_installer.py", root / "scripts/update_installer.py")
         for folder in ("app", "backend"):
             shutil.copytree(ROOT / folder, root / folder, ignore=shutil.ignore_patterns("__pycache__"))
         return root
@@ -135,6 +148,22 @@ class SeamTests(unittest.TestCase):
         (fixture / "public-files.json").write_text(json.dumps(listing), encoding="utf-8")
         with self.assertRaisesRegex(AssertionError, "Swift sources missing from public export"):
             swift_sources(fixture)
+
+    def test_update_installer_helper_is_bundled_and_exported(self):
+        update_installer_contract(ROOT)
+        fixture = self.fixture()
+        build = read(fixture, "build.command").replace(
+            'cp scripts/update_installer.py "$APP_BUNDLE/Contents/Resources/"\n', "", 1)
+        (fixture / "build.command").write_text(build, encoding="utf-8")
+        with self.assertRaisesRegex(AssertionError, "not copied into the app bundle"):
+            update_installer_contract(fixture)
+
+        fixture = self.fixture()
+        listing = json.loads(read(fixture, "public-files.json"))
+        listing["files"].remove("scripts/update_installer.py")
+        (fixture / "public-files.json").write_text(json.dumps(listing), encoding="utf-8")
+        with self.assertRaisesRegex(AssertionError, "missing from the public export"):
+            update_installer_contract(fixture)
 
     def test_app_backend_commands_are_accepted_by_organizer(self):
         commands = app_commands(ROOT)

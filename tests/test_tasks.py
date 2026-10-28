@@ -44,6 +44,14 @@ class TaskTests(unittest.TestCase):
         self.assertFalse(self.cache.exists())
         replay=tasks.apply_plan(run["planID"])
         self.assertEqual(replay["status"],"failed")
+
+    def test_cli_space_line_uses_clear_estimate_and_disk_labels(self):
+        with patch.dict(sys.modules):
+            import task_cli
+            line = task_cli.space_line({"outcome": {"bytesFreedEstimate": 12}, "observed": {
+                "freedBytes": 10, "inTrashBytes": 20, "restoredBytes": 0}})
+        self.assertEqual(line,
+                         "Estimate: 12 bytes · Freed from disk: 10 · In Trash: 20 · Restored from Trash: 0")
     def test_review_only_task_cannot_execute(self):
         tasks.save(dict(self.definition,mode="review"))
         run=tasks.run_task("weekly-cleanup",apply=True)
@@ -121,6 +129,20 @@ class TaskTests(unittest.TestCase):
         self.assertTrue(result["observed"])
         self.assertEqual(result["movedToTrash"], estimate["movedToTrash"])
         self.assertEqual(result["bytesFreed"], 0)
+
+    def test_task_history_includes_observed_space_and_legacy_runs_are_unmeasured(self):
+        allocated = o.physical_size(self.cache)
+        applied = tasks.run_task("weekly-cleanup", apply=True)
+        observed = {"freedBytes": 0, "inTrashBytes": allocated, "restoredBytes": 0}
+        self.assertEqual(applied["observed"], observed)
+        saved = tasks.history("weekly-cleanup")["runs"]
+        self.assertEqual(next(run for run in saved if run["id"] == applied["id"])["observed"], observed)
+
+        legacy = {"id": "legacy-run", "taskID": "weekly-cleanup", "taskName": "Weekly cleanup",
+                  "started": o.now(), "status": "completed", "message": "Old record"}
+        o.save(o.STATE / "task-runs" / "weekly-cleanup" / "legacy-run.json", legacy)
+        row = next(run for run in o.space_report()["runs"] if run["id"] == "legacy-run")
+        self.assertIsNone(row["observed"])
     def test_calendar_uses_strict_local_time_and_weekday(self):
         self.assertEqual(tasks.calendar({"frequency":"weekly","time":"09:30","weekday":0}),{"Hour":9,"Minute":30,"Weekday":0})
         self.assertEqual(tasks.calendar({"frequency":"daily","time":"22:10"}),{"Hour":22,"Minute":10})

@@ -15,11 +15,35 @@ enum DemoCatalog {
         case "wizard-state":
             let object = try! JSONSerialization.jsonObject(with: resource("demo-tasks")) as! [String: Any]
             let review = object["demoWizardReview"] as! [String: Any]
+            let thaw = object["demoWizardThaw"] as! [String: Any]
             data = try! JSONSerialization.data(withJSONObject: ["rules": review["rules"]!,
-                "cacheKinds": ["node_modules", ".cache"], "last": review])
+                "cacheKinds": ["node_modules", ".cache"], "last": review, "thawLast": thaw["result"]!])
+        case "wizard-thaw-prepare":
+            let object = try! JSONSerialization.jsonObject(with: resource("demo-tasks")) as! [String: Any]
+            let thaw = object["demoWizardThaw"] as! [String: Any]
+            data = try! JSONSerialization.data(withJSONObject: thaw["review"]!)
+        case "wizard-thaw-execute":
+            let object = try! JSONSerialization.jsonObject(with: resource("demo-tasks")) as! [String: Any]
+            let thaw = object["demoWizardThaw"] as! [String: Any]
+            data = try! JSONSerialization.data(withJSONObject: thaw["result"]!)
         case "task-plan":
             let object = try! JSONSerialization.jsonObject(with: resource("demo-tasks")) as! [String: Any]
             data = try! JSONSerialization.data(withJSONObject: object["demoTaskReview"]!)
+        case "wizard-result":
+            let tasks = try! JSONSerialization.jsonObject(with: resource("demo-tasks")) as! [String: Any]
+            let catalog = try! JSONSerialization.jsonObject(with: resource("demo-catalog")) as! [String: Any]
+            var result = tasks["demoWizardReview"] as! [String: Any]
+            result["status"] = "finished"
+            result["message"] = "Demo only: the listed actions completed; Trash remains available for restore."
+            var rows = result["rows"] as! [[String: Any]]
+            for index in rows.indices {
+                rows[index]["status"] = "done"
+                rows[index]["message"] = ""
+            }
+            result["rows"] = rows
+            let results = catalog["demoResults"] as! [String: Any]
+            result["outcome"] = results["wizard"]!
+            data = try! JSONSerialization.data(withJSONObject: result)
         case "preview":
             let object = try! JSONSerialization.jsonObject(with: resource("demo-catalog")) as! [String: Any]
             let projects = object["projects"] as! [[String: Any]]
@@ -40,9 +64,18 @@ enum DemoCatalog {
             let object = try! JSONSerialization.jsonObject(with: resource("demo-tasks")) as! [String: Any]
             let items = object["tasks"] as! [[String: Any]]
             data = try! JSONSerialization.data(withJSONObject: ["runs": items.compactMap { $0["lastRun"] }])
+        case "space-report":
+            let object = try! JSONSerialization.jsonObject(with: resource("demo-catalog")) as! [String: Any]
+            data = try! JSONSerialization.data(withJSONObject: object["spaceReport"]!)
         default: return nil
         }
         return try? JSONDecoder().decode(type, from: data)
+    }
+    static func wizardThawArchives() -> [FrozenArchive] {
+        let object = try! JSONSerialization.jsonObject(with: resource("demo-tasks")) as! [String: Any]
+        let thaw = object["demoWizardThaw"] as! [String: Any]
+        let data = try! JSONSerialization.data(withJSONObject: thaw["archives"]!)
+        return (try? JSONDecoder().decode([FrozenArchive].self, from: data)) ?? []
     }
 }
 
@@ -52,6 +85,15 @@ import SwiftUI
 import CoreGraphics
 import Darwin
 
+extension AppUpdater {
+    static func demoReadyUpdate() -> AppUpdater {
+        let updater = demoMarkdownUpdate()
+        updater.status = "Download verified. Ready to install and relaunch Igloo."
+        updater.downloaded = URL(fileURLWithPath: "/fixture/Igloo-update.zip")
+        return updater
+    }
+}
+
 struct DemoCaptureSheet: Identifiable {
     var view: String
     var id: String { view }
@@ -60,8 +102,12 @@ struct DemoCaptureSheet: Identifiable {
 enum DemoCapture {
     static let extraSheetViews: Set<String> = ["freeze-review", "preserve-review", "freeze-result", "freeze-failure", "freeze-hold",
         "freeze-no-remote", "freeze-no-files", "freeze-no-commit", "freeze-own-source", "freeze-process",
-        "cleanup-review", "cleanup-hold", "wizard-review", "task-review", "settings", "settings-cloud"]
-    static let updateViews = AppUpdater.demoFailureNames.map { "update-" + $0 } + ["update-markdown"]
+        "cleanup-review", "cleanup-result", "cleanup-hold", "trash-history", "wizard-review", "wizard-result",
+        "wizard-start", "wizard-thaw-selection", "wizard-thaw-review", "wizard-thaw-ready", "wizard-thaw-result",
+        "wizard-thaw-occupied", "wizard-thaw-remote", "wizard-thaw-corrupt", "wizard-thaw-not-frozen",
+        "wizard-thaw-rehydrating",
+        "task-review", "task-history", "settings", "settings-cloud"]
+    static let updateViews = AppUpdater.demoFailureNames.map { "update-" + $0 } + ["update-markdown", "update-ready"]
     static let sheetViews = extraSheetViews.union(["freeze", "shelf"]).union(updateViews)
     struct Options {
         let folder: URL?
@@ -95,7 +141,6 @@ enum DemoCapture {
         let scope = value("--demo-scope", default: "shown")
         let rail = value("--demo-rail", default: "full")
         let data = value("--demo-data", default: "normal")
-        let updateViews = AppUpdater.demoFailureNames.map { "update-" + $0 } + ["update-markdown"]
         guard (Set(["overview", "git", "worktrees", "local-files", "cleanup", "plan", "freeze", "shelf", "hold"] + updateViews).union(extraSheetViews)).contains(view),
               ["shown", "hidden"].contains(scope), ["compact", "full"].contains(rail),
               ["normal", "long", "empty"].contains(data),
@@ -129,6 +174,25 @@ enum DemoCapture {
                                            captureBlocker: blocker).environmentObject(store))
         case "shelf":
             return AnyView(FrozenProjectsView().environmentObject(store))
+        case "trash-history":
+            return AnyView(HistoryView().environmentObject(store))
+        case "task-history":
+            return AnyView(TaskHistoryCaptureView().environmentObject(store))
+        case "cleanup-result":
+            guard let outcome = DemoPreservationCatalog.load()?.demoResults?.cleanup else {
+                return AnyView(Text("Demo cleanup result unavailable"))
+            }
+            let result = CleanupResult(message: "Demo only: the folders remain recoverable in Trash.",
+                                       results: [
+                                        ActionResult(path: "/Users/demo/Projects/Harbor CLI/node_modules",
+                                                     ok: true, message: "Moved to Trash.", size: 1_073_741_824),
+                                        ActionResult(path: "/Users/demo/Projects/Harbor CLI/.cache",
+                                                     ok: true, message: "Moved to Trash.", size: 536_870_912)
+                                       ],
+                                       outcome: outcome)
+            return AnyView(CleanupResultView(result: result, onDone: {}).environmentObject(store))
+        case "wizard-result":
+            return AnyView(CleanupWizardView(captureResult: true).environmentObject(store))
         case "cleanup-review", "cleanup-hold":
             let plan: CleanupPlan?
             if view == "cleanup-hold",
@@ -145,6 +209,10 @@ enum DemoCapture {
             return AnyView(CleanupReview(plan: plan).environmentObject(store))
         case "wizard-review":
             return AnyView(CleanupWizardView(captureReview: true).environmentObject(store))
+        case "wizard-start", "wizard-thaw-selection", "wizard-thaw-review", "wizard-thaw-ready", "wizard-thaw-result",
+             "wizard-thaw-occupied", "wizard-thaw-remote", "wizard-thaw-corrupt", "wizard-thaw-not-frozen",
+             "wizard-thaw-rehydrating":
+            return AnyView(CleanupWizardView(captureView: view).environmentObject(store))
         case "task-review":
             guard let plan: WizardPlan = DemoCatalog.reply(["task-plan", "demo"], as: WizardPlan.self) else {
                 return AnyView(Text("Demo task review unavailable"))
@@ -154,6 +222,8 @@ enum DemoCapture {
             return AnyView(AppSettingsView().environmentObject(store))
         case "update-markdown":
             return AnyView(UpdatesView().environmentObject(AppUpdater.demoMarkdownUpdate()))
+        case "update-ready":
+            return AnyView(UpdatesView().environmentObject(AppUpdater.demoReadyUpdate()))
         case let updateView where updateView.hasPrefix("update-"):
             guard let updater = AppUpdater.demoFailure(String(updateView.dropFirst("update-".count))) else {
                 return AnyView(Text("Demo update state unavailable"))
@@ -186,6 +256,7 @@ enum DemoCapture {
             DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { fail("Capture timed out") }
         }
         var configured = false
+        var captureWindowActivated = false
         var accessibilityPostedAt: Date?
         var lastSize = NSSize.zero
         var stable = 0
@@ -216,6 +287,12 @@ enum DemoCapture {
             let target = sheetViews.contains(options.view) ? window.attachedSheet : window
             guard let target, let view = target.contentView, view.bounds.width > 0, view.bounds.height > 0 else {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { poll() }; return
+            }
+            if options.folder != nil && !captureWindowActivated {
+                NSApp.activate(ignoringOtherApps: true)
+                window.makeKeyAndOrderFront(nil)
+                target.makeKeyAndOrderFront(nil)
+                captureWindowActivated = true
             }
             view.layoutSubtreeIfNeeded()
             let size = view.bounds.size
@@ -262,7 +339,7 @@ enum DemoCapture {
             view.displayIfNeeded()
             let actualSize = contentView.bounds.size
             let scheme: ColorScheme = CommandLine.arguments.contains("--demo-dark") ? .dark : .light
-            let mainRoot = AnyView(OrganizerView().environmentObject(store))
+            let mainRoot = AnyView(OrganizerView().environmentObject(store).environmentObject(AppUpdater()))
             let png = renderOffscreen(mainRoot, size: actualSize, scheme: scheme)
             var sheetPNG: Data?
             if sheetViews.contains(options.view) {
@@ -357,15 +434,29 @@ enum DemoCapture {
         case "freeze-no-files": expectedLabels = ["Add files to this project", "Open in Finder", "Open Terminal"]
         case "freeze-hold": expectedLabels = ["This project is on Hold", "Requirements"]
         case "freeze-review", "preserve-review": expectedLabels = ["Expected outcome", "Git history"]
-        case "freeze-result", "freeze-failure": expectedLabels = ["Outcome", "Done"]
+        case "freeze-result": expectedLabels = ["Outcome", "Checkout removed", "Net space change after the archive copy", "Done"]
+        case "freeze-failure": expectedLabels = ["Outcome", "Done"]
         case "cleanup-review": expectedLabels = ["Review cleanup", "Expected outcome"]
         case "cleanup-hold": expectedLabels = ["Review cleanup", "This project is on Hold"]
+        case "cleanup-result": expectedLabels = ["Cleanup result", "Freed from disk", "In Trash (can be restored)", "Done"]
+        case "wizard-result": expectedLabels = ["Cleanup wizard", "Results", "Estimate", "Checkout removed", "In Trash (can be restored)"]
         case "wizard-review": expectedLabels = ["Expected outcome", "Review"]
+        case "wizard-start": expectedLabels = ["Make space", "Thaw projects"]
+        case "wizard-thaw-selection": expectedLabels = ["Frozen projects", "Create Thaw plan"]
+        case "wizard-thaw-review": expectedLabels = ["Thaw plan", "Expected outcome"]
+        case "wizard-thaw-ready": expectedLabels = ["Only ready projects will run", "Harbor CLI", "I reviewed the remote refs"]
+        case "wizard-thaw-occupied": expectedLabels = ["Thaw plan", "Path occupied", "Show path in Finder"]
+        case "wizard-thaw-remote": expectedLabels = ["Thaw plan", "Remote unavailable", "Check remote again"]
+        case "wizard-thaw-corrupt": expectedLabels = ["Thaw plan", "Archive needs attention", "Open Freezer"]
+        case "wizard-thaw-not-frozen": expectedLabels = ["Thaw plan", "No longer Frozen", "Open Freezer"]
+        case "wizard-thaw-rehydrating": expectedLabels = ["Thawing Harbor CLI"]
+        case "wizard-thaw-result": expectedLabels = ["Checkouts restored", "Remote refs restored", "Start a new Thaw plan", "Done"]
         case "task-review": expectedLabels = ["Review task actions", "Expected outcome"]
         case "settings": expectedLabels = ["Igloo Settings", "Freezer backup folder"]
         case "settings-cloud": expectedLabels = ["Confirm cloud backup"]
         case "shelf": expectedLabels = ["Done", "Show archive", "Thaw from remote"]
         case "update-markdown": expectedLabels = []
+        case "update-ready": expectedLabels = ["Install and relaunch"]
         default: return true
         }
         let expectedIdentifiers: [String]
@@ -378,7 +469,18 @@ enum DemoCapture {
         case "shelf":
             expectedIdentifiers = ["shelf.backUpNow", "shelf.verifyBackup", "shelf.done", "shelf.showArchive",
                                    "shelf.freeze", "shelf.offlineRecovery", "shelf.thawRemote"]
+        case "wizard-start": expectedIdentifiers = ["wizard.start.makeSpace", "wizard.start.thaw"]
+        case "wizard-thaw-selection": expectedIdentifiers = ["wizard.thaw.back", "wizard.thaw.prepare"]
+        case "wizard-thaw-review":
+            expectedIdentifiers = ["wizard.thaw.acceptance", "wizard.thaw.execute"]
+        case "wizard-thaw-ready":
+            expectedIdentifiers = ["wizard.thaw.acceptance", "wizard.thaw.execute"]
+        case "wizard-thaw-occupied": expectedIdentifiers = ["wizard.thaw.showPath"]
+        case "wizard-thaw-remote": expectedIdentifiers = ["wizard.thaw.checkRemote"]
+        case "wizard-thaw-corrupt", "wizard-thaw-not-frozen": expectedIdentifiers = ["wizard.thaw.openFreezer"]
+        case "wizard-thaw-result": expectedIdentifiers = ["wizard.thaw.newPlan"]
         case "update-markdown": expectedIdentifiers = ["updates.releaseNotes"]
+        case "update-ready": expectedIdentifiers = ["updates.install", "updates.releaseNotes"]
         default: expectedIdentifiers = []
         }
         func labels(_ node: [String: Any]) -> [String] {

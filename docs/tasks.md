@@ -18,7 +18,7 @@ Recent projects stay as they are. Projects between the two ages get cache cleanu
 
 Put a project on **Hold** to exclude it from wizard proposals and task actions, including scheduled cleanup. The review lists it with “On hold.” Notes stay with the project. Existing Keep decisions become Hold; the other old decisions become unheld and keep their notes. Manual cleanup, Preserve and Freeze remain available and show the Hold in their Review.
 
-The wizard's **Save rules as a task** button is another starting point. It creates a review-only task from those rules; individual project overrides are not copied.
+The Cleanup wizard starts with **Make space** and **Thaw projects**. Only **Make space** has rules to save as a task. Its **Save rules as a task** button creates a review-only task from those rules; individual project overrides are not copied. Tasks do not thaw projects.
 
 ## Review and run
 
@@ -28,7 +28,9 @@ Reviews expire after ten minutes. If you change the rules or the project changes
 
 Preserve keeps the checkout after verifying local recovery and the reviewed remote refs. Freeze uses one Review and one acceptance: it runs Preserve, verifies recovery again, then removes the checkouts. If a process opens files, content changes, or verification fails before removal, the checkout stays and the Freezer records why Freeze stopped. A remote is required for both actions.
 
-Every Review summarizes the outcome: checkout paths to remove, estimates of space freed and additional space used, recovery sets written to the Freezer, exact refs and their remote destination, folders moved to Trash, and projects left out. Wizard and task summaries add their ready rows. Results report observed actions alongside the original space estimates. Moving folders to Trash frees no disk space until Trash is emptied. Preserve estimates zero bytes freed and reports its additional recovery space separately as `bytesUsedEstimate`. Both estimates are nonnegative; the observed net `bytesFreed` can be negative when recovery uses additional space. Freeze estimates use allocated file bytes and an uncompressed recovery estimate; compression and filesystem allocation can change the observed result.
+Every Review summarizes checkout paths, space estimates, Freezer archives, refs and their destinations, folders moved to Trash, and projects left out. Wizard and task summaries include their ready rows. Results show an **Estimate** beside measured **Freed from disk**, **In Trash**, and **Restored from Trash** values. Freed from disk is the gross allocated size removed from a checkout. Bytes moved to Trash remain on disk, so a Cleanup can correctly show 0 bytes freed from disk and a positive In Trash value. Restored from Trash counts bytes returned through Trash & restore history and lowers In Trash for that run. **Net space change after recovery** is the actual disk-space change after accounting for archives; it can differ from Freed from disk because archives use disk space.
+
+A **Thaw plan** lists checkouts and remote refs to restore, the Freezer archive used for recovery, and any blocked projects. The remote supplies refs when available, with the Freezer archive as a fallback for missing Frozen refs. Thaw does not measure space. After a Thaw, results report the checkouts and remote refs restored. Freeze estimates use allocated file bytes and an uncompressed recovery estimate; compression and filesystem allocation can change the result.
 
 The Review states the number of recovery sets and their Freezer location. Exact recovery paths are assigned during execution and appear in the result.
 
@@ -115,8 +117,10 @@ Deleting a task keeps its run history.
 
 ## Check results and recover files
 
-Use the task's **History** section or `igloo history TASK_ID` to see completed, held, skipped, and failed runs. Open the saved review for details. Caches moved to Trash can be restored through **Trash & restore history**.
+Use the task's **History** section or `igloo history TASK_ID` to see completed, held, skipped, and failed runs with Estimate, Freed from disk, In Trash, and Restored from Trash values. Older run records show **not measured**. Open the saved review for details. Caches moved to Trash can be restored through **Trash & restore history**; the space report updates the original run when an item is restored.
+
+The **Space report** in Trash & restore history lists runs and totals for the last 30 days and all time. From Terminal, use `igloo space-report` for the same report. This does not empty Trash.
 
 If a run stops unexpectedly, inspect its review and recovery history before running a fresh review. Don't assume an interrupted run completed everything.
 
-For scripts, add `--json` to task or history commands. Exit codes are 0 for a saved review, completed run, or nothing to do; 1 for a refusal, failure, held, or partial result; and 75 when another operation is running.
+For scripts, add `--json` to task, history, or space-report commands. Exit codes are 0 for a saved review, completed run, or nothing to do; 1 for a refusal, failure, held, or partial result; and 75 when another operation is running.

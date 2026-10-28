@@ -88,9 +88,36 @@ struct CleanupPlan: Decodable, Identifiable {
     var outcome: ReviewOutcome?
 }
 struct Reply: Decodable {
-    var message: String?; var error: String?; var results: [ActionResult]?
+    var message: String?; var error: String?; var results: [ActionResult]?; var outcome: ReviewOutcome?
 }
-struct ActionResult: Decodable { var path: String; var ok: Bool; var message: String }
+struct ActionResult: Decodable {
+    var path: String
+    var ok: Bool
+    var message: String
+    var size: Int64?
+
+    init(path: String, ok: Bool, message: String, size: Int64? = nil) {
+        self.path = path
+        self.ok = ok
+        self.message = message
+        self.size = size
+    }
+
+    private enum CodingKeys: String, CodingKey { case path, ok, message, size }
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        path = try values.decode(String.self, forKey: .path)
+        ok = try values.decode(Bool.self, forKey: .ok)
+        message = try values.decode(String.self, forKey: .message)
+        size = try values.decodeIfPresent(Int64.self, forKey: .size)
+    }
+}
+struct CleanupResult: Identifiable {
+    var id = UUID()
+    var message: String
+    var results: [ActionResult]
+    var outcome: ReviewOutcome
+}
 struct PushRequest: Identifiable {
     var project: Project; var branch: Branch; var remote: Remote
     var id: String { project.id + branch.name }
@@ -128,6 +155,7 @@ final class OrganizerStore: ObservableObject {
     @Published var quietDays = 60
     @Published var error: String?
     @Published var plan: CleanupPlan?
+    @Published var cleanupResult: CleanupResult?
     @Published var historyShown = false
     @Published var pushRequest: PushRequest?
     @Published var remoteSetup: Project?
@@ -204,7 +232,7 @@ final class OrganizerStore: ObservableObject {
         busy = true
         status = args.first == "scan" ? "Discovering projects, measuring folders and checking remotes…" : "Checking local state…"
         progressTimer?.invalidate()
-        if ["scan", "freeze-preview", "freeze-execute", "freeze-retire", "rehydrate", "wizard-scan", "wizard-prepare", "wizard-execute", "task-run", "task-apply"].contains(args.first ?? "") {
+        if ["scan", "freeze-preview", "freeze-execute", "freeze-retire", "rehydrate", "wizard-scan", "wizard-prepare", "wizard-execute", "wizard-thaw-prepare", "wizard-thaw-execute", "task-run", "task-apply"].contains(args.first ?? "") {
             progressTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
                 guard let self = self,
                       let data = try? Data(contentsOf: self.stateDirectory.appendingPathComponent("progress.json")),
@@ -285,6 +313,12 @@ final class OrganizerStore: ObservableObject {
         invoke(args, as: Reply.self) { reply in
             let failures = reply.results?.filter { !$0.ok } ?? []
             let moved = reply.results?.filter { $0.ok }.count ?? 0
+            if args.first == "trash", let outcome = reply.outcome {
+                let message = reply.message ?? "Cleanup finished. Review the observed space and restore history."
+                self.load()
+                self.cleanupResult = CleanupResult(message: message, results: reply.results ?? [], outcome: outcome)
+                return
+            }
             var lines = failures.prefix(5).map { "Could not move: \($0.path)\n\($0.message)" }
             if reply.results != nil { lines.insert("\(moved) directories moved; \(failures.count) could not be moved. Full move records are in History.", at: 0) }
             let message = ([reply.message].compactMap { $0 } + lines).joined(separator: "\n\n")
@@ -378,6 +412,8 @@ final class OrganizerStore: ObservableObject {
 
 struct OrganizerView: View {
     @EnvironmentObject var store: OrganizerStore
+    @EnvironmentObject var updater: AppUpdater
+    @Environment(\.openWindow) private var openWindow
     @AppStorage("compactSidebar") private var compactSidebarPreference = false
     @AppStorage("scopeInspectorShown") private var scopeInspectorPreference = true
     @LocalState private var demoCompactSidebar = DemoCapture.options?.rail == "compact"
@@ -500,6 +536,9 @@ struct OrganizerView: View {
         }
         .sheet(item: $store.demoCaptureSheet) { sheet in DemoCapture.sheetRoot(sheet.view, store: store) }
         .sheet(item: $store.plan) { CleanupReview(plan: $0).environmentObject(store) }
+        .sheet(item: $store.cleanupResult) { result in
+            CleanupResultView(result: result) { store.cleanupResult = nil }
+        }
         .sheet(isPresented: $store.historyShown) { HistoryView().environmentObject(store) }
         .sheet(item: $store.pushRequest) { PushReview(request: $0).environmentObject(store) }
         .sheet(item: $store.remoteSetup) { RemoteSetupView(project: $0).environmentObject(store) }
@@ -520,7 +559,12 @@ struct OrganizerView: View {
         .onChange(of: store.filter) {
             if !store.visible.contains(where: { $0.id == store.selection }) { store.selection = store.visible.first?.id }
         }
-        .onAppear { store.load() }
+        .onAppear {
+            store.load()
+            if CommandLine.arguments.contains("--update-install-failed") || updater.failed {
+                openWindow(id: "updates")
+            }
+        }
     }
 }
 
@@ -669,7 +713,7 @@ struct ProjectDetail: View {
     @StateObject var updater = AppUpdater()
     var body: some Scene {
         WindowGroup("Igloo", id: "catalog") {
-            OrganizerView().environmentObject(store)
+            OrganizerView().environmentObject(store).environmentObject(updater)
                 .onAppear {
                     updater.demo = store.isDemo
                     if store.isDemo && CommandLine.arguments.contains("--demo-light") {
@@ -747,7 +791,7 @@ struct AppHelpView: View {
                         helpSection("Analyze your projects", "Analyze Projects discovers repositories and linked worktrees, measures folders and checks configured remotes. It reads project metadata and filenames without changing checkouts. Source dates and observed process activity are estimates of use.")
                         helpSection("Settings and installation", "The app bundles its backend and can be copied to Applications. Settings lets you choose the workspace root, archive and state locations, clone folder, quiet threshold, GitHub owner default and installed tool paths. Python, Git and gh remain local prerequisites.")
                         helpSection("Tasks and schedules", "Tasks save reusable cleanup rules for selected projects. Start with a Review that lists the exact folders before anything changes. You can run a reviewed cache cleanup or schedule one after giving permission. Past the freeze threshold, the wizard suggests Freeze and waits for your Review. Tasks do not commit or push source, Freeze projects, or remove their checkouts. If you change the rules, enable the schedule again. Daily and weekly schedules run while you are logged in; busy runs are skipped and recorded. Install the optional Terminal tool from Tasks if you want to run a saved task from Terminal.")
-                        helpSection("Cleanup wizard", "Choose Git activity or source-file modification age, a cache threshold and a later freeze threshold. Recent projects remain unchanged, middle-aged projects get cache cleanup, and older projects are proposed for Freeze. Change any project action to override age suggestions. Before it prepares or runs cleanup or Freeze, Igloo checks again for terminals, agents and applications using each project. Close them first. Review the exact folders, refs and recovery data, then accept once to run every ready action, including verified checkout removal for Freeze. Blocked rows do not run; results are saved locally. Source-file age ignores dependencies, Git metadata and generated/review folders.")
+                        helpSection("Cleanup wizard", "Choose Make space to set Git activity or source-file age rules, suggest cleanup and Freeze actions, and review them before one acceptance. Choose Thaw projects to select several Frozen projects and review each remote ref, original path, local-only files and blockers. One acceptance restores every ready row; a failure in one row does not stop the others. The remote supplies available refs, and the Freezer archive supplies Frozen refs missing from it. Wizard Thaw does not install dependencies or run project code, and says to reinstall dependencies for each restored project. Offline recovery remains available per project in Freezer.")
                         helpSection("Explore space", "Space explorer offers sunburst, icicle and Marimekko views of project sizes and measured dependency/build types. Filter projects by age, detected activity or type, and color by type, activity or age. Select a segment to focus a project; Open project returns to its cleanup and preservation tools. Other project files is the unclassified remainder, not a claim that data is safe to delete.")
                         helpSection("Browse GitHub", "GitHub repositories lets you browse your account or an organization, search, hide existing local clones, select several repositories and clone them into a chosen project folder. Existing paths are never overwritten. Run Analyze Projects afterward to index them.")
                         helpSection("Project types and technology", "Analysis suggests project purpose separately from technology using bounded filenames and package metadata. Overview lets you correct the project type or reset it to Automatic. Catalog search and the type filter use these labels. Space explorer groups, colors and filters by project purpose, technology, age and activity. Complete technology combinations keep aggregate sizes from being counted more than once.")
@@ -755,7 +799,7 @@ struct AppHelpView: View {
                         helpSection("Choose what to review", "The sidebar groups project views, review filters, tools and recovery. Its toolbar button collapses it to an icon rail. Quiet projects shows its age threshold below the project views. Needs preservation highlights local history, changed files, stashes and local data. Cleanup opportunities lists ignored dependencies and tool caches.")
                         helpSection("Connect GitHub", "Open a project’s Preservation tab. Connect an existing remote, or create a private GitHub repository. Your gh login supplies the personal-account default; you can explicitly choose an organization. Local folder labels never choose the GitHub owner or visibility.")
                         helpSection("Commit and publish", "Commit selected files lets you review a specific checkout and file selection. Other staged files must be reviewed too. Environment, key and data filenames stay local. Git → Branches can push one reviewed commit and destination; it never force-pushes.")
-                        helpSection("Clean caches", "Select exact directories in Cleanup and review a fresh preview. Active sessions, tracked files, nested repositories and local configuration can stop cleanup. Moves go to Trash and can be restored from Trash & restore history. Space is freed when Trash is emptied separately.")
+                        helpSection("Clean caches", "Select exact directories in Cleanup and review a fresh preview. Active sessions, tracked files, nested repositories and local configuration can stop cleanup. Results show Freed separately from In Trash. Moves stay recoverable in Trash; restoring an item lowers its run's In Trash value. Space is freed when Trash is emptied separately. See the Space report in Trash & restore history for run totals.")
                     }.frame(maxWidth: .infinity, alignment: .leading).padding(18).padding(.bottom, 30)
                 } else if topic == "Freeze & thaw" {
 
@@ -764,7 +808,7 @@ struct AppHelpView: View {
                         helpSection("Requirements and Hold", "The project list shows a badge when a quick check finds a blocker. Open Preservation and choose Preserve or Freeze to see the Requirements checklist and available fixes. Both need a remote. Hold excludes a project from wizard and task proposals; manual actions remain available and show a warning.")
                         helpSection("Preserve", "Preserve reviews ordinary branches and tags, local-only files and rebuild folders. It stores local files and Git recovery in the Freezer, tests reconstruction, pushes the reviewed refs and verifies them remotely. Private refs, stashes and reflogs stay in local recovery, and the checkout remains.")
                         helpSection("Freeze", "Build a Review and inspect its outcome summary for recovery sets, refs, checkout removals and estimated space. Accept once to Preserve, verify recovery and the remote, then remove the reviewed checkouts. A small project marker and the Freezer copy remain. If removal cannot finish, the result explains why and the preserved archive stays available.")
-                        helpSection("Thaw later", "Freezer offers remote thawing and offline recovery. Remote thawing clones the remote and restores the frozen source state, local files and Git/worktree metadata. It does not overwrite occupied paths. Reinstall dependencies, then pull newer remote changes when ready.")
+                        helpSection("Thaw later", "Use Cleanup wizard → Thaw projects to restore several Frozen projects from their remotes in one Review. Freezer still offers remote Thaw and offline recovery for one project at a time. Thaw restores the Frozen source state, local files and Git/worktree metadata without overwriting occupied paths. Reinstall dependencies, then pull newer remote changes when ready.")
                         helpSection("Recover interruptions", "If removal or restoration is interrupted, use the same archive’s recovery action again. Already restored files are checked before continuing. Possible post-interruption edits or recovery copies are preserved for review.")
                     }.frame(maxWidth: .infinity, alignment: .leading).padding(18).padding(.bottom, 30)
                 } else if topic == "Safety & storage" {
@@ -772,7 +816,7 @@ struct AppHelpView: View {
                     VStack(alignment: .leading, spacing: 18) {
                         helpSection("Local archive storage", "The Freezer location is configurable in Settings; the default is ~/.igloo/vault. It contains local-only data and Git metadata and is not encrypted. You can choose a backup folder, including cloud storage after confirming unencrypted upload. A missing backup never blocks Preserve.")
                         helpSection("Freezer backup", "When a backup folder is configured, Igloo copies recovery there after Preserve and checks its checksums. In Freezer, Back up now retries missing copies and Verify backup checks existing copies. Backups are only added automatically; use Remove from backup for copies no longer in the Freezer.")
-                        helpSection("Updates", "Check for Updates shows release notes and downloads a verified update for your runtime. If a check or download fails, the window explains the problem and links to releases. For a request limit, wait until the displayed UTC reset time when available.")
+                        helpSection("Updates", "Check for Updates shows release notes and downloads a verified update for your runtime. Choose Install and relaunch to verify the downloaded app signature, replace the app, and reopen it. The previous app stays in its backup until the new process remains open briefly. Installation requires a writable, non-translocated app location and never asks for an administrator password. If installation fails, Igloo restores and reopens the previous app and shows the failure in the update window. Close any dialog that blocks termination, then try again. macOS privacy permissions may need approval again after an ad-hoc-signed update. If a check or download fails, the window explains the problem and links to releases. For a request limit, wait until the displayed UTC reset time when available.")
                         helpSection("App state", "Runtime state is stored in the configured state folder, normally ~/.igloo. Preferences live in ~/.config/igloo/config.json. Keep the Trash journal while you may need restoration. The app’s own source can use Git setup and commits; it is protected from cache cleanup and freezing.")
                         helpSection("What is omitted", "Only reviewed ignored dependency and rebuild folders without tracked content are omitted. Igloo preserves recognized local configuration inside those folders. Custom dependency edits need your review. External symlink targets remain external; the archive preserves the link, not its target.")
                         helpSection("What checks mean", "Unverified branch coverage may need Fetch & verify to download current remote metadata. Fetch does not switch branches or prune refs. Hash checks and recovery tests protect against changed or corrupt archives; they do not certify that committed history is free of private data.")

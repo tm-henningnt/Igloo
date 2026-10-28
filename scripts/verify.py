@@ -26,6 +26,7 @@ TEST_NAMES = (
     "tests.test_tasks.TaskTests",
     "tests.test_releases",
     "tests.test_updates",
+    "tests.test_update_installer",
     "tests.test_site",
     "tests.test_verify",
     "tests.test_seams.SeamTests",

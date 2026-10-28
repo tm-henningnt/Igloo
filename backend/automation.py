@@ -153,7 +153,14 @@ def new_run(task, kind):
             "ready": 0, "blocked": 0, "cacheBytes": 0}
 
 def record(run):
-    O.save(O.STATE / "task-runs" / run["taskID"] / (run["id"] + ".json"), run)
+    location = O.STATE / "task-runs" / run["taskID"] / (run["id"] + ".json")
+    O.save(location, run)
+    outcome = run.get("outcome") if isinstance(run.get("outcome"), dict) else {}
+    O.record_space_run(run["id"], "task", started=run.get("started"), status=run.get("status"),
+                       label=run.get("taskName", "Task"),
+                       estimate_bytes=outcome.get("bytesFreedEstimate"),
+                       observed=run.get("observed", outcome.get("observedSpace")),
+                       mirror_paths=[location.relative_to(O.STATE)])
 
 def record_busy(task_id):
     run = new_run(get(task_id), "scheduled")
@@ -219,14 +226,17 @@ def run_task(task_id, apply=False, scheduled=False, expected_hash=""):
                    blocked=len(plan["held"]), cacheBytes=total, outcome=plan["outcome"])
         record(run)
         if apply and run["ready"]:
-            result = planning.execute(plan["id"])
+            result = planning.execute(plan["id"], run_id=run["id"], run_kind="task")
             run["outcome"] = result["outcome"]
+            if isinstance(result["outcome"].get("observedSpace"), dict):
+                run["observed"] = result["outcome"]["observedSpace"]
             run["blocked"] = len(result["held"])
             bad = any(r["status"] in {"failed","partial","running"} for r in result["rows"])
             run.update(status="partial" if bad or run["blocked"] else "completed",
                        message="Task actions finished. Review held or failed rows in its saved review.")
         elif apply:
             run["outcome"] = O.combine_outcomes([], held=plan["held"], observed=True)
+            run["observed"] = run["outcome"]["observedSpace"]
             run.update(status="held" if run["blocked"] else "nothing-to-do",
                        message="No ready cleanup actions. Held projects were not changed.")
         else:
@@ -257,8 +267,10 @@ def apply_plan(plan_id):
                blocked=len(plan.get("held", [])), outcome=plan.get("outcome"))
     record(run)
     try:
-        result = planning.execute(plan_id)
+        result = planning.execute(plan_id, run_id=run["id"], run_kind="task")
         run["outcome"] = result["outcome"]
+        if isinstance(result["outcome"].get("observedSpace"), dict):
+            run["observed"] = result["outcome"]["observedSpace"]
         run.update(status="partial" if result["held"] or any(r["status"] in {"failed","partial","running","blocked"} for r in result["rows"]) else "completed",
                    message="Reviewed task review finished. Inspect its saved results.")
     except O.Refusal as e:

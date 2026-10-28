@@ -230,7 +230,8 @@ struct DemoPreservationCatalog: Decodable {
         }
     }
     struct Outcomes: Decodable { var preserve: ReviewOutcome; var freeze: ReviewOutcome }
-    var projects: [DemoProject]; var reviewOutcomes: Outcomes
+    struct DemoResults: Decodable { var cleanup: ReviewOutcome; var freeze: ReviewOutcome; var wizard: ReviewOutcome? }
+    var projects: [DemoProject]; var reviewOutcomes: Outcomes; var demoResults: DemoResults?
     static func load() -> DemoPreservationCatalog? {
         guard let url = Bundle.main.url(forResource: "demo-catalog", withExtension: "json"),
               let data = try? Data(contentsOf: url) else { return nil }
@@ -254,6 +255,8 @@ struct FreezeSetupView: View {
     @LocalState var fixingRemote = false
     @LocalState var fixingCommit = false
     @LocalState var refreshPending = false
+    private var isShowingResult: Bool { result != nil || captureResult != nil }
+    private var freezeSheetHeight: CGFloat { isShowingResult ? 390 : 690 }
     var currentProject: Project { store.snapshot?.projects.first(where: { $0.id == project.id }) ?? project }
     var shownBlockers: [FreezeBlocker]? {
         let values = blockers ?? (store.isDemo ? DemoPreservationCatalog.load()?.projects.first(where: { $0.id == project.id })?.blockers : nil)
@@ -302,13 +305,20 @@ struct FreezeSetupView: View {
         guard let captureStage, ["result", "failure"].contains(captureStage), let review = captureReview else { return nil }
         var outcome = review.outcome
         outcome.observed = true; outcome.bytesFreed = 0
+        let sample = DemoPreservationCatalog.load()?.demoResults?.freeze
+        outcome.observedSpace = sample?.observedSpace
         let preserved = captureStage == "failure" || initialMode == "preserve"
-        if preserved { outcome.checkoutsRemoved = ReviewOutcome.Checkouts(count: 0, paths: []) }
+        if preserved {
+            outcome.checkoutsRemoved = ReviewOutcome.Checkouts(count: 0, paths: [])
+            outcome.observedSpace = ReviewOutcome.ObservedSpace(freedBytes: 0, inTrashBytes: 0, restoredBytes: 0)
+        } else {
+            outcome.bytesFreed = sample?.bytesFreed ?? 0
+        }
         if captureStage == "failure" {
             outcome.held = [ReviewOutcome.HeldItem(path: project.path, reason: "Verification stopped.")]
         }
         return PreservationResult(state: preserved ? "ready" : "frozen",
-            message: captureStage == "failure" ? "Demo only: Freeze stopped; the project is Preserved and its checkouts are still in place." : "Demo only: no files were changed.",
+            message: captureStage == "failure" ? "Demo only: Freeze stopped; the project is Preserved and its checkouts are still in place." : "Demo only: these results are simulated.",
             outcome: outcome)
     }
     func buildReview() {
@@ -321,7 +331,7 @@ struct FreezeSetupView: View {
             return
         }
         let state = review.mode == "freeze" ? "frozen" : "ready"
-        let message = "Demo only: no files were changed."
+        let message = "Demo only: these results are simulated."
         let record = FrozenArchive(id: "demo-result-" + project.id, name: project.name, path: project.path,
                                    state: state, created: "2026-10-01T10:00:00+00:00", destination: review.destination,
                                    message: message, archiveLocation: review.archiveLocation,
@@ -331,7 +341,14 @@ struct FreezeSetupView: View {
             archives.removeAll { $0.id == record.id }
             archives.append(record); snapshot.archives = archives; store.snapshot = snapshot
         }
-        result = PreservationResult(state: state, message: message, outcome: review.outcome)
+        var outcome = review.outcome
+        if let sample = DemoPreservationCatalog.load()?.demoResults?.freeze, review.mode == "freeze" {
+            outcome.observed = true; outcome.bytesFreed = sample.bytesFreed; outcome.observedSpace = sample.observedSpace
+        } else {
+            outcome.observed = true; outcome.bytesFreed = 0
+            outcome.observedSpace = ReviewOutcome.ObservedSpace(freedBytes: 0, inTrashBytes: 0, restoredBytes: 0)
+        }
+        result = PreservationResult(state: state, message: message, outcome: outcome)
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -347,7 +364,11 @@ struct FreezeSetupView: View {
                     Text(archiveStateLabel(result.state)).font(.headline)
                     Text(result.message).font(.callout)
                 }
-                ScrollView { OutcomeSummaryView(outcome: result.outcome) }.frame(maxHeight: 220)
+                ScrollView {
+                    OutcomeSummaryView(outcome: result.outcome, showInTrash: false,
+                                       showRestoredSpace: false, showNetSpaceChange: result.state == "frozen",
+                                       netSpaceLabel: "Net space change after the archive copy")
+                }.frame(maxHeight: 220)
                 HStack {
                     Spacer()
                     Button("Done") { close(); if !store.isDemo { store.load() } }
@@ -365,7 +386,10 @@ struct FreezeSetupView: View {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 10) {
                             Text("Publish these ordinary branches and tags").font(.headline)
-                            ForEach(review.publish) { ref in Text(ref.ref + "\n" + ref.sha).textSelection(.enabled) }
+                            ForEach(review.publish) {
+                                let hash = shortGitHash($0.sha)
+                                Text($0.ref + (hash.isEmpty ? "" : "\n" + hash)).textSelection(.enabled)
+                            }
                             if !review.localRefs.isEmpty {
                                 Divider()
                                 Text("Preserve privately in local Git recovery").font(.headline)
@@ -378,7 +402,7 @@ struct FreezeSetupView: View {
                     } else if reviewTopic == "Reinstall or rebuild" {
                         List(review.excluded, id: \.self) { Text($0).textSelection(.enabled) }
                     } else {
-                        List(review.checkouts, id: \.self) { Text($0).textSelection(.enabled) }
+                        List(review.checkouts, id: \.self) { Text($0 == project.path ? project.name : $0).textSelection(.enabled) }
                     }
                 }.font(.caption).frame(maxWidth: .infinity, maxHeight: .infinity)
                     ScrollView { OutcomeSummaryView(outcome: review.outcome) }.frame(maxHeight: 180)
@@ -389,7 +413,7 @@ struct FreezeSetupView: View {
                     Spacer()
                     Button(review.outcome.actionLabel(preservedProjects: review.mode == "preserve" ? 1 : nil)) {
                         executeReview(review)
-                    }.buttonStyle(.borderedProminent).disabled(store.busy)
+                    }.buttonStyle(WizardPrimaryButtonStyle()).disabled(store.busy)
                         .accessibilityIdentifier("freeze.accept")
                 }
             } else {
@@ -444,11 +468,16 @@ struct FreezeSetupView: View {
                     Spacer()
                     Button("Build review…") {
                         buildReview()
-                    }.buttonStyle(.borderedProminent).disabled(store.busy || shownBlockers == nil || !(shownBlockers?.isEmpty ?? false) || remote.isEmpty)
+                    }.buttonStyle(WizardPrimaryButtonStyle()).disabled(store.busy || shownBlockers == nil || !(shownBlockers?.isEmpty ?? false) || remote.isEmpty)
                         .accessibilityIdentifier("freeze.buildReview")
                 }
             }
-        }.padding(24).frame(width: sheetWidth(900), height: 690)
+        }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .padding(24).frame(width: sheetWidth(900), height: freezeSheetHeight, alignment: .topLeading)
+            .background(.background)
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.primary.opacity(0.16), lineWidth: 1))
             .onAppear {
                 mode = initialMode; refreshBlockers()
             }

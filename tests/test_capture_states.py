@@ -124,11 +124,86 @@ class CaptureStatesTests(unittest.TestCase):
             project = next(project for project in catalog["projects"] if project["path"] == freeze_rows[0]["path"])
             self.assertIn(pushed["destination"], [remote["pushURL"] for remote in project["remotes"]])
 
+    def test_demo_thaw_catalog_covers_blockers_and_uses_demo_paths(self):
+        tasks = json.loads((ROOT / "assets/demo-tasks.json").read_text())
+        thaw = tasks["demoWizardThaw"]
+        rows = thaw["review"]["rows"]
+        messages = "\n".join(row["message"] for row in rows)
+        for blocker in ("occupied", "unreachable", "checksum", "no longer Frozen", "Open Freezer"):
+            self.assertIn(blocker, messages)
+        result = thaw["result"]
+        self.assertEqual({row["id"] for row in result["rows"]}, {row["id"] for row in rows})
+        blocked_paths = {row["path"] for row in result["rows"] if row["status"] == "blocked"}
+        self.assertEqual(blocked_paths, {item["path"] for item in result["outcome"]["held"]})
+        restored = result["outcome"]["refsRestored"]
+        self.assertEqual([item["path"] for item in restored], ["/Users/demo/Projects/Harbor CLI"])
+        self.assertTrue(all(len(item["sha"]) == 7 for item in restored))
+        paths = [archive["path"] for archive in thaw["archives"]]
+        paths += [row["archiveLocation"] for row in rows]
+        paths += [path for row in rows for path in row["checkouts"] + row["localFiles"]]
+        self.assertTrue(all(path.startswith("/Users/demo/") for path in paths))
+        self.assertTrue(all(row["destination"].startswith("https://example.com/") for row in rows))
+        self.assertEqual(thaw["result"]["outcome"]["bytesFreed"], None)
+
+    def test_demo_result_fixtures_match_the_selected_action_and_space_labels(self):
+        catalog = json.loads((ROOT / "assets/demo-catalog.json").read_text())
+        tasks = json.loads((ROOT / "assets/demo-tasks.json").read_text())
+        cleanup = catalog["demoResults"]["cleanup"]
+        self.assertEqual(cleanup["observedSpace"]["restoredBytes"], 0)
+        selected_freeze_paths = [row["path"] for row in tasks["demoWizardReview"]["rows"]
+                                 if row["action"] == "freeze"]
+        self.assertEqual(catalog["demoResults"]["wizard"]["checkoutsRemoved"]["paths"], selected_freeze_paths)
+        hashes = []
+        def collect_hashes(value):
+            if isinstance(value, dict):
+                for key, item in value.items():
+                    if key == "sha" and isinstance(item, str):
+                        hashes.append(item)
+                    else:
+                        collect_hashes(item)
+            elif isinstance(value, list):
+                for item in value:
+                    collect_hashes(item)
+        collect_hashes(catalog)
+        self.assertTrue(all(len(value) <= 12 for value in hashes))
+
+    def test_demo_wizard_trash_and_restore_totals_match_the_reviewed_actions(self):
+        catalog = json.loads((ROOT / "assets/demo-catalog.json").read_text())
+        tasks = json.loads((ROOT / "assets/demo-tasks.json").read_text())
+        source = (ROOT / "app/DemoCatalog.swift").read_text()
+        cleanup_items = [item for row in tasks["demoWizardReview"]["rows"]
+                         if row["status"] == "ready" and row["action"] == "cleanup"
+                         for item in row["cleanup"]["items"]]
+        result = catalog["demoResults"]["wizard"]
+        self.assertEqual(result["movedToTrash"], len(cleanup_items))
+        self.assertEqual(result["observedSpace"]["inTrashBytes"], sum(item["size"] for item in cleanup_items))
+        self.assertEqual(result["observedSpace"]["restoredBytes"], 0)
+        wizard_run = next(run for run in catalog["spaceReport"]["runs"] if run["kind"] == "wizard")
+        self.assertEqual(wizard_run["observed"]["inTrashBytes"], result["observedSpace"]["inTrashBytes"])
+        self.assertEqual(wizard_run["observed"]["restoredBytes"], 0)
+        cleanup_case = source.split('case "cleanup-result":', 1)[1].split('case "wizard-result":', 1)[0]
+        self.assertEqual(cleanup_case.count("ActionResult(path:"), catalog["demoResults"]["cleanup"]["movedToTrash"])
+
     def test_updater_scenarios_are_captured_as_sheets(self):
         for scenario in capture.scenarios():
             if scenario["view"].startswith("update-"):
                 with self.subTest(view=scenario["view"]):
                     self.assertIn(scenario["view"], capture.SHEET_VIEWS)
+
+    def test_ready_update_view_is_in_the_swift_capture_allow_list(self):
+        source = (ROOT / "app/DemoCatalog.swift").read_text()
+        self.assertIn('static let updateViews = AppUpdater.demoFailureNames.map { "update-" + $0 } + ["update-markdown", "update-ready"]', source)
+        self.assertIn('updateViews).union(extraSheetViews)).contains(view)', source)
+        shadows_shared_views = 'let updateViews = AppUpdater.demoFailureNames.map { "update-" + $0 } + ["update-markdown"]' in source
+        self.assertFalse(shadows_shared_views, "capture options must use the shared update view set")
+
+    def test_thaw_review_copy_uses_project_noun_consistently(self):
+        backend = (ROOT / "backend/planning.py").read_text()
+        fixture = json.loads((ROOT / "assets/demo-tasks.json").read_text())
+        self.assertTrue('"message": "Only ready projects will run. Blocked projects stay untouched."' in backend,
+                        "backend thaw review copy must use project wording")
+        self.assertEqual(fixture["demoWizardThaw"]["review"]["message"],
+                         "Only ready projects will run. Blocked projects stay untouched.")
 
     def test_matrix_covers_required_states(self):
         scenarios = capture.scenarios()
@@ -141,8 +216,9 @@ class CaptureStatesTests(unittest.TestCase):
         self.assertEqual(len({s["name"] for s in scenarios}), len(scenarios))
 
     def test_review_and_settings_matrix_includes_minimum_and_default_in_both_appearances(self):
-        views = {"freeze-review", "preserve-review", "freeze-result", "cleanup-review", "wizard-review",
-                 "task-review", "settings", "hold", "freeze", "shelf"}
+        views = {"freeze-review", "preserve-review", "freeze-result", "cleanup-review", "cleanup-result",
+                 "trash-history", "wizard-review", "wizard-result", "task-review", "task-history",
+                 "settings", "hold", "freeze", "shelf"}
         scenarios = capture.scenarios()
         for view in views:
             for appearance in ("light", "dark"):
@@ -188,7 +264,7 @@ class CaptureStatesTests(unittest.TestCase):
     def test_update_failure_scenarios_cover_both_appearances(self):
         expected = {"quota", "quota-no-reset", "forbidden", "offline", "timeout", "server", "malformed", "cancelled-download", "digest-mismatch"}
         captures = [row for row in capture.scenarios()
-                    if row["view"].startswith("update-") and row["view"] != "update-markdown"]
+                    if row["view"].startswith("update-") and row["view"] not in {"update-markdown", "update-ready"}]
         self.assertEqual({row["view"].removeprefix("update-") for row in captures}, expected)
         for failure in expected:
             states = [row for row in captures if row["view"] == "update-" + failure]
@@ -200,6 +276,11 @@ class CaptureStatesTests(unittest.TestCase):
         self.assertEqual({(row["appearance"], row["size"]) for row in captures},
                          {(appearance, size) for appearance in ("light", "dark")
                           for size in ("850x700", "1440x900")})
+
+    def test_ready_update_sheet_covers_light_and_dark(self):
+        captures = [row for row in capture.scenarios() if row["view"] == "update-ready"]
+        self.assertEqual({(row["appearance"], row["size"]) for row in captures},
+                         {(appearance, "1440x900") for appearance in ("light", "dark")})
 
     def test_preservation_detail_covers_scope_minimum_and_default_sizes(self):
         captures = [row for row in capture.scenarios() if row["view"] == "plan" and row["scope"] == "shown"]
@@ -216,11 +297,127 @@ class CaptureStatesTests(unittest.TestCase):
 
     def test_new_review_accessibility_reports_missing_controls(self):
         expected = {"cleanup-review": "Review cleanup", "wizard-review": "Expected outcome",
+                    "wizard-start": "Make space", "wizard-thaw-selection": "Create Thaw plan",
+                    "wizard-thaw-review": "Thaw plan", "wizard-thaw-result": "Checkouts restored",
+                    "wizard-thaw-rehydrating": "Thawing Harbor CLI",
                     "task-review": "Review task actions", "settings": "Freezer backup folder",
-                    "freeze-review": "Expected outcome", "freeze-hold": "This project is on Hold"}
+                    "freeze-review": "Expected outcome", "freeze-hold": "This project is on Hold",
+                    "cleanup-result": "In Trash (can be restored)", "trash-history": "Space report",
+                    "wizard-result": "In Trash (can be restored)", "task-history": "Task run history"}
         for view, label in expected.items():
             with self.subTest(view=view):
                 self.assertIn(label, capture.accessibility_missing({"role": "AXSheet"}, {"view": view}))
+
+    def test_thaw_blocker_capture_contracts_include_short_reasons_and_action_buttons(self):
+        expected = {
+            "wizard-thaw-occupied": ["Thaw plan", "Path occupied", "Show path in Finder"],
+            "wizard-thaw-remote": ["Thaw plan", "Remote unavailable", "Check remote again"],
+            "wizard-thaw-corrupt": ["Thaw plan", "Archive needs attention", "Open Freezer"],
+            "wizard-thaw-not-frozen": ["Thaw plan", "No longer Frozen", "Open Freezer"],
+        }
+        empty_tree = {"role": "AXSheet"}
+        for view, labels in expected.items():
+            with self.subTest(view=view):
+                missing = capture.accessibility_missing(empty_tree, {"view": view})
+                self.assertEqual(missing, labels)
+
+    def test_thaw_wizard_steps_and_blockers_have_minimum_and_default_captures(self):
+        views = {"wizard-start", "wizard-thaw-selection", "wizard-thaw-review", "wizard-thaw-ready", "wizard-thaw-result",
+                 "wizard-thaw-occupied", "wizard-thaw-remote", "wizard-thaw-corrupt", "wizard-thaw-not-frozen",
+                 "wizard-thaw-rehydrating"}
+        captures = [row for row in capture.scenarios() if row["view"] in views]
+        self.assertEqual({row["view"] for row in captures}, views)
+        self.assertTrue({(view, appearance, size) for view in views for appearance in ("light", "dark")
+                         for size in ("850x700", "1440x900")}.issubset(
+                             {(row["view"], row["appearance"], row["size"]) for row in captures}))
+
+    def test_thaw_ready_capture_covers_unchecked_confirmation_in_both_appearances(self):
+        captures = [row for row in capture.scenarios() if row["view"] == "wizard-thaw-ready"]
+        self.assertEqual({(row["appearance"], row["size"]) for row in captures},
+                         {(appearance, size) for appearance in ("light", "dark")
+                          for size in ("850x700", "1440x900")})
+        source = (ROOT / "app/DemoCatalog.swift").read_text()
+        wizard = (ROOT / "app/WizardViews.swift").read_text()
+        self.assertIn('"wizard-thaw-ready"', source)
+        self.assertIn('"wizard-thaw-ready": "demo-harbor"', wizard)
+
+    def test_thaw_ready_capture_contract_checks_checkbox_and_disabled_button(self):
+        def control(identifier, role, *, enabled, value=None):
+            node = {"identifier": identifier, "role": role, "label": identifier, "enabled": enabled,
+                    "frame": {"x": 1, "y": 2, "width": 40, "height": 20}}
+            if value is not None:
+                node["value"] = value
+            return node
+
+        tree = {"role": "AXCapture", "children": [
+            {"label": "Thaw projects"}, {"label": "Only ready projects will run"},
+            {"label": "Harbor CLI"}, {"label": "Thaw 1 ready project"},
+            control("wizard.thaw.acceptance", "AXCheckBox", enabled=True, value=False),
+            control("wizard.thaw.execute", "AXButton", enabled=False),
+        ]}
+        tree["children"][-2]["label"] = "I reviewed the remote refs, original paths and local-only files shown for Harbor CLI."
+        self.assertEqual(capture.accessibility_missing(tree, {"view": "wizard-thaw-ready"}), [])
+        self.assertEqual(capture.accessibility_control_issues(tree, {"view": "wizard-thaw-ready"}), [])
+        tree["children"][-1]["enabled"] = True
+        self.assertIn("wizard.thaw.execute", capture.accessibility_control_issues(tree, {"view": "wizard-thaw-ready"}))
+        tree["children"][-1]["enabled"] = False
+        tree["children"][-2]["value"] = True
+        self.assertIn("wizard.thaw.acceptance", capture.accessibility_control_issues(tree, {"view": "wizard-thaw-ready"}))
+
+    def test_demo_capture_activates_and_keys_its_window_before_capture(self):
+        source = (ROOT / "app/DemoCatalog.swift").read_text()
+        capture_start = source.split("static func start(store:", 1)[1].split("private static func windowMetadata", 1)[0]
+        self.assertIn("NSApp.activate(ignoringOtherApps: true)", capture_start)
+        self.assertIn("window.makeKeyAndOrderFront(nil)", capture_start)
+        self.assertLess(capture_start.index("window.makeKeyAndOrderFront(nil)"), capture_start.index("view.layoutSubtreeIfNeeded()"))
+
+    def test_thaw_wizard_capture_contract_uses_shared_height_and_scrollable_list(self):
+        source = (ROOT / "app/WizardViews.swift").read_text()
+        height = source.split("private var wizardSheetHeight: CGFloat {", 1)[1].split("private var stepTitle", 1)[0]
+        self.assertIn('if mode == "thaw"', height)
+        self.assertNotIn("thawPhase ==", height)
+        self.assertIn(".scrollIndicators(.visible)", source)
+        review = source.split("var thawReviewStep: some View {", 1)[1].split("var thawRowsAndDetails", 1)[0]
+        self.assertNotIn('Text("Thaw plan")', review)
+        self.assertEqual(review.count("Blocked projects and their Freezer archives remain untouched."), 0)
+
+    def test_thaw_review_keeps_refs_and_freezer_location_in_one_detail_pane(self):
+        source = (ROOT / "app/WizardViews.swift").read_text()
+        review = source.split("var thawReviewStep: some View {", 1)[1].split("var thawRowsAndDetails", 1)[0]
+        details = source.split("@ViewBuilder func thawDetails(", 1)[1].split("func shortThawReason", 1)[0]
+        self.assertNotIn("ForEach(row.refs)", review)
+        self.assertNotIn("row.archiveLocation", review)
+        self.assertEqual(details.count("ForEach(row.refs)"), 1)
+        self.assertIn('Text("Freezer archive")', details)
+        self.assertIn('Text(thawPlan?.message ?? "")', review)
+        self.assertNotIn("Blocked projects and their Freezer archives remain untouched.", review)
+
+    def test_disabled_wizard_buttons_and_thaw_progress_keep_visible_contrast(self):
+        source = (ROOT / "app/WizardViews.swift").read_text()
+        button = source.split("struct WizardPrimaryButtonStyle", 1)[1].split("struct CleanupWizardView", 1)[0]
+        self.assertIn("isEnabled ? Color.white : Color.primary.opacity(0.38)", button)
+        self.assertIn("isEnabled ? Color.accentColor : Color.primary.opacity(0.07)", button)
+        progress = source.split("if isThawExecuting {", 1)[1].split("} else if thawPlan?.status", 1)[0]
+        self.assertIn("Text(thawProgressMessage)", progress)
+        self.assertIn("ProgressView().progressViewStyle(.linear)", progress)
+        self.assertIn("Color(red: 0.08, green: 0.34, blue: 0.78)", progress)
+
+    def test_result_sheets_use_sized_rows_and_reduced_result_frames(self):
+        cleanup = (ROOT / "app/ReviewViews.swift").read_text()
+        wizard = (ROOT / "app/WizardViews.swift").read_text()
+        lifecycle = (ROOT / "app/LifecycleViews.swift").read_text()
+        self.assertIn('item.size.map { " · " + bytes($0) }', cleanup)
+        self.assertIn('item.size.map { " · " + bytes($0) }', wizard)
+        self.assertIn("height: resultHeight", cleanup)
+        self.assertIn("isShowingResult ? 390 : 690", lifecycle)
+        self.assertIn("Demo only: these results are simulated.", lifecycle)
+
+    def test_outcome_summary_avoids_duplicate_measurements_and_labels_each_ref(self):
+        source = (ROOT / "app/ReviewViews.swift").read_text()
+        self.assertIn("return bytes(freed) == bytes(outcome.bytesFreedEstimate)", source)
+        self.assertIn('"Ref pushed: "', source)
+        self.assertIn("spaceExplanation", source)
+        self.assertIn('"Total outcome for both actions"', (ROOT / "app/WizardViews.swift").read_text())
 
     def test_named_controls_require_identifiers_enabled_state_and_frame(self):
         requirements = {
@@ -230,6 +427,14 @@ class CaptureStatesTests(unittest.TestCase):
             "freeze": ["freeze.cancel", "freeze.buildReview"],
             "shelf": ["shelf.backUpNow", "shelf.verifyBackup", "shelf.done", "shelf.showArchive",
                       "shelf.freeze", "shelf.offlineRecovery", "shelf.thawRemote"],
+            "wizard-start": ["wizard.start.makeSpace", "wizard.start.thaw"],
+            "wizard-thaw-selection": ["wizard.thaw.back", "wizard.thaw.prepare"],
+            "wizard-thaw-review": ["wizard.thaw.acceptance", "wizard.thaw.execute"],
+            "wizard-thaw-occupied": ["wizard.thaw.showPath"],
+            "wizard-thaw-remote": ["wizard.thaw.checkRemote"],
+            "wizard-thaw-corrupt": ["wizard.thaw.openFreezer"],
+            "wizard-thaw-not-frozen": ["wizard.thaw.openFreezer"],
+            "wizard-thaw-result": ["wizard.thaw.newPlan"],
         }
         for view, identifiers in requirements.items():
             with self.subTest(view=view):
@@ -303,7 +508,7 @@ class CaptureStatesTests(unittest.TestCase):
             capture.png_nonbackground_share(sample_png(uniform=True), allow_sparse_sheet=True)
 
     def test_sparse_sheet_result_validates_with_required_metadata(self):
-        scenario = next(s for s in capture.scenarios() if s["view"] == "freeze-result")
+        scenario = next(s for s in capture.scenarios() if s["view"] == "freeze-result" and s["size"] == "1440x900")
         with tempfile.TemporaryDirectory() as temp:
             folder = Path(temp)
             (folder / "sheet.png").write_bytes(sparse_sheet_png())

@@ -18,6 +18,7 @@ struct TaskRun: Decodable, Identifiable {
     var id: String; var taskID: String; var taskName: String; var started: String
     var status: String; var message: String; var planID: String?
     var ready: Int; var blocked: Int; var cacheBytes: Int64
+    var outcome: ReviewOutcome?; var observed: ReviewOutcome.ObservedSpace?
 }
 struct TaskSchedule: Decodable {
     var frequency: String; var time: String; var weekday: Int
@@ -32,6 +33,37 @@ struct TaskListing: Decodable {
 }
 struct TaskHistory: Decodable { var runs: [TaskRun] }
 struct TaskScheduleRequest: Encodable { var frequency: String; var time: String; var weekday: Int }
+func taskSpaceSummary(_ run: TaskRun) -> String {
+    let estimate = run.outcome.map { "Estimate: \(bytes($0.bytesFreedEstimate))" } ?? "Estimate: not measured"
+    let observed = run.observed ?? run.outcome?.observedSpace
+    guard let observed else { return estimate + " · not measured" }
+    return estimate + " · Freed from disk: \(measuredSpace(observed.freedBytes)) · In Trash: \(measuredSpace(observed.inTrashBytes)) · Restored from Trash: \(measuredSpace(observed.restoredBytes))"
+}
+struct TaskRunHistoryTable: View {
+    var runs: [TaskRun]
+    @Binding var selectedRun: String?
+    var body: some View {
+        Table(runs, selection: $selectedRun) {
+            TableColumn("Started") { Text(String($0.started.prefix(16))) }.width(125)
+            TableColumn("Result", value: \.status).width(105)
+            TableColumn("Space") { Text(taskSpaceSummary($0)).lineLimit(2) }.width(min: 250)
+            TableColumn("Summary", value: \.message)
+        }
+    }
+}
+struct TaskHistoryCaptureView: View {
+    @EnvironmentObject var store: OrganizerStore
+    @LocalState var selectedRun: String?
+    private let runs: [TaskRun]
+    init() { runs = DemoCatalog.reply(["task-history"], as: TaskHistory.self)?.runs ?? [] }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Task run history").font(.title2).fontWeight(.semibold)
+            TaskRunHistoryTable(runs: runs, selectedRun: $selectedRun)
+            HStack { Spacer(); Button("Done") { store.demoCaptureSheet = nil }.keyboardShortcut(.cancelAction) }
+        }.padding(24).frame(width: sheetWidth(980), height: 600)
+    }
+}
 struct TasksView: View {
     @EnvironmentObject var store: OrganizerStore
     @Environment(\.dismiss) private var dismiss
@@ -222,11 +254,9 @@ struct TasksView: View {
     var historyView: some View {
         VStack(alignment: .leading, spacing: 12) {
             Button("Refresh history") { loadHistory() }.disabled(store.busy)
-            Table(runs, selection: $selectedRun) {
-                TableColumn("Started") { Text(String($0.started.prefix(16))) }.width(125)
-                TableColumn("Result", value: \.status).width(105)
-                TableColumn("Summary", value: \.message)
-            }
+            Text("Estimate is from the Review. Freed from disk, In Trash and Restored from Trash are measured; older runs show not measured.")
+                .font(.caption).foregroundStyle(.secondary)
+            TaskRunHistoryTable(runs: runs, selectedRun: $selectedRun)
             Button("Open saved review") {
                 if let id = runs.first(where: { $0.id == selectedRun })?.planID { loadPlan(id) }
             }.disabled(store.busy || runs.first(where: { $0.id == selectedRun })?.planID == nil)

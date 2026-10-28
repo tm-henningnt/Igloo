@@ -55,6 +55,22 @@ class GuardTests(unittest.TestCase):
     def validate(self):
         return o.validate_cache(str(self.cache), str(self.repo), check_processes=False)
 
+    def test_outcome_summary_defaults_and_combines_thaw_fields(self):
+        default = o.outcome_summary()
+        self.assertEqual(default["checkoutsRestored"], {"count": 0, "paths": []})
+        self.assertEqual(default["archivesUsed"], {"count": 0, "location": str(o.VAULT), "paths": []})
+        self.assertEqual(default["refsRestored"], [])
+
+        restored_ref = {"path": str(self.repo), "ref": "refs/heads/main", "sha": "abcdef1"}
+        thaw = o.outcome_summary(checkouts_restored=[str(self.repo)], archives_used=[str(self.app / "archive")],
+                                  refs_restored=[restored_ref])
+        combined = o.combine_outcomes([thaw])
+        self.assertEqual(combined["checkoutsRestored"], {"count": 1, "paths": [str(self.repo)]})
+        self.assertEqual(combined["archivesUsed"], {
+            "count": 1, "location": str(o.VAULT), "paths": [str(self.app / "archive")]
+        })
+        self.assertEqual(combined["refsRestored"], [restored_ref])
+
     def fake_snapshot(self):
         return {"projects": [{"candidates": [{"id": str(self.cache), "owner": str(self.repo)}]}]}
 
@@ -201,9 +217,11 @@ class GuardTests(unittest.TestCase):
 
     def test_trash_roundtrip_preserves_contents_and_history(self):
         plan = self.plan()
+        allocated = o.physical_size(self.cache)
         with patch.object(o, "process_cwds", return_value=[]), patch.object(Path, "home", return_value=self.root):
             result = o.execute_cleanup(plan["id"])
             self.assertTrue(result["results"][0]["ok"])
+            self.assertEqual(result["results"][0]["size"], allocated)
             self.assertFalse(self.cache.exists())
             history = o.load(o.STATE / "trash.json")
             self.assertEqual(history[0]["status"], "trashed")
@@ -211,6 +229,23 @@ class GuardTests(unittest.TestCase):
             o.restore(history[0]["id"])
         self.assertEqual((self.cache / "package.js").read_text(), "fixture dependency\n")
         self.assertEqual(o.load(o.STATE / "trash.json")[0]["status"], "restored")
+
+    def test_cleanup_space_report_tracks_allocated_bytes_and_restore(self):
+        plan = self.plan()
+        allocated = o.physical_size(self.cache)
+        with patch.object(o, "process_cwds", return_value=[]), patch.object(Path, "home", return_value=self.root):
+            result = o.execute_cleanup(plan["id"])
+            self.assertEqual(result["outcome"]["observedSpace"], {
+                "freedBytes": 0, "inTrashBytes": allocated, "restoredBytes": 0})
+            row = next(row for row in o.space_report()["runs"] if row["id"] == plan["id"])
+            self.assertEqual(row["observed"], {
+                "freedBytes": 0, "inTrashBytes": allocated, "restoredBytes": 0})
+            item = o.load(o.STATE / "trash.json")[0]
+            self.assertEqual(item["runID"], plan["id"])
+            o.restore(item["id"])
+        row = next(row for row in o.space_report()["runs"] if row["id"] == plan["id"])
+        self.assertEqual(row["observed"], {
+            "freedBytes": 0, "inTrashBytes": 0, "restoredBytes": allocated})
 
     def test_restore_never_overwrites_replacement(self):
         plan = self.plan()

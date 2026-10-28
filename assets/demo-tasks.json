@@ -48,12 +48,25 @@
         "taskID": "weekly-cache-review",
         "taskName": "Weekly cache review",
         "started": "2026-09-21T09:00:00+00:00",
-        "status": "planned",
-        "message": "Plan saved. One cache candidate and one project held for freeze review.",
+        "status": "completed",
+        "message": "Task actions finished. The cache remains recoverable through Trash & restore history.",
         "planID": "demo-task-review",
         "ready": 1,
         "blocked": 1,
-        "cacheBytes": 1610612736
+        "cacheBytes": 1610612736,
+        "observed": {
+          "freedBytes": 0,
+          "inTrashBytes": 2147483648,
+          "restoredBytes": 1073741824
+        },
+        "outcome": {
+          "bytesFreedEstimate": 0,
+          "observedSpace": {
+            "freedBytes": 0,
+            "inTrashBytes": 2147483648,
+            "restoredBytes": 1073741824
+          }
+        }
       },
       "compatible": true
     }
@@ -291,6 +304,578 @@
       "movedToTrash": 2,
       "held": [],
       "observed": false
+    }
+  },
+  "demoWizardThaw": {
+    "archives": [
+      {
+        "id": "demo-harbor",
+        "name": "Harbor CLI",
+        "path": "/Users/demo/Projects/Harbor CLI",
+        "state": "frozen",
+        "created": "2026-10-20",
+        "destination": "https://example.com/harbor/cli.git",
+        "message": "Fictional Frozen project.",
+        "archiveLocation": "/Users/demo/Project Recovery/demo-harbor",
+        "checkouts": 1,
+        "paths": [
+          "/Users/demo/Projects/Harbor CLI"
+        ],
+        "leftovers": []
+      },
+      {
+        "id": "demo-signal",
+        "name": "Signal Lab",
+        "path": "/Users/demo/Projects/Signal Lab",
+        "state": "frozen",
+        "created": "2026-10-17",
+        "destination": "https://example.com/harbor/signal.git",
+        "message": "Fictional Frozen project.",
+        "archiveLocation": "/Users/demo/Project Recovery/demo-signal",
+        "checkouts": 1,
+        "paths": [
+          "/Users/demo/Projects/Signal Lab"
+        ],
+        "leftovers": []
+      },
+      {
+        "id": "demo-tidemark",
+        "name": "Tidemark Notes",
+        "path": "/Users/demo/Projects/Tidemark Notes",
+        "state": "frozen",
+        "created": "2026-10-12",
+        "destination": "https://example.com/harbor/tidemark.git",
+        "message": "Fictional Frozen project.",
+        "archiveLocation": "/Users/demo/Project Recovery/demo-tidemark",
+        "checkouts": 1,
+        "paths": [
+          "/Users/demo/Projects/Tidemark Notes"
+        ],
+        "leftovers": []
+      },
+      {
+        "id": "demo-cedar",
+        "name": "Cedar Notes",
+        "path": "/Users/demo/Projects/Cedar Notes",
+        "state": "frozen",
+        "created": "2026-10-08",
+        "destination": "https://example.com/harbor/cedar.git",
+        "message": "Fictional Frozen project.",
+        "archiveLocation": "/Users/demo/Project Recovery/demo-cedar",
+        "checkouts": 1,
+        "paths": [
+          "/Users/demo/Projects/Cedar Notes"
+        ],
+        "leftovers": []
+      },
+      {
+        "id": "demo-maproom",
+        "name": "Map Room",
+        "path": "/Users/demo/Projects/Map Room",
+        "state": "frozen",
+        "created": "2026-10-02",
+        "destination": "https://example.com/harbor/map-room.git",
+        "message": "Fictional Frozen project.",
+        "archiveLocation": "/Users/demo/Project Recovery/demo-maproom",
+        "checkouts": 1,
+        "paths": [
+          "/Users/demo/Projects/Map Room"
+        ],
+        "leftovers": []
+      }
+    ],
+    "review": {
+      "id": "demo-thaw-review",
+      "created": "2026-10-27T10:00:00+00:00",
+      "root": "/Users/demo/Projects",
+      "vault": "/Users/demo/Project Recovery",
+      "status": "review",
+      "message": "Only ready projects will run. Blocked projects stay untouched.",
+      "rows": [
+        {
+          "id": "demo-harbor",
+          "archiveID": "demo-harbor",
+          "name": "Harbor CLI",
+          "path": "/Users/demo/Projects/Harbor CLI",
+          "status": "ready",
+          "message": "Ready. The remote is reachable; the Freezer archive supplies any Frozen refs missing from it.",
+          "destination": "https://example.com/harbor/cli.git",
+          "refs": [
+            {
+              "path": "/Users/demo/Projects/Harbor CLI",
+              "ref": "refs/heads/main",
+              "sha": "abc1234"
+            }
+          ],
+          "checkouts": [
+            "/Users/demo/Projects/Harbor CLI"
+          ],
+          "localFiles": [
+            "/Users/demo/Projects/Harbor CLI/settings.local"
+          ],
+          "archiveLocation": "/Users/demo/Project Recovery/demo-harbor",
+          "checksums": {},
+          "destinationStates": [],
+          "state": "frozen"
+        },
+        {
+          "id": "demo-signal",
+          "archiveID": "demo-signal",
+          "name": "Signal Lab",
+          "path": "/Users/demo/Projects/Signal Lab",
+          "status": "blocked",
+          "message": "The original path is occupied. Inspect its contents in Finder before Thaw.",
+          "destination": "https://example.com/harbor/signal.git",
+          "refs": [
+            {
+              "path": "/Users/demo/Projects/Signal Lab",
+              "ref": "refs/heads/main",
+              "sha": "abc1234"
+            }
+          ],
+          "checkouts": [
+            "/Users/demo/Projects/Signal Lab"
+          ],
+          "localFiles": [
+            "/Users/demo/Projects/Signal Lab/settings.local"
+          ],
+          "archiveLocation": "/Users/demo/Project Recovery/demo-signal",
+          "checksums": {},
+          "destinationStates": [],
+          "state": "frozen"
+        },
+        {
+          "id": "demo-tidemark",
+          "archiveID": "demo-tidemark",
+          "name": "Tidemark Notes",
+          "path": "/Users/demo/Projects/Tidemark Notes",
+          "status": "blocked",
+          "message": "The remote is unreachable. Restore remote access, then use Check remote again.",
+          "destination": "https://example.com/harbor/tidemark.git",
+          "refs": [
+            {
+              "path": "/Users/demo/Projects/Tidemark Notes",
+              "ref": "refs/heads/main",
+              "sha": "abc1234"
+            }
+          ],
+          "checkouts": [
+            "/Users/demo/Projects/Tidemark Notes"
+          ],
+          "localFiles": [
+            "/Users/demo/Projects/Tidemark Notes/settings.local"
+          ],
+          "archiveLocation": "/Users/demo/Project Recovery/demo-tidemark",
+          "checksums": {},
+          "destinationStates": [],
+          "state": "frozen"
+        },
+        {
+          "id": "demo-cedar",
+          "archiveID": "demo-cedar",
+          "name": "Cedar Notes",
+          "path": "/Users/demo/Projects/Cedar Notes",
+          "status": "blocked",
+          "message": "The archive failed its checksum check. Keep the Freezer copy and use Open Freezer to inspect it.",
+          "destination": "https://example.com/harbor/cedar.git",
+          "refs": [
+            {
+              "path": "/Users/demo/Projects/Cedar Notes",
+              "ref": "refs/heads/main",
+              "sha": "abc1234"
+            }
+          ],
+          "checkouts": [
+            "/Users/demo/Projects/Cedar Notes"
+          ],
+          "localFiles": [
+            "/Users/demo/Projects/Cedar Notes/settings.local"
+          ],
+          "archiveLocation": "/Users/demo/Project Recovery/demo-cedar",
+          "checksums": {},
+          "destinationStates": [],
+          "state": "frozen"
+        },
+        {
+          "id": "demo-maproom",
+          "archiveID": "demo-maproom",
+          "name": "Map Room",
+          "path": "/Users/demo/Projects/Map Room",
+          "status": "blocked",
+          "message": "This project is no longer Frozen. Its Freezer entry changed after you selected it. Use Open Freezer to inspect it.",
+          "destination": "https://example.com/harbor/map-room.git",
+          "refs": [
+            {
+              "path": "/Users/demo/Projects/Map Room",
+              "ref": "refs/heads/main",
+              "sha": "abc1234"
+            }
+          ],
+          "checkouts": [
+            "/Users/demo/Projects/Map Room"
+          ],
+          "localFiles": [
+            "/Users/demo/Projects/Map Room/settings.local"
+          ],
+          "archiveLocation": "/Users/demo/Project Recovery/demo-maproom",
+          "checksums": {},
+          "destinationStates": [],
+          "state": "frozen"
+        },
+        {
+          "id": "demo-rehydrating",
+          "archiveID": "demo-rehydrating",
+          "name": "Interrupted Project",
+          "path": "/Users/demo/Projects/Interrupted Project",
+          "status": "blocked",
+          "message": "A previous Thaw was interrupted. Use Open Freezer to inspect restored roots and finish this project.",
+          "destination": "https://example.com/harbor/interrupted.git",
+          "refs": [
+            {
+              "path": "/Users/demo/Projects/Interrupted Project",
+              "ref": "refs/heads/main",
+              "sha": "abc1234"
+            }
+          ],
+          "checkouts": [
+            "/Users/demo/Projects/Interrupted Project"
+          ],
+          "localFiles": [
+            "/Users/demo/Projects/Interrupted Project/settings.local"
+          ],
+          "archiveLocation": "/Users/demo/Project Recovery/demo-rehydrating",
+          "restoredRoots": [
+            "/Users/demo/Projects/Interrupted Project"
+          ],
+          "checksums": {},
+          "destinationStates": [],
+          "state": "rehydrating"
+        }
+      ],
+      "held": [
+        {
+          "path": "/Users/demo/Projects/Signal Lab",
+          "reason": "The original path is occupied. Inspect its contents in Finder before Thaw."
+        },
+        {
+          "path": "/Users/demo/Projects/Tidemark Notes",
+          "reason": "The remote is unreachable. Restore remote access, then use Check remote again."
+        },
+        {
+          "path": "/Users/demo/Projects/Cedar Notes",
+          "reason": "The archive failed its checksum check. Keep the Freezer copy and use Open Freezer to inspect it."
+        },
+        {
+          "path": "/Users/demo/Projects/Map Room",
+          "reason": "This project is no longer Frozen. Its Freezer entry changed after you selected it. Use Open Freezer to inspect it."
+        },
+        {
+          "path": "/Users/demo/Projects/Interrupted Project",
+          "reason": "A previous Thaw was interrupted. Use Open Freezer to inspect restored roots and finish this project."
+        }
+      ],
+      "outcome": {
+        "checkoutsRemoved": {
+          "count": 0,
+          "paths": []
+        },
+        "bytesFreedEstimate": 0,
+        "bytesUsedEstimate": 0,
+        "bytesFreed": null,
+        "archivesWritten": {
+          "count": 0,
+          "location": "/Users/demo/Project Recovery",
+          "paths": []
+        },
+        "refsPushed": [],
+        "movedToTrash": 0,
+        "held": [
+          {
+            "path": "/Users/demo/Projects/Signal Lab",
+            "reason": "The original path is occupied. Inspect its contents in Finder before Thaw."
+          },
+          {
+            "path": "/Users/demo/Projects/Tidemark Notes",
+            "reason": "The remote is unreachable. Restore remote access, then use Check remote again."
+          },
+          {
+            "path": "/Users/demo/Projects/Cedar Notes",
+            "reason": "The archive failed its checksum check. Keep the Freezer copy and use Open Freezer to inspect it."
+          },
+          {
+            "path": "/Users/demo/Projects/Map Room",
+            "reason": "This project is no longer Frozen. Its Freezer entry changed after you selected it. Use Open Freezer to inspect it."
+          },
+          {
+            "path": "/Users/demo/Projects/Interrupted Project",
+            "reason": "A previous Thaw was interrupted. Use Open Freezer to inspect restored roots and finish this project."
+          }
+        ],
+        "observed": false,
+        "checkoutsRestored": {
+          "count": 1,
+          "paths": [
+            "/Users/demo/Projects/Harbor CLI"
+          ]
+        },
+        "archivesUsed": {
+          "count": 1,
+          "location": "/Users/demo/Project Recovery",
+          "paths": [
+            "/Users/demo/Project Recovery/demo-harbor"
+          ]
+        }
+      }
+    },
+    "result": {
+      "id": "demo-thaw-result",
+      "created": "2026-10-27T10:00:00+00:00",
+      "root": "/Users/demo/Projects",
+      "vault": "/Users/demo/Project Recovery",
+      "status": "finished",
+      "message": "Thaw completed. Inspect each project result; completed projects remain restored.",
+      "rows": [
+        {
+          "id": "demo-harbor",
+          "archiveID": "demo-harbor",
+          "name": "Harbor CLI",
+          "path": "/Users/demo/Projects/Harbor CLI",
+          "status": "done",
+          "message": "Project thawed to its preserved state. Checkout and remote refs were restored. Dependencies remain uninstalled.",
+          "destination": "https://example.com/harbor/cli.git",
+          "refs": [
+            {
+              "path": "/Users/demo/Projects/Harbor CLI",
+              "ref": "refs/heads/main",
+              "sha": "abc1234"
+            }
+          ],
+          "checkouts": [
+            "/Users/demo/Projects/Harbor CLI"
+          ],
+          "localFiles": [
+            "/Users/demo/Projects/Harbor CLI/settings.local"
+          ],
+          "archiveLocation": "/Users/demo/Project Recovery/demo-harbor",
+          "checksums": {},
+          "destinationStates": [],
+          "state": "frozen"
+        },
+        {
+          "id": "demo-signal",
+          "archiveID": "demo-signal",
+          "name": "Signal Lab",
+          "path": "/Users/demo/Projects/Signal Lab",
+          "status": "blocked",
+          "message": "The original path is occupied. Inspect its contents in Finder before Thaw. No files were changed.",
+          "destination": "https://example.com/harbor/signal.git",
+          "refs": [
+            {
+              "path": "/Users/demo/Projects/Signal Lab",
+              "ref": "refs/heads/main",
+              "sha": "abc1234"
+            }
+          ],
+          "checkouts": [
+            "/Users/demo/Projects/Signal Lab"
+          ],
+          "localFiles": [
+            "/Users/demo/Projects/Signal Lab/settings.local"
+          ],
+          "archiveLocation": "/Users/demo/Project Recovery/demo-signal",
+          "checksums": {},
+          "destinationStates": [],
+          "state": "frozen"
+        },
+        {
+          "id": "demo-tidemark",
+          "archiveID": "demo-tidemark",
+          "name": "Tidemark Notes",
+          "path": "/Users/demo/Projects/Tidemark Notes",
+          "status": "blocked",
+          "message": "The remote is unreachable. Restore remote access, then use Check remote again. No files were changed.",
+          "destination": "https://example.com/harbor/tidemark.git",
+          "refs": [
+            {
+              "path": "/Users/demo/Projects/Tidemark Notes",
+              "ref": "refs/heads/main",
+              "sha": "abc1234"
+            }
+          ],
+          "checkouts": [
+            "/Users/demo/Projects/Tidemark Notes"
+          ],
+          "localFiles": [
+            "/Users/demo/Projects/Tidemark Notes/settings.local"
+          ],
+          "archiveLocation": "/Users/demo/Project Recovery/demo-tidemark",
+          "checksums": {},
+          "destinationStates": [],
+          "state": "frozen"
+        },
+        {
+          "id": "demo-cedar",
+          "archiveID": "demo-cedar",
+          "name": "Cedar Notes",
+          "path": "/Users/demo/Projects/Cedar Notes",
+          "status": "blocked",
+          "message": "The archive failed its checksum check. Keep the Freezer copy and use Open Freezer to inspect it. No files were changed.",
+          "destination": "https://example.com/harbor/cedar.git",
+          "refs": [
+            {
+              "path": "/Users/demo/Projects/Cedar Notes",
+              "ref": "refs/heads/main",
+              "sha": "abc1234"
+            }
+          ],
+          "checkouts": [
+            "/Users/demo/Projects/Cedar Notes"
+          ],
+          "localFiles": [
+            "/Users/demo/Projects/Cedar Notes/settings.local"
+          ],
+          "archiveLocation": "/Users/demo/Project Recovery/demo-cedar",
+          "checksums": {},
+          "destinationStates": [],
+          "state": "frozen"
+        },
+        {
+          "id": "demo-maproom",
+          "archiveID": "demo-maproom",
+          "name": "Map Room",
+          "path": "/Users/demo/Projects/Map Room",
+          "status": "blocked",
+          "message": "This project is no longer Frozen. Its Freezer entry changed after you selected it. Use Open Freezer to inspect it. No files were changed.",
+          "destination": "https://example.com/harbor/map-room.git",
+          "refs": [
+            {
+              "path": "/Users/demo/Projects/Map Room",
+              "ref": "refs/heads/main",
+              "sha": "abc1234"
+            }
+          ],
+          "checkouts": [
+            "/Users/demo/Projects/Map Room"
+          ],
+          "localFiles": [
+            "/Users/demo/Projects/Map Room/settings.local"
+          ],
+          "archiveLocation": "/Users/demo/Project Recovery/demo-maproom",
+          "checksums": {},
+          "destinationStates": [],
+          "state": "frozen"
+        },
+        {
+          "id": "demo-rehydrating",
+          "archiveID": "demo-rehydrating",
+          "name": "Interrupted Project",
+          "path": "/Users/demo/Projects/Interrupted Project",
+          "status": "blocked",
+          "message": "A previous Thaw was interrupted. Use Open Freezer to inspect restored roots and finish this project. No new files were changed.",
+          "destination": "https://example.com/harbor/interrupted.git",
+          "refs": [
+            {
+              "path": "/Users/demo/Projects/Interrupted Project",
+              "ref": "refs/heads/main",
+              "sha": "abc1234"
+            }
+          ],
+          "checkouts": [
+            "/Users/demo/Projects/Interrupted Project"
+          ],
+          "localFiles": [
+            "/Users/demo/Projects/Interrupted Project/settings.local"
+          ],
+          "archiveLocation": "/Users/demo/Project Recovery/demo-rehydrating",
+          "checksums": {},
+          "destinationStates": [],
+          "state": "rehydrating",
+          "restoredRoots": [
+            "/Users/demo/Projects/Interrupted Project"
+          ]
+        }
+      ],
+      "held": [
+        {
+          "path": "/Users/demo/Projects/Signal Lab",
+          "reason": "The original path is occupied. Inspect its contents in Finder before Thaw."
+        },
+        {
+          "path": "/Users/demo/Projects/Tidemark Notes",
+          "reason": "The remote is unreachable. Restore remote access, then use Check remote again."
+        },
+        {
+          "path": "/Users/demo/Projects/Cedar Notes",
+          "reason": "The archive failed its checksum check. Keep the Freezer copy and use Open Freezer to inspect it."
+        },
+        {
+          "path": "/Users/demo/Projects/Map Room",
+          "reason": "This project is no longer Frozen. Its Freezer entry changed after you selected it. Use Open Freezer to inspect it."
+        },
+        {
+          "path": "/Users/demo/Projects/Interrupted Project",
+          "reason": "A previous Thaw was interrupted. Use Open Freezer to inspect restored roots and finish this project."
+        }
+      ],
+      "outcome": {
+        "checkoutsRemoved": {
+          "count": 0,
+          "paths": []
+        },
+        "bytesFreedEstimate": 0,
+        "bytesUsedEstimate": 0,
+        "bytesFreed": null,
+        "archivesWritten": {
+          "count": 0,
+          "location": "/Users/demo/Project Recovery",
+          "paths": []
+        },
+        "refsPushed": [],
+        "movedToTrash": 0,
+        "held": [
+          {
+            "path": "/Users/demo/Projects/Signal Lab",
+            "reason": "The original path is occupied. Inspect its contents in Finder before Thaw."
+          },
+          {
+            "path": "/Users/demo/Projects/Tidemark Notes",
+            "reason": "The remote is unreachable. Restore remote access, then use Check remote again."
+          },
+          {
+            "path": "/Users/demo/Projects/Cedar Notes",
+            "reason": "The archive failed its checksum check. Keep the Freezer copy and use Open Freezer to inspect it."
+          },
+          {
+            "path": "/Users/demo/Projects/Map Room",
+            "reason": "This project is no longer Frozen. Its Freezer entry changed after you selected it. Use Open Freezer to inspect it."
+          },
+          {
+            "path": "/Users/demo/Projects/Interrupted Project",
+            "reason": "A previous Thaw was interrupted. Use Open Freezer to inspect restored roots and finish this project."
+          }
+        ],
+        "observed": true,
+        "checkoutsRestored": {
+          "count": 1,
+          "paths": [
+            "/Users/demo/Projects/Harbor CLI"
+          ]
+        },
+        "archivesUsed": {
+          "count": 1,
+          "location": "/Users/demo/Project Recovery",
+          "paths": [
+            "/Users/demo/Project Recovery/demo-harbor"
+          ]
+        },
+        "refsRestored": [
+          {
+            "path": "/Users/demo/Projects/Harbor CLI",
+            "ref": "refs/heads/main",
+            "sha": "abc1234"
+          }
+        ]
+      }
     }
   }
 }
