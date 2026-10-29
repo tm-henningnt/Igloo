@@ -55,15 +55,19 @@ struct WizardThawPlan: Decodable, Identifiable {
 }
 
 struct WizardPrimaryButtonStyle: ButtonStyle {
+    var temperature: TemperatureAccent? = nil
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.colorScheme) private var colorScheme
     func makeBody(configuration: Configuration) -> some View {
+        let fill = temperature?.foreground(for: colorScheme) ?? Color.accentColor
+        let label = temperature?.actionLabel(for: colorScheme) ?? Color.white
         configuration.label
             .fontWeight(.semibold)
-            .foregroundStyle(isEnabled ? Color.white : Color.primary.opacity(0.28))
+            .foregroundStyle(isEnabled ? label : Color.primary.opacity(0.28))
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
             .frame(minHeight: 30)
-            .background(isEnabled ? Color.accentColor : Color.primary.opacity(0.07),
+            .background(isEnabled ? fill : Color.primary.opacity(0.07),
                         in: RoundedRectangle(cornerRadius: 7, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
@@ -76,6 +80,7 @@ struct WizardPrimaryButtonStyle: ButtonStyle {
 struct CleanupWizardView: View {
     @EnvironmentObject var store: OrganizerStore
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.controlActiveState) private var controlActiveState
     var captureReview = false
     var captureResult = false
@@ -98,6 +103,7 @@ struct CleanupWizardView: View {
     @LocalState var thawSelection: Set<String> = []
     @LocalState var thawPlan: WizardThawPlan?
     @LocalState var thawLast: WizardThawPlan?
+    @LocalState var shownThawResultIDs: Set<String> = []
     @LocalState var selectedThawID: String?
     @LocalState var approvedThawRows: Set<String> = []
     let actions = ["keep", "cleanup", "archive", "freeze"]
@@ -106,6 +112,8 @@ struct CleanupWizardView: View {
         self.captureReview = captureReview
         self.captureResult = captureResult
         self.captureView = captureView
+        let actionCapture = captureView == "wizard-actions"
+        let exampleScan: WizardScan? = actionCapture ? DemoCatalog.reply(["wizard-scan"], as: WizardScan.self) : nil
         let example: WizardPlan? = captureResult ? DemoCatalog.reply(["wizard-result"], as: WizardPlan.self)
             : (captureReview ? DemoCatalog.reply(["wizard-state"], as: WizardState.self)?.last : nil)
         let start = captureView == "wizard-start"
@@ -117,9 +125,12 @@ struct CleanupWizardView: View {
         let focusID = ["wizard-thaw-occupied": "demo-beacon", "wizard-thaw-remote": "demo-tidemark",
                        "wizard-thaw-corrupt": "demo-cedar", "wizard-thaw-not-frozen": "demo-maproom",
                        "wizard-thaw-rehydrating": "demo-icegarden", "wizard-thaw-ready": "demo-icegarden"][captureView ?? ""]
-        _phase = LocalState(initialValue: captureResult ? 3 : (captureReview ? 2 : 0))
+        _phase = LocalState(initialValue: captureResult ? 3 : (captureReview ? 2 : (actionCapture ? 1 : 0)))
         _mode = LocalState(initialValue: startMakeSpace ? "make-space"
-            : ((captureReview || captureResult) ? "make-space" : (start ? "start" : ((thawCapture || selection) ? "thaw" : "start"))))
+            : ((captureReview || captureResult || actionCapture) ? "make-space" : (start ? "start" : ((thawCapture || selection) ? "thaw" : "start"))))
+        _rules = LocalState(initialValue: exampleScan?.rules ?? WizardRules())
+        _proposals = LocalState(initialValue: exampleScan?.rows ?? [])
+        _scanIssues = LocalState(initialValue: exampleScan?.scanIssues ?? 0)
         _plan = LocalState(initialValue: example)
         _selected = LocalState(initialValue: example?.rows.first?.id)
         _thawPhase = LocalState(initialValue: thawResult ? 2 : (thawCapture ? 1 : 0))
@@ -176,6 +187,15 @@ struct CleanupWizardView: View {
     }
     private var selectedThawRow: WizardThawRow? { thawPlan?.rows.first { $0.id == selectedThawID } }
     private var readyToThaw: Int { thawPlan?.rows.filter { $0.status == "ready" }.count ?? 0 }
+    private var thawResultIsComplete: Bool {
+        guard let plan = thawPlan, plan.status == "finished", !plan.rows.isEmpty,
+              let outcome = plan.outcome, outcome.observed, outcome.held.isEmpty else { return false }
+        return plan.rows.allSatisfy { $0.status == "done" }
+    }
+    private var animateThawResult: Bool {
+        guard thawResultIsComplete, let id = thawPlan?.id else { return false }
+        return !shownThawResultIDs.contains(id)
+    }
     private var allReadyThawRowsReviewed: Bool {
         let readyIDs = Set((thawPlan?.rows ?? []).filter { $0.status == "ready" }.map(\.id))
         return !readyIDs.isEmpty && readyIDs.isSubset(of: approvedThawRows)
@@ -183,7 +203,9 @@ struct CleanupWizardView: View {
     private var thawBlockedReasonColor: Color {
         colorScheme == .dark ? .orange : Color(red: 0.55, green: 0.23, blue: 0.00)
     }
-    private var selectedRowTextColor: Color { Color(nsColor: .selectedMenuItemTextColor) }
+    private var selectedRowTextColor: Color {
+        controlActiveState == .key ? Color(nsColor: .selectedMenuItemTextColor) : Color.primary
+    }
     private var finishedThaw: Bool { mode == "thaw" && thawPhase == 2 }
     private var isThawExecuting: Bool {
         store.busy || (store.isDemo && captureView == "wizard-thaw-rehydrating")
@@ -202,6 +224,7 @@ struct CleanupWizardView: View {
             store.wizardMakeSpace = false
             store.load()
         }.disabled(isThawExecuting).keyboardShortcut(.cancelAction)
+            .help(isThawExecuting ? "Wait for the Thaw operation to finish." : "Close the Project wizard.")
     }
     private var thawProgressMessage: String {
         if captureView == "wizard-thaw-rehydrating", let row = activeThawRow {
@@ -212,7 +235,15 @@ struct CleanupWizardView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text(mode == "thaw" ? "Thaw projects" : "Cleanup wizard").font(.title2).fontWeight(.semibold)
+                if mode == "thaw" {
+                    Label("Thaw projects", systemImage: TemperatureAccent.warm.symbol)
+                        .font(.title2).fontWeight(.semibold)
+                        .foregroundStyle(TemperatureAccent.warm.foreground(for: colorScheme))
+                } else if mode == "start" {
+                    Text("Project wizard").font(.title2).fontWeight(.semibold)
+                } else {
+                    Text("Make space").font(.title2).fontWeight(.semibold)
+                }
                 Spacer()
                 Text(stepTitle).font(.headline).foregroundStyle(.secondary)
             }
@@ -253,6 +284,7 @@ struct CleanupWizardView: View {
     private func loadWizardState() {
         store.invoke(["wizard-state"], as: WizardState.self) { value in
             rules = value.rules; kinds = value.cacheKinds; last = value.last; thawLast = value.thawLast
+            if let previous = value.thawLast { shownThawResultIDs.insert(previous.id) }
             if captureReview, let review = value.last { plan = review; selected = review.rows.first?.id; phase = 2 }
         }
     }
@@ -263,23 +295,28 @@ struct CleanupWizardView: View {
                 Button { mode = "make-space"; phase = 0 } label: {
                     VStack(alignment: .leading, spacing: 12) {
                         Label("Make space", systemImage: "wand.and.stars").font(.title3).fontWeight(.semibold)
-                        Text("Review cleanup and Freeze suggestions for your Projects folder.")
+                        Text("Review cleanup and Freeze suggestions.")
                             .font(.callout).multilineTextAlignment(.leading).foregroundStyle(.secondary)
-                    }.frame(maxWidth: .infinity, minHeight: 150, alignment: .leading).padding(16)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }.frame(maxWidth: .infinity, minHeight: 150, alignment: .topLeading)
+                        .fixedSize(horizontal: false, vertical: true).padding(16)
                 }.buttonStyle(.bordered).accessibilityIdentifier("wizard.start.makeSpace")
                 Button { enterThaw() } label: {
                     VStack(alignment: .leading, spacing: 12) {
                         Label("Thaw projects", systemImage: "sun.max").font(.title3).fontWeight(.semibold)
-                        Text("Restore several Frozen projects from their remotes with one Thaw plan.")
+                        Text("Restore multiple Frozen projects.")
                             .font(.callout).multilineTextAlignment(.leading).foregroundStyle(.secondary)
-                    }.frame(maxWidth: .infinity, minHeight: 150, alignment: .leading).padding(16)
-                }.buttonStyle(.borderedProminent).accessibilityIdentifier("wizard.start.thaw")
+                            .fixedSize(horizontal: false, vertical: true)
+                    }.frame(maxWidth: .infinity, minHeight: 150, alignment: .topLeading)
+                        .fixedSize(horizontal: false, vertical: true).padding(16)
+                }.buttonStyle(.bordered).accessibilityIdentifier("wizard.start.thaw")
             }
             Spacer()
             HStack { Spacer(); closeButton }
         }
     }
     func enterThaw() {
+        if let previous = thawLast { shownThawResultIDs.insert(previous.id) }
         mode = "thaw"
         thawPhase = 0
         thawPlan = nil
@@ -325,7 +362,8 @@ struct CleanupWizardView: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Select Frozen projects to restore from their remotes. Hold does not apply. Offline recovery remains available per project in Freezer.")
                 .font(.callout).foregroundStyle(.secondary)
-            Text("Frozen projects").font(.headline).accessibilityAddTraits(.isHeader)
+            TemperatureStateLabel(title: "Frozen projects", accent: .cold).font(.headline)
+                .accessibilityAddTraits(.isHeader)
             if thawArchives.filter({ $0.state == "frozen" }).isEmpty {
                 ContentUnavailableView("No Frozen projects", systemImage: "snowflake",
                                        description: Text("Frozen projects appear here after Freeze completes."))
@@ -370,6 +408,7 @@ struct CleanupWizardView: View {
                 Text("\(thawSelection.count) selected").font(.caption).foregroundStyle(.secondary)
                 Button("Create Thaw plan") { prepareThaw() }
                     .buttonStyle(WizardPrimaryButtonStyle()).disabled(store.busy || thawSelection.isEmpty)
+                    .help(store.busy ? "Wait for the current operation to finish." : thawSelection.isEmpty ? "Select one or more Frozen projects first." : "Review the selected projects in a Thaw plan.")
                     .accessibilityIdentifier("wizard.thaw.prepare")
                 closeButton
             }
@@ -380,9 +419,17 @@ struct CleanupWizardView: View {
             Text(thawPlan?.message ?? "").font(.callout).foregroundStyle(.secondary)
             if isThawExecuting {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text(thawProgressMessage).font(.callout).fontWeight(.medium)
+                    HStack(spacing: 7) {
+                        Image(systemName: TemperatureAccent.warm.symbol)
+                            .foregroundStyle(TemperatureAccent.warm.foreground(for: colorScheme))
+                            .symbolEffect(.variableColor.iterative, options: .nonRepeating,
+                                          value: thawProgressMessage)
+                            .symbolEffectsRemoved(reduceMotion)
+                            .accessibilityHidden(true)
+                        Text(thawProgressMessage).font(.callout).fontWeight(.medium)
+                    }
                     ProgressView().progressViewStyle(.linear)
-                        .tint(colorScheme == .light ? Color(red: 0.08, green: 0.34, blue: 0.78) : .accentColor)
+                        .tint(TemperatureAccent.warm.foreground(for: colorScheme))
                         .frame(height: 10)
                         .background(Color.primary.opacity(0.10), in: Capsule())
                         .overlay(Capsule().stroke(Color.primary.opacity(0.18), lineWidth: 1))
@@ -428,7 +475,8 @@ struct CleanupWizardView: View {
                             approvedThawRows = []
                             store.load()
                         }
-                    }.buttonStyle(WizardPrimaryButtonStyle()).disabled(store.busy || !allReadyThawRowsReviewed)
+                    }.buttonStyle(WizardPrimaryButtonStyle(temperature: .warm)).disabled(store.busy || !allReadyThawRowsReviewed)
+                        .help(store.busy ? "Wait for the current operation to finish." : !allReadyThawRowsReviewed ? "Review and confirm each ready project's restore details." : "Thaw the reviewed ready projects.")
                         .accessibilityIdentifier("wizard.thaw.execute")
                 }
             } else if !isThawExecuting {
@@ -458,11 +506,11 @@ struct CleanupWizardView: View {
                     } else if row.status == "ready" && thawPlan?.status == "review" {
                         Label(approvedThawRows.contains(row.id) ? "Reviewed" : "Review details",
                               systemImage: approvedThawRows.contains(row.id) ? "checkmark.circle.fill" : "circle")
-                            .font(.caption).foregroundStyle(row.id == selectedThawID && controlActiveState == .key ? selectedRowTextColor :
+                            .font(.caption).foregroundStyle(row.id == selectedThawID ? selectedRowTextColor :
                                 (approvedThawRows.contains(row.id) ? Color.accentColor : Color.secondary))
                     } else if row.status == "blocked" {
                         Text("Blocked · \(shortThawReason(row.message))").font(.caption).lineLimit(1).truncationMode(.tail)
-                            .foregroundStyle(row.id == selectedThawID && controlActiveState == .key ? selectedRowTextColor : thawBlockedReasonColor)
+                            .foregroundStyle(row.id == selectedThawID ? selectedRowTextColor : thawBlockedReasonColor)
                     } else {
                         Label(row.status.capitalized, systemImage: statusSymbol(row.status)).font(.caption)
                     }
@@ -565,7 +613,11 @@ struct CleanupWizardView: View {
     }
     var thawResultsStep: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(thawPlan?.message ?? "Inspect each Thaw result.").font(.callout).foregroundStyle(.secondary)
+            LifecycleResultHeader(title: nil, message: thawPlan?.message ?? "Inspect each Thaw result.",
+                                  accent: .warm, kind: .thawResult,
+                                  imageSize: CGSize(width: 96, height: 72), motion: .warmUp,
+                                  operationID: thawPlan?.id ?? "thaw-result",
+                                  success: thawResultIsComplete, animateSuccess: animateThawResult)
             if thawPlan?.status == "running" {
                 Text("This run was interrupted. Its recorded rows will not be replayed.")
                     .font(.callout).foregroundStyle(.orange)
@@ -629,6 +681,7 @@ struct CleanupWizardView: View {
                     }
                 }
                 Button("Save rules as a task…") { taskEditorShown = true }.disabled(store.busy || store.isDemo)
+                    .help(store.isDemo ? "Saving task rules is unavailable in demo mode." : store.busy ? "Wait for the current operation to finish." : "Save these rules as a task.")
                 Spacer()
                 if scanning || store.busy { SheetProgressRow(text: store.busy ? store.status : "Scanning projects…") }
                 Button("Scan projects & suggest actions") {
@@ -640,6 +693,7 @@ struct CleanupWizardView: View {
                         store.load()
                     }
                 }.buttonStyle(WizardPrimaryButtonStyle()).disabled(store.busy || scanning || rules.freezeDays <= rules.cacheDays || rules.cacheDays < 1 || rules.freezeDays > 3650)
+                    .help(store.busy ? "Wait for the current operation to finish." : scanning ? "Project scan is already in progress." : rules.freezeDays <= rules.cacheDays || rules.cacheDays > 3650 ? "Set the Freeze threshold higher than the cleanup threshold and no more than 3,650 days." : rules.cacheDays < 1 ? "Set the cleanup threshold to at least one day." : "Scan projects and suggest actions.")
                 closeButton
             }
         }
@@ -694,6 +748,7 @@ struct CleanupWizardView: View {
                         plan = value; selected = value.rows.first?.id; approved = false; phase = 2
                     }
                 }.buttonStyle(WizardPrimaryButtonStyle()).disabled(store.busy || !proposals.contains { $0.action != "keep" })
+                    .help(store.busy ? "Wait for the current operation to finish." : !proposals.contains { $0.action != "keep" } ? "Choose at least one action to review." : "Build the exact review for these choices.")
                 closeButton
             }
         }
@@ -743,15 +798,15 @@ struct CleanupWizardView: View {
                                            ? "Freed from disk is the total change on the drive. In Trash is the size of folders that can be restored."
                                            : nil)
                 }
-                    // Fill the fixed sheet height so the footer stays at the bottom.
-                    .frame(maxHeight: .infinity)
+                    .frame(maxHeight: compactReview ? 84 : 112)
             }
             if phase == 2 {
-                Text("Acceptance covers every ready row. Cache folders move to Trash. Freeze archives local files and Git metadata, pushes only the listed ordinary refs, verifies recovery and the remote, then removes the listed checkouts. Private recovery stays on this Mac and is not encrypted. Blocked rows will not run. Review expires after ten minutes.")
+                Text("Acceptance covers every ready row. Cache folders move to Trash. Freeze preserves local files and Git metadata, pushes only the listed ordinary refs, verifies recovery and the remote, then removes the listed checkouts. Private recovery stays on this Mac and is not encrypted. Blocked rows will not run. Review expires after ten minutes.")
                     .font(.caption).foregroundStyle(.secondary)
                 Toggle("I reviewed the ready actions, cache edits, publication refs, local recovery and checkout removals.", isOn: $approved)
                 HStack {
                     Button("Change actions") { phase = 1; approved = false }.disabled(store.busy || proposals.isEmpty)
+                        .help(store.busy ? "Wait for the current operation to finish." : proposals.isEmpty ? "There are no proposed actions to change." : "Return to the action choices.")
                     Spacer()
                     Text("\(ready) ready · \(plan?.rows.filter { $0.status == "blocked" }.count ?? 0) blocked").font(.caption)
                     closeButton
@@ -761,6 +816,7 @@ struct CleanupWizardView: View {
                             plan = value; last = value; phase = 3; approved = false; store.load()
                         }
                     }.buttonStyle(WizardPrimaryButtonStyle()).disabled(store.busy || store.isDemo || !approved || ready == 0)
+                        .help(store.isDemo ? "Applying wizard actions is unavailable in demo mode." : store.busy ? "Wait for the current operation to finish." : ready == 0 ? "There are no ready actions to run." : !approved ? "Review and confirm all ready actions first." : "Run the reviewed actions.")
                 }
             } else {
                 HStack {

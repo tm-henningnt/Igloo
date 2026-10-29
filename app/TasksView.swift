@@ -42,13 +42,17 @@ func taskSpaceSummary(_ run: TaskRun) -> String {
 struct TaskRunHistoryTable: View {
     var runs: [TaskRun]
     @Binding var selectedRun: String?
+    private var compact: Bool { sheetWidth(980) < 900 }
     var body: some View {
         Table(runs, selection: $selectedRun) {
-            TableColumn("Started") { Text(String($0.started.prefix(16))) }.width(125)
-            TableColumn("Result", value: \.status).width(105)
-            TableColumn("Space") { Text(taskSpaceSummary($0)).lineLimit(2) }.width(min: 250)
-            TableColumn("Summary", value: \.message)
-        }
+            TableColumn("Started") { Text(String($0.started.prefix(16))) }.width(compact ? 95 : 115)
+            TableColumn("Result", value: \.status).width(compact ? 82 : 100)
+            TableColumn("Space") { Text(taskSpaceSummary($0)).lineLimit(2) }
+                .width(min: compact ? 140 : 190, ideal: compact ? 200 : 220)
+            TableColumn("Summary") { Text($0.message).lineLimit(4).fixedSize(horizontal: false, vertical: true).help($0.message) }
+                .width(min: compact ? 210 : 300, ideal: compact ? 300 : 340)
+        }.alternatingRowBackgrounds(.disabled)
+            .frame(height: compactTableHeight(runs.count, rowHeight: 84, maxRows: 5, maxHeight: 320))
     }
 }
 struct TaskHistoryCaptureView: View {
@@ -71,7 +75,7 @@ struct TasksView: View {
     @LocalState var items: [TaskItem] = []
     @LocalState var selected: String?
     @LocalState var draft = SavedTask()
-    @LocalState var section = "Rules"
+    @LocalState var section = DemoCapture.initialState("tasksSection") ?? "Rules"
     @LocalState var newTask = false
     @LocalState var includeText = ""
     @LocalState var excludeText = ""
@@ -111,7 +115,9 @@ struct TasksView: View {
                 Button(cliInstalled ? "Reinstall CLI" : "Install CLI") {
                     store.invoke(["task-install-cli"], as: Reply.self) { reply in message = reply.message ?? ""; reload() }
                 }.disabled(store.busy || store.isDemo)
+                    .help(store.isDemo ? "Task installation is unavailable in demo mode." : store.busy ? "Wait for the current operation to finish." : (cliInstalled ? "Reinstall the Igloo CLI." : "Install the Igloo CLI."))
                 Button("New task") { begin() }.disabled(store.busy || store.isDemo)
+                    .help(store.isDemo ? "Task editing is unavailable in demo mode." : store.busy ? "Wait for the current operation to finish." : "Create a task definition.")
             }
             Text("Save repeatable rules, run a fresh review, or explicitly allow scheduled cache cleanup. Freeze candidates stay held for review.")
                 .font(.callout).foregroundStyle(.secondary)
@@ -141,15 +147,17 @@ struct TasksView: View {
                         Spacer(minLength: 0)
                         HStack {
                             Button("Review now") { planNow() }.disabled(store.busy || dirty || store.isDemo || item?.compatible != true)
+                                .help(store.isDemo ? "Task runs are unavailable in demo mode." : store.busy ? "Wait for the current operation to finish." : dirty ? "Save task edits before reviewing." : item?.compatible != true ? "This task is incompatible with the current app version." : "Create a fresh task review.")
                             Button("Delete task", role: .destructive) { deleteConfirm = true }
                                 .disabled(store.busy || item == nil || item?.schedule != nil || store.isDemo)
-                                .help("Disable an existing schedule before deleting its task.")
+                                .help(store.isDemo ? "Task editing is unavailable in demo mode." : store.busy ? "Wait for the current operation to finish." : item?.schedule != nil ? "Disable an existing schedule before deleting its task." : item == nil ? "Select a task first." : "Delete this task definition.")
                             Spacer()
                             Button("Save task") {
                                 store.invoke(["task-save", encode(assembled)], as: Reply.self) { value in
                                     message = value.message ?? ""; selected = draft.id; newTask = false; reload()
                                 }
                             }.buttonStyle(WizardPrimaryButtonStyle()).disabled(store.busy || !dirty || draft.name.isEmpty || draft.id.isEmpty || store.isDemo)
+                                .help(store.isDemo ? "Task editing is unavailable in demo mode." : store.busy ? "Wait for the current operation to finish." : draft.name.isEmpty || draft.id.isEmpty ? "Enter both a task name and task ID." : !dirty ? "There are no task edits to save." : "Save this task definition.")
                         }
                     } else {
                         ContentUnavailableView("Save your first task", systemImage: "checklist",
@@ -164,6 +172,7 @@ struct TasksView: View {
                     .font(.caption).foregroundStyle(.secondary).lineLimit(3).textSelection(.enabled)
                 Spacer()
                 Button("Done") { dismiss() }.keyboardShortcut(.cancelAction).disabled(store.busy)
+                    .help(store.busy ? "Wait for the current operation to finish." : "Close Tasks.")
             }
         }.padding(24).frame(width: sheetWidth(1120), height: 780).interactiveDismissDisabled(store.busy)
             .confirmationDialog("Delete this saved task?", isPresented: $deleteConfirm, titleVisibility: .visible) {
@@ -251,9 +260,11 @@ struct TasksView: View {
                     let data = encode(TaskScheduleRequest(frequency: frequency, time: clock, weekday: weekday))
                     store.invoke(["task-schedule", draft.id, data], as: Reply.self) { value in message = value.message ?? ""; reload() }
                 }.disabled(store.busy || dirty || item == nil || draft.mode == "cleanup" && !draft.unattended || store.isDemo)
+                    .help(store.isDemo ? "Scheduling is unavailable in demo mode." : store.busy ? "Wait for the current operation to finish." : dirty ? "Save task edits before enabling its schedule." : item == nil ? "Select a task first." : draft.mode == "cleanup" && !draft.unattended ? "Allow scheduled cache cleanup in the task rules first." : "Enable or update this schedule.")
                 Button("Disable schedule") {
                     store.invoke(["task-unschedule", draft.id], as: Reply.self) { value in message = value.message ?? ""; reload() }
                 }.disabled(store.busy || item?.schedule == nil || store.isDemo)
+                    .help(store.isDemo ? "Scheduling is unavailable in demo mode." : store.busy ? "Wait for the current operation to finish." : item?.schedule == nil ? "This task has no active schedule." : "Disable this task's schedule.")
             }
             Text("Task changes invalidate the previous schedule's policy authorization. Save edits first, then enable the schedule again. App updates do not require the source checkout: the installed CLI uses its own versioned backend copy.")
                 .font(.caption).foregroundStyle(.secondary)
@@ -262,12 +273,14 @@ struct TasksView: View {
     var historyView: some View {
         VStack(alignment: .leading, spacing: 12) {
             Button("Refresh history") { loadHistory() }.disabled(store.busy)
+                .help(store.busy ? "Wait for the current operation to finish." : "Reload task run history.")
             Text("Estimate is from the Review. Freed from disk, In Trash and Restored from Trash are measured; older runs show not measured.")
                 .font(.caption).foregroundStyle(.secondary)
             TaskRunHistoryTable(runs: runs, selectedRun: $selectedRun)
             Button("Open saved review") {
                 if let id = runs.first(where: { $0.id == selectedRun })?.planID { loadPlan(id) }
             }.disabled(store.busy || runs.first(where: { $0.id == selectedRun })?.planID == nil)
+                .help(store.busy ? "Wait for the current operation to finish." : runs.first(where: { $0.id == selectedRun })?.planID == nil ? "Select a run with a saved review." : "Open the selected run's saved review.")
         }
     }
     func begin() {
@@ -333,10 +346,12 @@ struct TaskPlanReview: View {
             } else { Text("This is a review-only task or an already accepted review.").font(.caption).foregroundStyle(.secondary) }
             HStack {
                 Button("Close") { dismiss() }.keyboardShortcut(.cancelAction).disabled(store.busy)
+                    .help(store.busy ? "Wait for the current operation to finish." : "Close this task review.")
                 Spacer()
                 Button(plan.outcome?.actionLabel ?? "Move reviewed folders to Trash") {
                     store.invoke(["task-apply", plan.id], as: TaskRun.self) { _ in dismiss(); completed() }
                 }.buttonStyle(WizardPrimaryButtonStyle()).disabled(store.busy || !accepted || !allowApply || plan.status != "review" || !plan.rows.contains { $0.status == "ready" } || store.isDemo)
+                    .help(store.isDemo ? "Applying task reviews is unavailable in demo mode." : store.busy ? "Wait for the current operation to finish." : !allowApply ? "This is a review-only task." : plan.status != "review" ? "Only a fresh review can be applied." : !plan.rows.contains { $0.status == "ready" } ? "There are no ready cache folders to move." : !accepted ? "Review and confirm the listed cache folders first." : "Move the reviewed cache folders to Trash.")
             }
         }.padding(24).frame(width: 850, height: 640).interactiveDismissDisabled(store.busy)
     }

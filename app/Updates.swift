@@ -585,6 +585,7 @@ struct UpdatesView: View {
                         .focused($defaultActionFocused)
                         .defaultFocus($defaultActionFocused, true)
                         .disabled(updater.demo || updater.installing || updater.installProcess != nil)
+                        .help(updater.demo ? "Installation is unavailable in demo mode." : updater.installing ? "The update is being prepared." : updater.installProcess != nil ? "Waiting for the app to close before installation." : "Install the verified update and relaunch Igloo.")
                         .accessibilityIdentifier("updates.install")
                 } else if updater.available != nil {
                     Button("Download update") { updater.download() }.buttonStyle(WizardPrimaryButtonStyle())
@@ -592,10 +593,12 @@ struct UpdatesView: View {
                         .focused($defaultActionFocused)
                         .defaultFocus($defaultActionFocused, true)
                         .disabled(updater.demo)
+                        .help(updater.demo ? "Downloads are unavailable in demo mode." : "Download the selected update.")
                         .accessibilityIdentifier("updates.download")
                 }
                 Button("Check again") { Task { await updater.check() } }
                     .disabled(updater.checking || updater.downloading || updater.installing)
+                    .help(updater.checking || updater.downloading || updater.installing ? "Wait for the current update operation to finish." : "Check for an update again.")
                     .accessibilityIdentifier("updates.checkAgain")
             }
         }.padding(24).frame(width: 540)

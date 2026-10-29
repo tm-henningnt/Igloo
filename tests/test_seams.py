@@ -64,6 +64,34 @@ def update_installer_contract(root):
         raise AssertionError("the update installer helper is missing from the public export")
 
 
+def brand_resource_contract(root):
+    build = read(root, "build.command")
+    bundle_copy = 'cp assets/brand/*.png "$APP_BUNDLE/Contents/Resources/brand/"'
+    if bundle_copy not in build:
+        raise AssertionError("brand PNG resources are not copied into the app bundle")
+    if '"$APP_BUNDLE/Contents/Resources/brand"' not in build:
+        raise AssertionError("the app bundle brand resource folder is not created")
+    kinds = ("freeze-result", "thaw-result", "freezer-empty")
+    variants = ("", "-2x", "-night", "-night-2x")
+    expected = {f"assets/brand/{kind}{variant}.png" for kind in kinds for variant in variants}
+    actual = {path.relative_to(root).as_posix() for path in (root / "assets/brand").glob("*.png")}
+    if not expected <= actual:
+        raise AssertionError(f"required brand PNG resources are missing: {expected - actual}")
+    for name in expected:
+        path = root / name
+        data = path.read_bytes()
+        if data[:8] != b"\x89PNG\r\n\x1a\n" or len(data) < 24:
+            raise AssertionError(f"brand resource is not a PNG: {name}")
+        scale = 2 if "-2x.png" in name else 1
+        width, height = (160, 120) if "freezer-empty" in name else (96, 72)
+        actual_size = (int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big"))
+        if actual_size != (width * scale, height * scale):
+            raise AssertionError(f"brand resource dimensions differ for {name}: {actual_size}")
+    exported = set(json.loads(read(root, "public-files.json"))["files"])
+    if not expected <= exported:
+        raise AssertionError(f"brand PNG resources are missing from the public export: {expected - exported}")
+
+
 def app_commands(root):
     found = set()
     for path in (root / "app").glob("*.swift"):
@@ -126,6 +154,7 @@ class SeamTests(unittest.TestCase):
         shutil.copyfile(ROOT / "scripts/update_installer.py", root / "scripts/update_installer.py")
         for folder in ("app", "backend"):
             shutil.copytree(ROOT / folder, root / folder, ignore=shutil.ignore_patterns("__pycache__"))
+        shutil.copytree(ROOT / "assets/brand", root / "assets/brand")
         return root
 
     def test_backend_module_set_is_bundled_installable_and_exported(self):
@@ -164,6 +193,27 @@ class SeamTests(unittest.TestCase):
         (fixture / "public-files.json").write_text(json.dumps(listing), encoding="utf-8")
         with self.assertRaisesRegex(AssertionError, "missing from the public export"):
             update_installer_contract(fixture)
+
+    def test_brand_images_are_bundled_and_exported(self):
+        brand_resource_contract(ROOT)
+        fixture = self.fixture()
+        (fixture / "assets/brand/freeze-result.png").unlink()
+        with self.assertRaisesRegex(AssertionError, "required brand PNG resources are missing"):
+            brand_resource_contract(fixture)
+
+        fixture = self.fixture()
+        listing = json.loads(read(fixture, "public-files.json"))
+        listing["files"].remove("assets/brand/freezer-empty-night-2x.png")
+        (fixture / "public-files.json").write_text(json.dumps(listing), encoding="utf-8")
+        with self.assertRaisesRegex(AssertionError, "missing from the public export"):
+            brand_resource_contract(fixture)
+
+        fixture = self.fixture()
+        build = read(fixture, "build.command").replace(
+            'cp assets/brand/*.png "$APP_BUNDLE/Contents/Resources/brand/"\n', "", 1)
+        (fixture / "build.command").write_text(build, encoding="utf-8")
+        with self.assertRaisesRegex(AssertionError, "not copied into the app bundle"):
+            brand_resource_contract(fixture)
 
     def test_app_backend_commands_are_accepted_by_organizer(self):
         commands = app_commands(ROOT)

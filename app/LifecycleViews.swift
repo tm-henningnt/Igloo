@@ -3,6 +3,7 @@ import AppKit
 
 struct PlanView: View {
     @EnvironmentObject var store: OrganizerStore
+    @LocalState private var saved = false
     let project: Project
     @Binding var hold: Bool
     @Binding var note: String
@@ -13,12 +14,14 @@ struct PlanView: View {
             LifecycleControls(project: project)
             Divider()
             Toggle("Hold", isOn: $hold).accessibilityIdentifier("detail.hold")
+                .onChange(of: hold) { saved = false }
             Text("The wizard and tasks never propose cleanup or freezing for this project.").font(.callout).foregroundStyle(.secondary)
             Text("Preservation notes").font(.headline)
             TextEditor(text: $note).font(.body).frame(minHeight: 140).border(Color.secondary.opacity(0.25))
                 .accessibilityLabel("Preservation notes")
                 .accessibilityIdentifier("detail.preservationNotes")
-            Text("Before removing a whole checkout: preserve local changes and stashes, review branch and tag history, archive important ignored files, then verify the backup. Leave active sessions untouched.")
+                .onChange(of: note) { saved = false }
+            Text("Before removing a whole checkout: preserve local changes and stashes, review branch and tag history, preserve important ignored files, then verify the backup. Leave active sessions untouched.")
                 .font(.callout).foregroundStyle(.secondary)
             }.padding(18).frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -27,12 +30,17 @@ struct PlanView: View {
                 Button("Export project report…") { store.export(project) }
                     .accessibilityIdentifier("detail.exportProjectReport")
                 Spacer()
-                Button("Save") {
+                Button(saved ? "Saved" : "Save") {
                     store.invoke(["hold", project.id, hold ? "true" : "false"], as: Reply.self) { _ in
-                        store.action(["note", project.id, note])
+                        store.invoke(["note", project.id, note], as: Reply.self) { _ in
+                            saved = true
+                            store.load()
+                        }
                     }
                 }
                     .buttonStyle(WizardPrimaryButtonStyle()).disabled(store.busy)
+                    .help(store.busy ? "Wait for the current operation to finish." :
+                          (saved ? "The Hold setting and preservation notes are saved." : "Save the Hold setting and preservation notes."))
                     .accessibilityIdentifier("detail.savePreservation")
             }.padding(12).background(.bar)
         }
@@ -49,6 +57,7 @@ struct LifecycleControls: View {
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 8) {
                     Button("Connect remote…") { store.remoteSetup = project }
+                        .help(store.busy ? "Wait for the current operation to finish." : project.git ? "Connect an existing remote or create a private GitHub repository." : "Igloo can connect remotes only for Git projects.")
                         .accessibilityIdentifier("detail.connectRemote")
                     Button("Commit selected files…") { store.commitSetup = project }
                         .disabled(project.changes.isEmpty)
@@ -57,16 +66,17 @@ struct LifecycleControls: View {
                                (project.changes.isEmpty ? "There are no changed files to commit." : "Review and commit selected files.")))
                         .accessibilityIdentifier("detail.commitSelectedFiles")
                     Button("Preserve…") { selectedMode = .preserve }
-                        .help(project.git ? "Preserve this project; its checkout stays in place." : "Igloo can preserve Git projects only.")
+                        .help(store.busy ? "Wait for the current operation to finish." : project.git ? "Preserve this project; its checkout stays in place." : "Igloo can preserve Git projects only.")
                         .accessibilityIdentifier("detail.preserve")
                     Button("Freeze…") { selectedMode = .freeze }
-                        .help(project.git ? "Freeze this project after verification." : "Igloo can preserve Git projects only.")
+                        .help(store.busy ? "Wait for the current operation to finish." : project.git ? "Freeze this project after verification." : "Igloo can preserve Git projects only.")
                         .accessibilityIdentifier("detail.freeze")
                 }.fixedSize(horizontal: true, vertical: false)
                 LazyVGrid(columns: [GridItem(.flexible(), alignment: .leading),
                                     GridItem(.flexible(), alignment: .leading)],
                           alignment: .leading, spacing: 8) {
                 Button("Connect remote…") { store.remoteSetup = project }
+                    .help(store.busy ? "Wait for the current operation to finish." : project.git ? "Connect an existing remote or create a private GitHub repository." : "Igloo can connect remotes only for Git projects.")
                     .accessibilityIdentifier("detail.connectRemote")
                 Button("Commit selected files…") { store.commitSetup = project }
                     .disabled(project.changes.isEmpty)
@@ -75,10 +85,10 @@ struct LifecycleControls: View {
                            (project.changes.isEmpty ? "There are no changed files to commit." : "Review and commit selected files.")))
                     .accessibilityIdentifier("detail.commitSelectedFiles")
                 Button("Preserve…") { selectedMode = .preserve }
-                    .help(project.git ? "Preserve this project; its checkout stays in place." : "Igloo can preserve Git projects only.")
+                    .help(store.busy ? "Wait for the current operation to finish." : project.git ? "Preserve this project; its checkout stays in place." : "Igloo can preserve Git projects only.")
                     .accessibilityIdentifier("detail.preserve")
                 Button("Freeze…") { selectedMode = .freeze }
-                    .help(project.git ? "Freeze this project after verification." : "Igloo can preserve Git projects only.")
+                    .help(store.busy ? "Wait for the current operation to finish." : project.git ? "Freeze this project after verification." : "Igloo can preserve Git projects only.")
                     .accessibilityIdentifier("detail.freeze")
                 }.frame(maxWidth: .infinity, alignment: .leading)
             }.disabled(store.busy || !project.git)
@@ -126,7 +136,9 @@ struct RemoteSetupView: View {
                     Text("Visibility: Private").font(.callout)
                 }
             }
-            Text("Choose the actual GitHub account or organization. The personal default comes from your gh login. Existing remotes are never overwritten, and connecting a remote does not push source.")
+            Text(mode == "Existing repository"
+                 ? "Choose the exact remote URL and a local remote name. Existing remotes are never overwritten, and connecting a remote does not push source."
+                 : "Choose the GitHub account or organization and a local remote name. Igloo creates a private repository; it does not push your source.")
                 .font(.callout).foregroundStyle(.secondary)
             Toggle(mode == "Existing repository" ? "Connect this exact remote URL." : "Create this private GitHub repository and connect it.", isOn: $accepted)
             HStack {
@@ -143,12 +155,14 @@ struct RemoteSetupView: View {
                 }.buttonStyle(WizardPrimaryButtonStyle())
                     .disabled(store.busy || !accepted || remote.isEmpty ||
                               (mode == "Existing repository" ? url.isEmpty : owner.isEmpty || repository.isEmpty))
+                    .help(store.busy ? "Wait for the current operation to finish." : !accepted ? "Confirm the selected remote action first." : remote.isEmpty ? "Enter a local remote name." : mode == "Existing repository" && url.isEmpty ? "Enter the exact remote URL." : mode != "Existing repository" && owner.isEmpty ? "Choose a GitHub account or organization." : mode != "Existing repository" && repository.isEmpty ? "Enter a repository name." : "Connect this remote.")
             }
         }.padding(24).frame(width: 720)
             .sheetErrorAlert(store)
+            .onChange(of: mode) { accepted = false }
             .onAppear {
                 repository = project.name
-                remote = project.remotes.contains(where: { $0.name == "origin" }) ? "archive" : "origin"
+                remote = "archive"
                 store.invoke(["github-status"], as: GitHubStatus.self,
                              failed: { _ in accountStatus = "The GitHub CLI status is unavailable." }) { result in
                     login = result.login
@@ -187,6 +201,7 @@ struct CommitSetupView: View {
                         if let onClose { onClose() } else { store.commitSetup = nil }
                         store.action(["commit-execute", review.id, message])
                     }.buttonStyle(WizardPrimaryButtonStyle()).disabled(store.busy || !accepted || message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .help(store.busy ? "Wait for the current operation to finish." : !accepted ? "Confirm that you reviewed the selected source files." : message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Enter a commit message." : "Commit the reviewed selection.")
                 }
             } else {
                 if checkouts.isEmpty {
@@ -196,20 +211,28 @@ struct CommitSetupView: View {
                 Picker("Checkout", selection: $checkout) {
                     ForEach(checkouts, id: \.self) { Text($0).tag($0) }
                 }
-                Table(changes, selection: $selected) {
-                    TableColumn("Status", value: \.status).width(60)
-                    TableColumn("Changed file", value: \.path)
+                if changes.isEmpty {
+                    ContentUnavailableView("No changed files in this checkout", systemImage: "doc.badge.checkmark",
+                                           description: Text("Choose another checkout or return after making source changes."))
+                } else {
+                    Table(changes, selection: $selected) {
+                        TableColumn("Status") { Text(changeName($0.status)).help($0.status) }.width(90)
+                        TableColumn("Changed file", value: \.path)
+                    }.frame(height: min(250, 28 + CGFloat(changes.count) * 30))
                 }
                 Text("Select individual source files. Other staged files must be included in this review or unstaged first. Review file contents in your editor or Terminal before confirming.")
                     .font(.caption).foregroundStyle(.secondary)
                 HStack {
                     Button("Cancel", role: .cancel) { if let onClose { onClose() } else { store.commitSetup = nil } }
                     Button("Open Terminal") { store.terminal(checkout) }
+                        .disabled(store.isDemo)
+                        .help(store.isDemo ? "Opening Terminal is unavailable in demo mode." : "Open this checkout in Terminal.")
                     Spacer()
                     Button("Review selection…") {
                         let files = changes.filter { selected.contains($0.id) }.map(\.path)
                         store.invoke(["commit-preview", checkout] + files, as: CommitReviewPlan.self) { plan = $0 }
                     }.buttonStyle(WizardPrimaryButtonStyle()).disabled(store.busy || selected.isEmpty)
+                        .help(store.busy ? "Wait for the current operation to finish." : selected.isEmpty ? "Select one or more changed files." : "Review the selected source files before committing.")
                 }
             }
         }.padding(24).frame(width: 820, height: 580)
@@ -251,6 +274,8 @@ struct DemoPreservationCatalog: Decodable {
 
 struct FreezeSetupView: View {
     @EnvironmentObject var store: OrganizerStore
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let project: Project
     var initialMode = "freeze"
     var onClose: (() -> Void)? = nil
@@ -261,6 +286,8 @@ struct FreezeSetupView: View {
     @LocalState var reviewTopic = "Git history"
     @LocalState var plan: PreservationReview?
     @LocalState var result: PreservationResult?
+    @LocalState var freezeExecuting = false
+    @LocalState var freezeOperationID = UUID().uuidString
     @LocalState var blockers: [FreezeBlocker]?
     @LocalState var fixingRemote = false
     @LocalState var fixingCommit = false
@@ -284,7 +311,10 @@ struct FreezeSetupView: View {
     private var buildReviewBlockedReason: String? {
         if store.busy { return "Wait for the current operation to finish." }
         guard let values = shownBlockers else { return "Check the requirements first." }
-        if let first = values.first { return "Blocked by the requirement above: " + first.shortLabel + "." }
+        if !values.isEmpty {
+            let count = values.count
+            return "Resolve all \(count) open \(count == 1 ? "requirement" : "requirements") before building the review."
+        }
         if remote.isEmpty { return "Connect a remote to choose a publish destination." }
         return nil
     }
@@ -444,8 +474,15 @@ struct FreezeSetupView: View {
         store.invoke(["freeze-preview", project.path, remote, mode], as: PreservationReview.self) { plan = $0 }
     }
     func executeReview(_ review: PreservationReview) {
+        freezeOperationID = UUID().uuidString
         guard store.isDemo else {
-            store.invoke(["freeze-execute", review.id, review.mode], as: PreservationResult.self) { result = $0 }
+            guard !store.busy else { return }
+            freezeExecuting = review.mode == "freeze"
+            store.invoke(["freeze-execute", review.id, review.mode], as: PreservationResult.self,
+                         failed: { _ in freezeExecuting = false }) { value in
+                freezeExecuting = false
+                result = value
+            }
             return
         }
         let state = review.mode == "freeze" ? "frozen" : "ready"
@@ -470,14 +507,44 @@ struct FreezeSetupView: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(((captureStage == nil ? mode : initialMode) == "freeze" ? "Freeze " : "Preserve ") + project.name).font(.title2).fontWeight(.semibold)
+            HStack(spacing: 6) {
+                if (captureStage == nil ? mode : initialMode) == "freeze" {
+                    Image(systemName: TemperatureAccent.cold.symbol)
+                        .foregroundStyle(TemperatureAccent.cold.foreground(for: colorScheme))
+                        .accessibilityHidden(true)
+                }
+                Text(((captureStage == nil ? mode : initialMode) == "freeze" ? "Freeze " : "Preserve ") + project.name)
+                    .font(.title2).fontWeight(.semibold)
+            }
             if let result = result ?? captureResult {
-                if result.message.localizedCaseInsensitiveContains("Freeze stopped") {
-                    Text("Freeze stopped").font(.headline).foregroundStyle(.orange)
-                    Text("Freeze stopped. The project is Preserved and its checkouts are still in place.")
-                        .font(.callout).foregroundStyle(.orange)
-                    Text("Next: review the recovery history before trying Freeze again.")
-                        .font(.callout).foregroundStyle(.orange)
+                let freezeResult = (captureStage == nil ? mode : initialMode) == "freeze"
+                if freezeResult && result.message.localizedCaseInsensitiveContains("Freeze stopped") {
+                    HStack(alignment: .top, spacing: 10) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Freeze stopped").font(.headline).foregroundStyle(.orange)
+                            Text("Freeze stopped. The project is Preserved and its checkouts are still in place.")
+                                .font(.callout).foregroundStyle(.orange)
+                            Text("Next: review the recovery history before trying Freeze again.")
+                                .font(.callout).foregroundStyle(.orange)
+                        }
+                        Spacer(minLength: 4)
+                        IglooIllustration(kind: .freezeResult, size: CGSize(width: 96, height: 72))
+                    }
+                } else if freezeResult && result.state == "frozen" {
+                    let complete = result.outcome.observed && result.outcome.checkoutsRemoved.count > 0 && result.outcome.held.isEmpty
+                    LifecycleResultHeader(title: archiveStateLabel(result.state), message: result.message,
+                                          accent: .cold, kind: .freezeResult,
+                                          imageSize: CGSize(width: 96, height: 72), motion: .frostIn,
+                                          operationID: freezeOperationID, success: complete)
+                } else if freezeResult {
+                    HStack(alignment: .top, spacing: 10) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(archiveStateLabel(result.state)).font(.headline)
+                            Text(result.message).font(.callout)
+                        }
+                        Spacer(minLength: 4)
+                        IglooIllustration(kind: .freezeResult, size: CGSize(width: 96, height: 72))
+                    }
                 } else {
                     Text(archiveStateLabel(result.state)).font(.headline)
                     Text(result.message).font(.callout)
@@ -527,13 +594,30 @@ struct FreezeSetupView: View {
                     ScrollView { OutcomeSummaryView(outcome: review.outcome) }
                         .frame(height: reviewOutcomeHeight(review.outcome), alignment: .top)
                 Text(review.message).font(.caption).foregroundStyle(.secondary)
+                if freezeExecuting && store.busy {
+                    HStack(spacing: 8) {
+                        Image(systemName: TemperatureAccent.cold.symbol)
+                            .foregroundStyle(TemperatureAccent.cold.foreground(for: colorScheme))
+                            .symbolEffect(.variableColor.iterative, options: .nonRepeating,
+                                          value: store.status)
+                            .symbolEffectsRemoved(reduceMotion)
+                            .accessibilityHidden(true)
+                        Text(store.status).font(.caption).foregroundStyle(.secondary)
+                        Spacer(minLength: 8)
+                        ProgressView().progressViewStyle(.linear)
+                            .tint(TemperatureAccent.cold.foreground(for: colorScheme))
+                            .frame(width: 120)
+                    }.accessibilityIdentifier("freeze.progress")
+                }
                 HStack {
                     Button("Back") { plan = nil; refreshBlockers() }.disabled(store.busy)
+                        .help(store.busy ? "Wait for the current operation to finish." : "Return to the Freeze requirements.")
                         .accessibilityIdentifier("freeze.back")
                     Spacer()
                     Button(review.outcome.actionLabel(preservedProjects: review.mode == "preserve" ? 1 : nil)) {
                         executeReview(review)
-                    }.buttonStyle(WizardPrimaryButtonStyle()).disabled(store.busy)
+                    }.buttonStyle(WizardPrimaryButtonStyle(temperature: review.mode == "freeze" ? .cold : nil)).disabled(store.busy)
+                        .help(store.busy ? "Wait for the current operation to finish." : "Accept the reviewed preservation action.")
                         .accessibilityIdentifier("freeze.accept")
                 }
             } else {
@@ -571,6 +655,7 @@ struct FreezeSetupView: View {
                                     .help("Close this sheet and list the projects with open processes.")
                                     .accessibilityIdentifier("freeze.showActiveSessions")
                                 Button("Check again") { refreshBlockers() }.disabled(store.busy)
+                                    .help(store.busy ? "Wait for the current operation to finish." : "Check whether open processes have closed.")
                                     .accessibilityIdentifier("freeze.checkAgain")
                             }
                         }.font(.callout)
@@ -639,14 +724,23 @@ func archiveStateLabel(_ state: String) -> String {
      "removing": "Freezing", "rehydrating": "Thawing", "rehydrated": "Thawed"][state] ?? state
 }
 
+@ViewBuilder
+func archiveStateView(_ state: String) -> some View {
+    switch state {
+    case "frozen": TemperatureStateLabel(title: archiveStateLabel(state), accent: .cold)
+    case "rehydrated": TemperatureStateLabel(title: archiveStateLabel(state), accent: .warm)
+    default: Text(archiveStateLabel(state))
+    }
+}
+
 struct FreezerBackupRow: Decodable, Identifiable {
     var id: String; var copyID: String; var backedUp: Bool; var lastVerified: String?
     var missing: Bool; var status: String; var reason: String
     var description: String {
-        if backedUp { return "Backed up · verified " + (lastVerified.map(shortDate) ?? "date unknown") }
+        if backedUp { return "Freezer backup verified " + (lastVerified.map(shortDate) ?? "date unknown") }
         let detail = reason.lowercased()
-        if detail.contains("changed") || detail.contains("does not match") { return "Backup copy changed" }
-        return "Not backed up: " + (reason.isEmpty ? "No verified copy" : reason)
+        if detail.contains("changed") || detail.contains("does not match") { return "Freezer backup copy changed" }
+        return "No verified Freezer backup copy: " + (reason.isEmpty ? "not available" : reason)
     }
 }
 struct FreezerBackupStatus: Decodable {
@@ -669,6 +763,7 @@ struct FrozenProjectsView: View {
     @LocalState var confirmBackupRemove = false
     @LocalState var refreshBackupWhenIdle = false
     var archive: FrozenArchive? { store.snapshot?.archives?.first { $0.id == selected } }
+    private var allArchives: [FrozenArchive] { store.snapshot?.archives ?? [] }
     var shownBackup: FreezerBackupStatus? {
         if let backup { return backup }
         guard store.isDemo, let url = Bundle.main.url(forResource: "demo-catalog", withExtension: "json"),
@@ -718,7 +813,7 @@ struct FrozenProjectsView: View {
         } else if sheetWidth(1080) < 850 {
             Table(archives, selection: $selected) {
                 TableColumn("Project", value: \.name).width(min: 140)
-                TableColumn("State") { Text(archiveStateLabel($0.state)) }.width(90)
+                TableColumn("State") { archiveStateView($0.state) }.width(90)
                 TableColumn("Backup") { archive in
                     backupCell(for: archive)
                 }.width(min: 150)
@@ -726,7 +821,7 @@ struct FrozenProjectsView: View {
         } else {
             Table(archives, selection: $selected) {
                 TableColumn("Project", value: \.name).width(min: 170)
-                TableColumn("State") { Text(archiveStateLabel($0.state)) }.width(120)
+                TableColumn("State") { archiveStateView($0.state) }.width(120)
                 TableColumn("Backup") { archive in
                     backupCell(for: archive)
                 }.width(min: 170)
@@ -739,12 +834,13 @@ struct FrozenProjectsView: View {
         let rowsHeight = archives.reduce(CGFloat.zero) { height, archive in
             height + archiveRowHeight(for: archive)
         }
-        return min(240, 30 + rowsHeight)
+        let compact = sheetWidth(1080) < 850
+        return min(compact ? 112 : 210, 36 + rowsHeight)
     }
     private func archiveRowHeight(for archive: FrozenArchive) -> CGFloat {
         guard let value = shownBackup?.archives.first(where: { $0.id == archive.id }), !value.backedUp,
-              value.description.count > 28 else { return 29 }
-        return 40
+              value.description.count > 28 else { return 36 }
+        return 44
     }
     @ViewBuilder private func backupCell(for archive: FrozenArchive) -> some View {
         let value = shownBackup?.archives.first(where: { $0.id == archive.id })
@@ -770,12 +866,20 @@ struct FrozenProjectsView: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Freezer").font(.title2).fontWeight(.semibold)
+            HStack(alignment: .center) {
+                Text("Freezer").font(.title2).fontWeight(.semibold)
+                Spacer(minLength: 0)
+                if let _ = store.snapshot, allArchives.isEmpty {
+                    IglooIllustration(kind: .freezerEmpty, size: CGSize(width: 128, height: 96))
+                }
+            }
+            ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
             Text("Preserved").font(.headline)
             archiveTable((store.snapshot?.archives ?? []).filter { $0.state == "ready" },
                          emptyTitle: "No preserved projects yet",
                          emptyDescription: "Projects appear here after Preserve completes.")
-            Text("Frozen").font(.headline)
+            TemperatureStateLabel(title: "Frozen", accent: .cold).font(.headline)
             archiveTable((store.snapshot?.archives ?? []).filter { $0.state == "frozen" },
                          emptyTitle: "No frozen projects",
                          emptyDescription: "Projects appear here after Freeze completes.")
@@ -792,11 +896,11 @@ struct FrozenProjectsView: View {
                         .font(.caption).textSelection(.enabled).lineLimit(5)
                 }
             } else {
-                Text("Verified archives appear here. A preserved project still has its checkouts; a frozen project has only its marker and local Freezer copy.")
+            Text("Verified Freezer entries appear here. A Preserved project still has its checkouts; a Frozen project has only its marker and local Freezer copy.")
                     .font(.callout).foregroundStyle(.secondary)
             }
-            Text("Thawing restores the frozen source state and local files. Reinstall dependencies afterward, then pull newer changes when ready. Archives remain available after restoration.")
-                .font(.caption).foregroundStyle(.secondary)
+            Text("Thaw restores the Frozen project. Its Freezer copy stays available; reinstall dependencies afterward.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             if let backup = shownBackup, !backup.orphans.isEmpty {
                 Text("No longer in the Freezer").font(.headline)
                 ScrollView {
@@ -814,7 +918,8 @@ struct FrozenProjectsView: View {
                     }
                 }.frame(height: orphanRowsHeight(backup.orphans))
             }
-            Spacer(minLength: 0)
+            }.frame(maxWidth: .infinity, alignment: .leading)
+            }
             HStack {
             Button("Back up now") { runBackup("backup-run") }.disabled(store.busy || store.isDemo || shownBackup?.configured != true)
                 .help(backupActionDisabledReason ?? "Back up Preserved and Frozen archives now.")
@@ -826,7 +931,7 @@ struct FrozenProjectsView: View {
             HStack {
                 Button("Done") { store.vaultShown = false }.keyboardShortcut(.cancelAction)
                     .accessibilityIdentifier("shelf.done")
-                Button("Show archive") { if let a = archive { store.reveal(a.archiveLocation) } }.disabled(archive == nil)
+                Button("Show Freezer copy") { if let a = archive { store.reveal(a.archiveLocation) } }.disabled(archive == nil)
                     .help(archive == nil ? "Select an archive to show its Freezer copy." : "Show the selected archive in Finder.")
                     .accessibilityIdentifier("shelf.showArchive")
                 if let leftovers = archive?.leftovers, !leftovers.isEmpty {
@@ -858,12 +963,13 @@ struct FrozenProjectsView: View {
                     removeBackup = nil; refreshBackupWhenIdle = true
                     store.invoke(["backup-remove", copy.copyID], as: Reply.self) { _ in }
                 }.disabled(store.busy)
+                    .help(store.busy ? "Wait for the current operation to finish." : "Cancel removing this backup copy.")
                 Button("Cancel", role: .cancel) { removeBackup = nil }
             } message: { Text("This removes backup copy " + String((removeBackup?.copyID ?? "").prefix(8)) + ". It cannot be undone.") }
             .confirmationDialog("Remove the verified source checkouts?", isPresented: $removeConfirm, titleVisibility: .visible) {
                 Button("Freeze", role: .destructive) {
                     if let a = archive { store.action(["freeze-retire", a.id]) }
-                }
+                }.help("Remove the verified Preserved checkouts and keep their Freezer copy.")
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text((archive?.path ?? "") + "\nAll registered checkouts shown in this archive will be removed after recovery is verified again. The local-only archive and Git recovery remain. Thaw restores the project.")
@@ -871,7 +977,7 @@ struct FrozenProjectsView: View {
             .confirmationDialog(offline ? "Restore from the verified local archive?" : "Clone the remote and restore the frozen project?", isPresented: $restoreConfirm, titleVisibility: .visible) {
                 Button(offline ? "Restore offline" : "Thaw") {
                     if let a = archive { store.action(["rehydrate", a.id] + (offline ? ["offline"] : [])) }
-                }
+                }.help(offline ? "Restore the project from its verified local Freezer copy." : "Clone the remote and restore the project with its Freezer copy.")
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text((archive?.path ?? "") + "\nExisting files will never be overwritten. The original branches, worktrees and local settings will return.")

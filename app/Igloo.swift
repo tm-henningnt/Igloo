@@ -374,6 +374,10 @@ func sheetWidth(_ preferred: CGFloat) -> CGFloat {
     let hostWidth = DemoCapture.options?.size?.width ?? NSApp.mainWindow?.contentLayoutRect.width ?? preferred
     return min(preferred, max(620, hostWidth - 40))
 }
+func compactTableHeight(_ rows: Int, rowHeight: CGFloat = 30, headerHeight: CGFloat = 26,
+                        maxRows: Int = 8, maxHeight: CGFloat = 270) -> CGFloat {
+    min(maxHeight, headerHeight + CGFloat(max(1, min(rows, maxRows))) * rowHeight)
+}
 func noun(_ count: Int, _ one: String, _ many: String? = nil) -> String { "\(count) " + (count == 1 ? one : many ?? one + "s") }
 func shortDate(_ value: String) -> String { value.isEmpty ? "Unknown" : String(value.prefix(10)) }
 func relative(_ path: String, to root: String) -> String {
@@ -447,7 +451,7 @@ final class OrganizerStore: ObservableObject {
         let values = (snapshot?.projects ?? []).filter { p in
             let match: Bool
             switch filter {
-            case "Cleanup opportunities": match = p.cleanupSize > 0
+            case "Cleanup candidates": match = p.cleanupSize > 0
             case "Needs preservation": match = p.needsPreservation
             case "Quiet projects": match = !p.active && (p.ageDays ?? -1) >= quietDays
             case "No remote": match = p.git && p.remotes.isEmpty
@@ -782,7 +786,7 @@ struct OrganizerView: View {
                     if store.visible.isEmpty {
                         ContentUnavailableView(store.snapshot?.projects.isEmpty == false ? "No matching projects" : "Start with an analysis",
                                                systemImage: "folder.badge.questionmark",
-                                               description: Text("Analyze Projects discovers folders, branches, worktrees and cleanup opportunities."))
+                                               description: Text("Analyze Projects discovers folders, branches, worktrees and cleanup candidates."))
                     }
                 }
             }
@@ -820,7 +824,7 @@ struct OrganizerView: View {
             }
             ToolbarItem(placement: .primaryAction) {
                 Button { store.analyze() } label: { Label("Analyze Projects", systemImage: "arrow.triangle.2.circlepath") }
-                    .help("Analyze Projects (Shift-Command-R)").accessibilityLabel("Analyze Projects")
+                    .help(store.busy ? "Wait for the current operation to finish." : "Analyze Projects (Shift-Command-R)").accessibilityLabel("Analyze Projects")
                     .keyboardShortcut("r", modifiers: [.command, .shift]).disabled(store.busy)
             }
         }
@@ -963,7 +967,7 @@ struct ProjectDetail: View {
     let project: Project
     @LocalState var tab = DemoCapture.tab ?? ProcessInfo.processInfo.environment["ORGANIZER_SMOKE_TAB"] ?? "Overview"
     @LocalState var fetchConfirm = false
-    @LocalState var gitSection = "Changes"
+    @LocalState var gitSection = DemoCapture.initialState("gitSection") ?? "Changes"
     @LocalState var hold = false
     @LocalState var note = ""
     var body: some View {
@@ -985,6 +989,7 @@ struct ProjectDetail: View {
                     Spacer()
                 }
             }.disabled(store.busy)
+                .help(store.busy ? "Wait for the current operation to finish." : "Project actions for the selected project.")
             VStack(spacing: 0) {
                 Picker("Project detail", selection: $tab) {
                     Text("Overview").tag("Overview")
@@ -1039,6 +1044,7 @@ struct ProjectDetail: View {
         if project.git {
             Button("Refresh project") { store.action(["refresh", project.path]) }
             Button("Fetch & verify…") { fetchConfirm = true }.disabled(project.remotes.isEmpty)
+                .help(project.remotes.isEmpty ? "Connect a remote before fetching and verifying refs." : "Fetch remote metadata and verify branch coverage.")
         }
     }
 
@@ -1074,6 +1080,7 @@ struct IglooApp: App {
             }
             CommandGroup(after: .newItem) {
                 Button("Analyze Projects") { store.analyze() }.keyboardShortcut("r", modifiers: [.command, .shift]).disabled(store.busy)
+                    .help(store.busy ? "Wait for the current operation to finish." : "Analyze Projects.")
                 Button("Trash & Restore History") { store.historyShown = true }
             }
         }
@@ -1134,7 +1141,7 @@ struct GitHubStatus: Decodable {
 
 struct AppHelpView: View {
     @EnvironmentObject var store: OrganizerStore
-    @LocalState var topic = "Getting started"
+    @LocalState var topic = DemoCapture.initialState("helpTopic") ?? "Getting started"
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Igloo Help").font(.title2).fontWeight(.semibold)
@@ -1148,14 +1155,14 @@ struct AppHelpView: View {
 
                     VStack(alignment: .leading, spacing: 18) {
                         helpSection("Analyze your projects", "Analyze Projects is the circular arrows button in the toolbar (Shift-Command-R). It discovers repositories and linked worktrees, measures folders and checks configured remotes. It reads project metadata and filenames without changing checkouts. Source dates and observed process activity are estimates of use.")
-                        helpSection("Settings and installation", "The app bundles its backend and can be copied to Applications. Settings lets you choose the workspace root, archive and state locations, clone folder, quiet threshold, quiet-project reminder day and time, GitHub owner default and installed tool paths. The reminder refreshes age from local Git history or elapsed time since the file-age scan, without fetching. It skips Hold and Frozen projects and asks for notification permission when you turn it on. Python, Git and gh remain local prerequisites.")
+                        helpSection("Settings and installation", "The app bundles its backend and can be copied to Applications. Settings lets you choose the workspace root, Freezer and state locations, clone folder, quiet threshold, saved Freeze threshold used by quiet-project reminders, reminder day and time, GitHub owner default and installed tool paths. The reminder refreshes age from local Git history or elapsed time since the file-age scan, without fetching. It skips Hold and Frozen projects and asks for notification permission when you turn it on. Python, Git and gh remain local prerequisites.")
                         helpSection("Tasks and schedules", "Tasks save reusable cleanup rules for selected projects. Start with a Review that lists the exact folders before anything changes. You can run a reviewed cache cleanup or schedule one after giving permission. Past the freeze threshold, the wizard suggests Freeze and waits for your Review. Tasks do not commit or push source, Freeze projects, or remove their checkouts. If you change the rules, enable the schedule again. Daily and weekly schedules run while you are logged in; busy runs are skipped and recorded. To run a saved task from Terminal, choose Install CLI in Tasks. When the CLI is installed, the button is Reinstall CLI.")
-                        helpSection("Cleanup wizard", "Choose Make space to set Git activity or source-file age rules, suggest cleanup and Freeze actions, and review them before one acceptance. Choose Thaw projects to select several Frozen projects and review each remote ref, original path, local-only files and blockers. One acceptance restores every ready row; a failure in one row does not stop the others. The remote supplies available refs, and the Freezer archive supplies Frozen refs missing from it. Wizard Thaw does not install dependencies or run project code, and says to reinstall dependencies for each restored project. Offline recovery remains available per project in Freezer.")
+                        helpSection("Project wizard", "Choose Make space to set Git activity or source-file age rules, suggest cleanup and Freeze actions, and review them before one acceptance. Choose Thaw projects to select several Frozen projects and review each remote ref, original path, local-only files and blockers. One acceptance restores every ready row; a failure in one row does not stop the others. The remote supplies available refs, and the Freezer archive supplies Frozen refs missing from it. Wizard Thaw does not install dependencies or run project code, and says to reinstall dependencies for each restored project. Offline recovery remains available per project in Freezer.")
                         helpSection("Explore space", "Space explorer offers sunburst, icicle and Marimekko views of project sizes and measured dependency/build types. Filter projects by age, detected activity or type, and color by type, activity or age. Select a segment to focus a project; Open project returns to its cleanup and preservation tools. Other project files is the unclassified remainder, not a claim that data is safe to delete.")
                         helpSection("Browse GitHub", "GitHub repositories lets you browse your account or an organization, search, hide existing local clones, select several repositories and clone them into a chosen project folder. Existing paths are never overwritten. Run Analyze Projects afterward to index them.")
                         helpSection("Project types and technology", "Analysis suggests project purpose separately from technology using bounded filenames and package metadata. Overview lets you correct the project type or reset it to Automatic. Catalog search and the type filter use these labels. Space explorer groups, colors and filters by project purpose, technology, age and activity. Complete technology combinations keep aggregate sizes from being counted more than once.")
                         helpSection("Current scope", "Show scope / Hide scope at the bottom-right toggles the visualization beside your work (Option-Command-I). It follows your current filters or the selected project. Choose a breakdown or open the full Space Explorer with this scope. Narrow windows retain the icon rail; the navigation button opens full labels in a popover when there is not room to expand.")
-                        helpSection("Choose what to review", "The sidebar groups project views, review filters, tools and recovery. Its toolbar button collapses it to an icon rail. Quiet projects shows its age threshold below the project views. Needs preservation highlights local history, changed files, stashes and local data. Cleanup opportunities lists ignored dependencies and tool caches.")
+                        helpSection("Choose what to review", "The sidebar groups project views, review filters, tools and recovery. Its toolbar button collapses it to an icon rail. Quiet projects shows its age threshold below the project views. Needs preservation highlights local history, changed files, stashes and local data. Cleanup candidates lists ignored dependencies and tool caches.")
                         helpSection("Connect GitHub", "Open a project’s Preservation tab. Connect an existing remote, or create a private GitHub repository. Your gh login supplies the personal-account default; you can explicitly choose an organization. Local folder labels never choose the GitHub owner or visibility.")
                         helpSection("Commit and publish", "Commit selected files lets you review a specific checkout and file selection. Other staged files must be reviewed too. Environment, key and data filenames stay local. Git → Branches can push one reviewed commit and destination; it never force-pushes.")
                         helpSection("Clean caches", "Select exact directories in Cleanup and review a fresh preview. Active sessions, tracked files, nested repositories and local configuration can stop cleanup. Results show Freed separately from In Trash. Moves stay recoverable in Trash; restoring an item lowers its run's In Trash value. Space is freed when Trash is emptied separately. See the Space report in Trash & restore history for run totals.")
@@ -1167,13 +1174,13 @@ struct AppHelpView: View {
                         helpSection("Requirements and Hold", "The project list shows a badge when a quick check finds a blocker. Open Preservation and choose Preserve or Freeze to see the Requirements checklist and available fixes. Both need a remote. Hold excludes a project from wizard and task proposals; manual actions remain available and show a warning.")
                         helpSection("Preserve", "Preserve reviews ordinary branches and tags, local-only files and rebuild folders. It stores local files and Git recovery in the Freezer, tests reconstruction, pushes the reviewed refs and verifies them remotely. Private refs, stashes and reflogs stay in local recovery, and the checkout remains.")
                         helpSection("Freeze", "Build a Review and inspect its outcome summary for recovery sets, refs, checkout removals and estimated space. Accept once to Preserve, verify recovery and the remote, then remove the reviewed checkouts. A small project marker and the Freezer copy remain. If removal cannot finish, the result explains why and the preserved archive stays available.")
-                        helpSection("Thaw later", "Use Cleanup wizard → Thaw projects to restore several Frozen projects from their remotes in one Review. Freezer still offers remote Thaw and offline recovery for one project at a time. Thaw restores the Frozen source state, local files and Git/worktree metadata without overwriting occupied paths. Reinstall dependencies, then pull newer remote changes when ready.")
+                        helpSection("Thaw later", "Use Project wizard → Thaw projects to restore several Frozen projects from their remotes in one Review. Freezer still offers remote Thaw and offline recovery for one project at a time. Thaw restores the Frozen source state, local files and Git/worktree metadata without overwriting occupied paths. Reinstall dependencies, then pull newer remote changes when ready.")
                         helpSection("Recover interruptions", "If removal or restoration is interrupted, use the same archive’s recovery action again. Already restored files are checked before continuing. Possible post-interruption edits or recovery copies are preserved for review.")
                     }.frame(maxWidth: .infinity, alignment: .leading).padding(18).padding(.bottom, 30)
                 } else if topic == "Safety & storage" {
 
                     VStack(alignment: .leading, spacing: 18) {
-                        helpSection("Local archive storage", "Settings → Freezer sets the Freezer location. The current location is " + displayPath(store.preferences.archiveRoot) + ". It contains local-only data and Git metadata and is not encrypted. You can choose a backup folder, including cloud storage after confirming unencrypted upload. A missing backup never blocks Preserve.")
+                        helpSection("Freezer storage", "Settings → Freezer sets the Freezer location. The current location is " + displayPath(store.preferences.archiveRoot) + ". It contains local-only data and Git metadata and is not encrypted. You can choose a backup folder, including cloud storage after confirming unencrypted upload. A missing backup never blocks Preserve.")
                         helpSection("Freezer backup", "When a backup folder is configured, Igloo copies recovery there after Preserve and checks its checksums. In Freezer, Back up now retries missing copies and Verify backup checks existing copies. Backups are only added automatically; use Remove from backup for copies no longer in the Freezer.")
                         helpSection("Updates", "Check for Updates shows release notes and downloads a verified update for your runtime. Choose Install and relaunch to verify the downloaded app signature, replace the app, and reopen it. The previous app stays in its backup until the new process remains open briefly. Installation requires a writable, non-translocated app location and never asks for an administrator password. If installation fails, Igloo restores and reopens the previous app and shows the failure in the update window. Close any dialog that blocks termination, then try again. macOS privacy permissions may need approval again after an ad-hoc-signed update. If a check or download fails, the window explains the problem and links to releases. For a request limit, wait until the displayed UTC reset time when available.")
                         helpSection("App state", "Settings → Runtime state sets the state folder. The current folder is " + displayPath(store.preferences.stateRoot) + ". Preferences live in " + displayPath(UserPreferences.file.path) + ". Keep the Trash journal while you may need restoration. The app’s own source can use Git setup and commits; it is protected from cache cleanup and freezing.")

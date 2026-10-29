@@ -10,12 +10,13 @@ case "$BUILD_ARCH" in
   arm64|x86_64|universal) ;;
   *) print -u2 "Usage: ./build.command [native|arm64|x86_64|universal]"; exit 2 ;;
 esac
-mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources/backend"
+mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources/backend" "$APP_BUNDLE/Contents/Resources/brand"
 IGLOO_PYTHON="$(command -v python3)"
 cp backend/organizer.py backend/lifecycle.py backend/preferences.py backend/planning.py backend/classification.py backend/automation.py backend/task_cli.py LICENSE "$APP_BUNDLE/Contents/Resources/backend/"
 cp LICENSE "$APP_BUNDLE/Contents/Resources/LICENSE"
 cp scripts/update_installer.py "$APP_BUNDLE/Contents/Resources/"
 cp assets/demo-catalog.json assets/demo-tasks.json "$APP_BUNDLE/Contents/Resources/"
+cp assets/brand/*.png "$APP_BUNDLE/Contents/Resources/brand/"
 "$IGLOO_PYTHON" scripts/build_icon.py assets/IglooIcon.png "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
 if [[ "$BUILD_RUNTIME" == bundled ]]; then
   "$IGLOO_PYTHON" scripts/bundle_python.py "$PWD" "$APP_BUNDLE" "$BUILD_ARCH"

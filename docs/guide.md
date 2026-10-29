@@ -8,9 +8,9 @@ The current release is not notarized or signed with Apple Developer ID. Open the
 
 ## Find a place to start
 
-The project list can show quiet projects, active sessions, cleanup opportunities, or projects with work to preserve. Search by name or technology, filter by project type, and sort by size or age. A blocker badge appears when a quick check finds a missing requirement; open the project's Preservation tab to resolve it.
+The project list can show quiet projects, active sessions, cleanup candidates, or projects with work to preserve. Search by name or technology, filter by project type, and sort by size or age. A blocker badge appears when a quick check finds a missing requirement; open the project's Preservation tab to resolve it.
 
-In Settings, turn on **Remind me about quiet projects** and choose a weekday and local time. Igloo asks for notification permission when you turn the setting on. At the chosen time it checks the saved catalog and refreshes age from local Git history or the elapsed time since the file-age scan, without fetching. It sends one notification with the number and combined size of projects more than the Freeze age. Hold and Frozen projects are left out. Clicking the notification opens the Cleanup wizard on **Make space**. The check does not clean, Preserve, or Freeze projects; it adds an entry to reminder history. A user LaunchAgent starts the Igloo app at the chosen time without a window, and macOS lists Igloo under background activity. When Igloo is already open, the open copy runs the check.
+In Settings, turn on **Remind me about quiet projects** and choose a weekday and local time. Igloo asks for notification permission when you turn the setting on. At the chosen time it checks the saved catalog and refreshes age from local Git history or the elapsed time since the file-age scan, without fetching. It sends one notification for projects older than the saved Freeze threshold in Project wizard. This is separate from the Quiet project threshold, which filters the project list. Hold and Frozen projects are left out. Clicking the notification opens the Project wizard on **Make space**. The check does not clean, Preserve, or Freeze projects; it adds an entry to reminder history. A user LaunchAgent starts the Igloo app at the chosen time without a window, and macOS lists Igloo under background activity. When Igloo is already open, the open copy runs the check.
 
 Select a project to see its overview. The Git, Worktrees, Local files, and Cleanup tabs let you look more closely at anything that needs attention. Igloo suggests project types from their files; you can correct a suggestion in Overview.
 
@@ -22,7 +22,7 @@ Open a project's **Cleanup** tab, select the folders you want to remove, and rev
 
 Check for custom changes before removing dependencies you normally regenerate. Active projects and folders containing tracked files or local configuration can stop cleanup and require review.
 
-For a larger cleanup, open **Cleanup wizard**:
+For a larger cleanup, open **Project wizard** and choose **Make space**:
 
 1. Choose **Make space**.
 2. Choose how to measure age: Git activity or source-file modification time.
@@ -64,7 +64,9 @@ Ignored local files, stashes, and other local Git state stay in your recovery ar
 
 ## Thaw a project
 
-For one project, open **Freezer**, select it, and choose **Thaw from remote**. To restore several at once, open **Cleanup wizard → Thaw projects**, select the Frozen projects, inspect each ready project's remote refs, original path, and local-only files, then confirm each project's details before the single acceptance. Blocked projects and their archives are left untouched while the other ready projects continue; check each result.
+For one project, open **Freezer**, select it, and choose **Thaw from remote**. To restore several at once, open **Project wizard → Thaw projects**, select the Frozen projects, inspect each ready project's remote refs, original path, and local-only files, then confirm each project's details before the single acceptance. Blocked projects and their Freezer entries are left untouched while the other ready projects continue; check each result.
+
+Choose **Show Freezer copy** to open the selected project's local recovery copy in Finder.
 
 Wizard Thaw checks remote access and restores refs from the remote when available. The Freezer archive supplies Frozen refs missing from the remote and stays available after Thaw. Wizard Thaw does not install dependencies or run project code. Results list the checkouts and remote refs restored. Reinstall dependencies for each restored project, then pull newer remote changes when you're ready. **Offline recovery** remains a per-project action in Freezer when remote access is unavailable.
 
@@ -105,6 +107,8 @@ Changing a storage location selects another folder; it does not move existing ar
 ### Freezer backup
 
 In **Settings**, choose a **Freezer backup folder** from detected external disks and cloud storage, or choose another folder, then save settings. Select **None** to turn backup off. Igloo keeps copies in a private `Igloo-Freezer-Backup` subfolder. After each Preserve it copies the new archive and checks SHA-256 checksums. If the folder is disconnected or cannot be written, Preserve still succeeds and the archive shows **Not backed up**, with a reason. Reconnect the folder and choose **Back up now** in Freezer to retry; **Verify backup** checks existing copies again.
+
+Each Freezer row names the verified backup copy and its last verification date, or explains why no verified copy is available. Choose **Show Freezer copy** to open the selected local recovery archive in Finder.
 
 For iCloud Drive or a folder under `~/Library/CloudStorage`, Igloo asks you to confirm that local-only files will upload **unencrypted**. Confirmation applies to the chosen destination; choosing a different cloud folder needs a new confirmation. The former global `freezerBackupCloudAccepted` flag grants no consent. Igloo does not encrypt these copies.
 

@@ -2,7 +2,7 @@ import SwiftUI
 
 struct ScopeInspector: View {
     @EnvironmentObject var store: OrganizerStore
-    @LocalState var basis = "Filtered projects"
+    @LocalState var basis = DemoCapture.initialState("scopeBasis") ?? "Filtered projects"
     @LocalState var dimension = "Age"
     var projects: [Project] { basis == "Selected project" ? store.selected.map { [$0] } ?? [] : store.visible }
     var total: Int64 { projects.reduce(0) { $0 + $1.size } }
@@ -108,6 +108,7 @@ struct ScopeInspector: View {
                     store.explorerProjectIDs = Set(projects.map(\.id))
                     store.spaceShown = true
                 }.disabled(projects.isEmpty)
+                    .help(projects.isEmpty ? "There are no projects in the current scope." : "Open Space Explorer for the current scope.")
                 Text("Updates with the current filters and search. Sizes and activity are catalog estimates. Technology combinations count each project once.")
                     .font(.caption).foregroundStyle(.secondary)
             }.padding(16)

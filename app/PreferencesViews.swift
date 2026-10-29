@@ -254,6 +254,7 @@ struct AppSettingsView: View {
     @LocalState var backupLocations: [BackupLocation] = []
     @LocalState var pendingCloud: BackupLocation?
     @LocalState var confirmCloud = false
+    @LocalState var reminderFreezeDays = 180
     /// Igloo Dev names its own folder, so a tester can see that the release settings stay unchanged.
     var settingsLocation: String {
         if store.isDemo || UserPreferences.appIdentifier == ConfigRoot.releaseIdentifier {
@@ -273,9 +274,7 @@ struct AppSettingsView: View {
             Form {
                 pathField("Projects root", value: $draft.projectsRoot)
                 pathField("Freezer", value: $draft.archiveRoot)
-                HStack {
-                    Text("Freezer backup folder")
-                    Spacer()
+                LabeledContent("Freezer backup folder") {
                     Menu(backupTitle) {
                         Button("None") { draft.freezerBackupRoot = ""; draft.freezerBackupCloudAcceptedRoot = "" }
                         ForEach(backupLocations) { location in Button(location.title) { chooseBackup(location) } }
@@ -313,7 +312,7 @@ struct AppSettingsView: View {
                             Text("Saturday").tag(6)
                         }
                         TextField("Time (24-hour HH:MM)", text: $draft.quietReminderTime)
-                        Text("Igloo checks the saved catalog and sends one notification when projects pass the Freeze age. It does not change project files.")
+                        Text("Reminder threshold: more than \(reminderFreezeDays) days, using the saved Freeze threshold from Project wizard. The Quiet project threshold above only filters the project list. No project files change.")
                             .font(.caption).foregroundStyle(.secondary)
                             .frame(maxWidth: 420, alignment: .leading).fixedSize(horizontal: false, vertical: true)
                     }
@@ -348,6 +347,7 @@ struct AppSettingsView: View {
                         }
                     } catch { message = error.localizedDescription }
                 }.buttonStyle(WizardPrimaryButtonStyle()).disabled(store.busy || store.isDemo)
+                    .help(store.isDemo ? "Saving settings is unavailable in demo mode." : store.busy ? "Wait for the current operation to finish." : "Validate and save settings.")
             }
         }.padding(24).frame(width: 760)
             .onAppear {
@@ -356,6 +356,9 @@ struct AppSettingsView: View {
                     ? [BackupLocation(url: URL(fileURLWithPath: "/Users/demo/Library/CloudStorage/Example-account"),
                                       title: "Cloud storage", provider: "Cloud storage")]
                     : BackupLocations.detected()
+                store.invoke(["wizard-state"], as: WizardState.self) { state in
+                    reminderFreezeDays = state.rules.freezeDays
+                }
                 if store.isDemo && DemoCapture.options?.view == "settings-cloud" {
                     pendingCloud = BackupLocation(url: URL(fileURLWithPath: "/Users/demo/Library/CloudStorage/Example-account"),
                                                   title: "Cloud storage", provider: "Cloud storage")
@@ -393,13 +396,15 @@ struct AppSettingsView: View {
         }
     }
     private func pathField(_ title: String, value: Binding<String>) -> some View {
-        HStack {
-            TextField(title, text: value)
-            Button("Choose…") {
-                let panel = NSOpenPanel()
-                panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.canCreateDirectories = true
-                panel.directoryURL = URL(fileURLWithPath: (value.wrappedValue as NSString).expandingTildeInPath)
-                if panel.runModal() == .OK, let url = panel.url { value.wrappedValue = url.path }
+        LabeledContent(title) {
+            HStack {
+                TextField("", text: value)
+                Button("Choose…") {
+                    let panel = NSOpenPanel()
+                    panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.canCreateDirectories = true
+                    panel.directoryURL = URL(fileURLWithPath: (value.wrappedValue as NSString).expandingTildeInPath)
+                    if panel.runModal() == .OK, let url = panel.url { value.wrappedValue = url.path }
+                }
             }
         }
     }
@@ -469,6 +474,7 @@ struct RemoteRepositoriesView: View {
                             store.load()
                         }
                     }.buttonStyle(WizardPrimaryButtonStyle()).disabled(store.busy || !confirmed)
+                        .help(store.busy ? "Wait for the current operation to finish." : !confirmed ? "Review and confirm the listed clone destinations first." : "Clone the selected repositories.")
                 }
             } else {
                 VStack(alignment: .leading, spacing: 4) {
@@ -478,6 +484,7 @@ struct RemoteRepositoriesView: View {
                             Menu("My accounts") { ForEach(owners, id: \.self) { value in Button(value) { owner = value } } }
                         }
                         Button("Load repositories") { loadRepositories() }.disabled(store.busy || !progress.isEmpty || owner.isEmpty)
+                            .help(store.busy ? "Wait for the current operation to finish." : !progress.isEmpty ? "Repository loading is already in progress." : owner.isEmpty ? "Enter a GitHub account or organization." : "Load repositories for this account.")
                     }
                     if progress.isEmpty {
                         Text("Choose an account or organization.").font(.caption).foregroundStyle(.secondary)
@@ -490,18 +497,18 @@ struct RemoteRepositoriesView: View {
                     Toggle("Hide already cloned", isOn: $hideLocal)
                         .help("This filter hides repositories that already have a local clone. Turn it off to show them.")
                 }
-                Table(visible, selection: $selected) {
-                    TableColumn("Repository", value: \.slug).width(min: 240)
-                    TableColumn("Visibility") { Text($0.isPrivate ? "Private" : "Public") }.width(90)
-                    TableColumn("Local state") { Text($0.alreadyLocal ? "Already cloned" : $0.archived ? "Archived remote" : "Not cloned here") }.width(130)
-                    TableColumn("Description", value: \.description).width(min: 250)
-                }.overlay {
-                    if visible.isEmpty && !progress.isEmpty {
-                        ProgressView(progress).accessibilityIdentifier("repositories.loading")
-                    } else if visible.isEmpty {
-                        ContentUnavailableView(emptyTitle, systemImage: "network",
-                                               description: Text(emptyDescription))
-                    }
+                if visible.isEmpty && !progress.isEmpty {
+                    ProgressView(progress).accessibilityIdentifier("repositories.loading")
+                } else if visible.isEmpty {
+                    ContentUnavailableView(emptyTitle, systemImage: "network",
+                                           description: Text(emptyDescription))
+                } else {
+                    Table(visible, selection: $selected) {
+                        TableColumn("Repository", value: \.slug).width(min: 240)
+                        TableColumn("Visibility") { Text($0.isPrivate ? "Private" : "Public") }.width(90)
+                        TableColumn("Local state") { Text($0.alreadyLocal ? "Already cloned" : $0.archived ? "Archived remote" : "Not cloned here") }.width(130)
+                        TableColumn("Description", value: \.description).width(min: 250)
+                    }.frame(height: compactTableHeight(visible.count, rowHeight: 38))
                 }
                 LabeledContent("Clone folder") {
                     HStack {

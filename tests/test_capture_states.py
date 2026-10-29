@@ -1,5 +1,6 @@
 """Capture launcher checks use disposable output and a fake process boundary."""
 import contextlib
+import fnmatch
 import importlib.util
 import io
 import json
@@ -72,67 +73,6 @@ def write_renderer_png(folder, kind, png):
     path = capture.renderer_path(folder, kind)
     path.parent.mkdir(mode=0o700, exist_ok=True)
     path.write_bytes(png)
-
-
-def orca_state(tree_text):
-    return {"result": {"snapshot": {"treeText": tree_text}}}
-
-
-ORCA_WIZARD_START = """193 sheet
-\t194 text Cleanup wizard
-\t195 text Choose a path
-\t196 text Choose what you want to do with your projects.
-\t197 button        (Make space)
-\t198 button        (Thaw projects)
-\t199 button        (Close)
-"""
-
-ORCA_THAW_SELECTION = """202 sheet
-\t203 text Select projects
-\t204 text Select Frozen projects to restore from their remotes.
-\t205 heading
-\t206 scroll area, 5 items
-\t\t207 list
-\t\t\t208 outline row
-\t\t\t\t209 cell
-\t\t\t\t\t210 checkbox, Value: 0
-\t\t\t\t211 text Harbor CLI
-\t\t\t\t212 text Frozen 2026-10-28
-\t\t\t\t213 text /demo/Harbor CLI
-\t\t\t214 outline row
-\t\t\t\t215 cell
-\t\t\t\t\t216 checkbox, Value: 0
-\t222 button        (Back)
-\t223 button        (Previous Thaw results)
-\t224 text 0 selected
-\t225 button (disabled)   (Create Thaw plan)
-\t226 button        (Close)
-"""
-
-ORCA_THAW_REVIEW = """300 sheet
-\t301 text Thaw plan
-\t302 button (Change selection)
-\t303 outline row (selected) Harbor CLI Review details
-\t304 checkbox, Value: 0
-\t305 outline row Signal Lab Review details
-\t306 checkbox, Value: 0
-\t307 button (Close)
-\t308 button (disabled) (Thaw 1 ready project)
-\t309 text Expected outcome for Harbor CLI
-\t310 text Original paths
-"""
-
-ORCA_THAW_BLOCKED = """300 sheet
-\t301 text Thaw plan
-\t302 button (Change selection)
-\t303 outline row Harbor CLI Review details
-\t304 checkbox, Value: 0
-\t305 outline row (selected) Signal Lab Review details
-\t306 checkbox, Value: 0
-\t307 button (Close)
-\t308 button (disabled) (Thaw 1 ready project)
-\t309 text Path occupied
-"""
 
 
 class CaptureStatesTests(unittest.TestCase):
@@ -434,18 +374,27 @@ class CaptureStatesTests(unittest.TestCase):
         self.assertEqual([step.get("key", step.get("click", {}).get("role")) for step in steps], [
             "button", "checkbox", "button", "checkbox", "button",
         ])
-        self.assertTrue(all(step["click"].get("anchor") for step in steps if "click" in step))
+        self.assertTrue(all(step["click"].get("anchor") and step["click"].get("name") for step in steps))
         self.assertEqual(steps[3]["capture"], "05-confirmed")
-        self.assertEqual(steps[1]["click"]["parent"], {"role": "outline row", "ordinal": 1})
-        self.assertEqual(steps[-1]["wait_for"], {"anchor": "Results"})
+        self.assertEqual(steps[1]["click"]["name"], "Ice Garden")
+        self.assertEqual(steps[-1]["wait_for"], {"anchor": "Local-only files restored"})
         with self.assertRaisesRegex(ValueError, "anchor"):
-            capture.parse_interactive_steps([{"click": {"role": "button", "ordinal": 1}, "capture": "bad"}])
+            capture.parse_interactive_steps([{"click": {"role": "button", "name": "Back", "ordinal": 1},
+                                             "capture": "bad"}])
         with self.assertRaisesRegex(ValueError, "ordinal"):
-            capture.parse_interactive_steps([{"click": {"role": "button", "ordinal": 0, "anchor": "Choose a path"},
+            capture.parse_interactive_steps([{"click": {"role": "button", "name": "Back", "ordinal": 0,
+                                                        "anchor": "Choose a path"}, "capture": "bad"}])
+        with self.assertRaisesRegex(ValueError, "name or label"):
+            capture.parse_interactive_steps([{"click": {"role": "button", "ordinal": 1, "anchor": "Choose a path"},
                                              "capture": "bad"}])
         with self.assertRaisesRegex(ValueError, "label"):
             capture.parse_interactive_steps([{"click": {"role": "outline row", "ordinal": 1,
                                                           "anchor": "Thaw plan", "label": " "},
+                                             "capture": "bad"}])
+        with self.assertRaisesRegex(ValueError, "role, ordinal, and anchor"):
+            capture.parse_interactive_steps([{"click": {"role": "checkbox", "name": "Ice Garden", "ordinal": 1,
+                                                        "anchor": "Select projects",
+                                                        "parent": {"role": "outline row", "ordinal": 1}},
                                              "capture": "bad"}])
         with self.assertRaisesRegex(ValueError, "selection"):
             capture.parse_interactive_steps([{"key": "Down", "capture": "bad"}])
@@ -469,220 +418,6 @@ class CaptureStatesTests(unittest.TestCase):
                     capture.stop_verified_process(123, app)
                 kill.assert_called_once_with(123, 0)
 
-    def test_launch_orca_stops_the_verified_pid_after_success(self):
-        with tempfile.TemporaryDirectory() as temp:
-            app = Path(temp) / "Igloo.app"
-            executable = app / "Contents/MacOS/Igloo"
-            executable.parent.mkdir(parents=True)
-            executable.touch()
-            process = Mock()
-            scenario = capture.scenarios()[0]
-            results = [{"kind": "window", "status": "PARTIAL"}]
-            with patch.object(capture.sys, "platform", "darwin"), \
-                 patch.object(capture.subprocess, "Popen", return_value=process), \
-                 patch.object(capture, "_wait_for_launched_capture", return_value=123), \
-                 patch.object(capture, "process_executable_path", return_value=executable), \
-                 patch.object(capture.os, "kill") as kill, \
-                 patch.object(capture, "_capture_orca_states", return_value=results):
-                self.assertIs(capture.launch_orca(app, Path(temp) / "scenario", scenario), results)
-            self.assertEqual(kill.call_args_list, [call(123, 0), call(123, signal.SIGTERM)])
-            process.wait.assert_called_once_with(timeout=20)
-
-    def test_launch_orca_stops_the_verified_pid_after_capture_failure(self):
-        with tempfile.TemporaryDirectory() as temp:
-            app = Path(temp) / "Igloo.app"
-            executable = app / "Contents/MacOS/Igloo"
-            executable.parent.mkdir(parents=True)
-            executable.touch()
-            process = Mock()
-            scenario = capture.scenarios()[0]
-            with patch.object(capture.sys, "platform", "darwin"), \
-                 patch.object(capture.subprocess, "Popen", return_value=process), \
-                 patch.object(capture, "_wait_for_launched_capture", return_value=123), \
-                 patch.object(capture, "process_executable_path", return_value=executable), \
-                 patch.object(capture.os, "kill") as kill, \
-                 patch.object(capture, "_capture_orca_states", side_effect=capture.OrcaError("capture failed")):
-                with self.assertRaisesRegex(capture.OrcaError, "capture failed"):
-                    capture.launch_orca(app, Path(temp) / "scenario", scenario)
-            self.assertEqual(kill.call_args_list, [call(123, 0), call(123, signal.SIGTERM)])
-            process.wait.assert_called_once_with(timeout=20)
-
-    def test_launch_orca_stops_the_started_pid_after_metadata_timeout(self):
-        with tempfile.TemporaryDirectory() as temp:
-            app = Path(temp) / "Igloo.app"
-            executable = app / "Contents/MacOS/Igloo"
-            executable.parent.mkdir(parents=True)
-            executable.touch()
-            folder = Path(temp) / "scenario"
-            folder.mkdir()
-            (folder / "started.json").write_text(json.dumps({"pid": 123}))
-            process = Mock()
-            scenario = capture.scenarios()[0]
-            with patch.object(capture.sys, "platform", "darwin"), \
-                 patch.object(capture.subprocess, "Popen", return_value=process), \
-                 patch.object(capture, "_wait_for_launched_capture",
-                              side_effect=capture.OrcaError("Timed out waiting for Orca capture metadata")), \
-                 patch.object(capture, "process_executable_path", return_value=executable), \
-                 patch.object(capture.os, "kill") as kill:
-                with self.assertRaisesRegex(capture.OrcaError, "Timed out"):
-                    capture.launch_orca(app, folder, scenario)
-            self.assertEqual(kill.call_args_list, [call(123, 0), call(123, signal.SIGTERM)])
-            process.wait.assert_called_once_with(timeout=20)
-
-    def test_capture_orca_states_runs_and_verifies_every_interactive_step(self):
-        with tempfile.TemporaryDirectory() as temp:
-            app, folder = Path(temp) / "Igloo.app", Path(temp) / "scenario"
-            scenario = {"flow": "wizard-thaw"}
-            with patch.object(capture, "verify_target_process"), \
-                 patch.object(capture, "_orca_state_for_sheet", return_value=({}, [])), \
-                 patch.object(capture, "capture_orca_screenshot", side_effect=[{"step": i} for i in range(6)]) as shot, \
-                 patch.object(capture, "_click_orca_locator") as click, \
-                 patch.object(capture, "_press_orca_key") as press_key, \
-                 patch.object(capture, "_wait_for_anchor", return_value={}) as wait, \
-                 patch.object(capture, "_verify_step_state") as verify:
-                results = capture._capture_orca_states(123, app, folder, scenario)
-            self.assertEqual(len(results), 6)
-            self.assertEqual(click.call_count, 5)
-            press_key.assert_not_called()
-            self.assertEqual(wait.call_count, 3)
-            self.assertEqual(verify.call_count, 5)
-            self.assertEqual(shot.call_count, 6)
-
-    def test_verify_step_state_checks_value_control_and_visible_labels(self):
-        approval = {"role": "checkbox", "ordinal": 1, "anchor": "Thaw plan"}
-        execute = {"role": "button", "ordinal": 3, "anchor": "Thaw plan"}
-        step = {"click": approval, "expect": {"value": True},
-                "expect_control": {"locator": execute, "enabled": True},
-                "expect_labels": ["Thaw plan"]}
-        state = orca_state(ORCA_THAW_REVIEW.replace("Value: 0", "Value: 1")
-                           .replace("button (disabled) (Thaw 1 ready project)", "button (Thaw 1 ready project)"))
-        self.assertIsNone(capture._verify_step_state(state, step))
-        bad_states = (
-            orca_state(ORCA_THAW_REVIEW),
-            orca_state(ORCA_THAW_REVIEW.replace("button (disabled) (Thaw 1 ready project)",
-                                                "button (Thaw 1 ready project)")),
-            orca_state(ORCA_THAW_REVIEW.replace("text Thaw plan", "text Different screen")),
-        )
-        for bad_state in bad_states:
-            with self.subTest(state=bad_state), self.assertRaises(capture.OrcaError):
-                capture._verify_step_state(bad_state, step)
-
-    def test_orca_locator_uses_sheet_anchor_role_and_ordinal(self):
-        locator = {"role": "button", "ordinal": 2, "anchor": "Choose a path"}
-        node = capture.find_orca_locator(orca_state(ORCA_WIZARD_START), locator)
-        self.assertEqual(capture._element_index(node), 198)
-        self.assertIsNone(capture.find_orca_locator(orca_state(ORCA_WIZARD_START),
-                                                    {"role": "button", "ordinal": 4, "anchor": "Choose a path"}))
-        self.assertIsNone(capture.find_orca_locator(orca_state(ORCA_WIZARD_START),
-                                                    {"role": "button", "ordinal": 2, "anchor": "Select projects"}))
-
-    def test_orca_locator_resolves_a_role_inside_a_nested_outline_row(self):
-        locator = {"role": "checkbox", "ordinal": 1, "parent": {"role": "outline row", "ordinal": 1},
-                   "anchor": "Select projects"}
-        node = capture.find_orca_locator(orca_state(ORCA_THAW_SELECTION), locator)
-        self.assertEqual(capture._element_index(node), 210)
-        self.assertFalse(node["value"])
-
-    def test_orca_locator_anchors_row_by_label_and_ordinal(self):
-        locator = {"role": "outline row", "ordinal": 1, "anchor": "Thaw plan", "label": "Harbor CLI"}
-        node = capture.find_orca_locator(orca_state(ORCA_THAW_REVIEW), locator)
-        self.assertEqual(capture._element_index(node), 303)
-        self.assertIsNone(capture.find_orca_locator(orca_state(ORCA_THAW_REVIEW),
-                                                    {**locator, "label": "Other project"}))
-
-    def test_orca_tree_marks_the_selected_row(self):
-        locator = {"role": "outline row", "ordinal": 1, "anchor": "Thaw plan", "label": "Harbor CLI"}
-        node = capture.find_orca_locator(orca_state(ORCA_THAW_REVIEW), locator)
-        self.assertTrue(node["selected"])
-
-    def test_press_key_targets_the_app_without_coordinate_or_window_clicks(self):
-        with patch.object(capture, "verify_target_process") as verify, \
-             patch.object(capture, "orca_json") as orca:
-            capture._press_orca_key(123, Path("/example/Igloo.app"), "Down")
-        verify.assert_called_once_with(123, Path("/example/Igloo.app"))
-        orca.assert_called_once_with(["press-key", "--app", "pid:123", "--key", "Down", "--no-screenshot"])
-
-    def test_wait_for_selection_reports_open_when_key_does_not_change_selection(self):
-        locator = {"role": "outline row", "ordinal": 1, "anchor": "Thaw plan", "label": "Signal Lab"}
-        with patch.object(capture, "verify_target_process"), \
-             patch.object(capture, "_orca_state_for_sheet", return_value=(
-                 orca_state(ORCA_THAW_REVIEW), ["--window-id", "66605"])), \
-             patch.object(capture.time, "monotonic", return_value=10):
-            with self.assertRaisesRegex(capture.OrcaError,
-                                        "Orca key Down did not change selection to Signal Lab"):
-                capture._wait_for_selection(123, Path("/example/Igloo.app"), "Down", locator, timeout=0)
-
-    def test_wait_for_selection_captures_the_requested_selected_row(self):
-        locator = {"role": "outline row", "ordinal": 1, "anchor": "Thaw plan", "label": "Signal Lab"}
-        expected = orca_state(ORCA_THAW_BLOCKED)
-        with patch.object(capture, "verify_target_process") as verify, \
-             patch.object(capture, "_orca_state_for_sheet", return_value=(expected, ["--window-id", "66605"])), \
-             patch.object(capture, "orca_app_state", return_value=expected) as screenshot:
-            state = capture._wait_for_selection(123, Path("/example/Igloo.app"), "Down", locator, timeout=0)
-        self.assertIs(state, expected)
-        self.assertEqual(verify.call_count, 2)
-        screenshot.assert_called_once_with(123, window=["--window-id", "66605"])
-
-    def test_orca_click_re_resolves_the_element_index_from_each_snapshot(self):
-        shifted = ORCA_WIZARD_START
-        for before, after in ((193, 300), (194, 301), (195, 302), (196, 303), (197, 317), (198, 318), (199, 319)):
-            shifted = shifted.replace(str(before), str(after), 1)
-        locator = {"role": "button", "ordinal": 2, "anchor": "Choose a path"}
-        windows = {"result": {"windows": [
-            {"id": 66602, "title": "Igloo", "isMain": True},
-            {"id": 66605, "title": "Cleanup wizard", "role": "sheet", "isMain": False},
-        ]}}
-        state = {"result": {"snapshot": {"treeText": shifted, "window": {"windowId": 66605}}}}
-        with patch.object(capture, "verify_target_process") as verify, \
-             patch.object(capture, "orca_json", side_effect=[windows, state, {}]) as orca:
-            capture._click_orca_locator(123, Path("/example/Igloo.app"), locator)
-        self.assertEqual(verify.call_count, 2)
-        self.assertEqual(orca.call_args_list[0], call(["list-windows", "--app", "pid:123"]))
-        self.assertEqual(orca.call_args_list[1], call(["get-app-state", "--app", "pid:123",
-                                                       "--window-id", "66605", "--no-screenshot"]))
-        self.assertEqual(orca.call_args_list[2], call(["click", "--app", "pid:123", "--window-id", "66605",
-                                                       "--element-index", "318"]))
-
-    def test_orca_command_follows_restore_window_suggestion_once_and_keeps_real_error(self):
-        failed = {"ok": False, "error": {"code": "window_not_focused",
-                  "message": "coordinate click aborted because the target window is not topmost",
-                  "data": {"nextSteps": ["Retry with --restore-window"]}}}
-        success = {"ok": True, "result": {"clicked": True}}
-        with patch.object(capture.subprocess, "run", side_effect=[
-                subprocess.CompletedProcess(["orca"], 1, stdout=json.dumps(failed), stderr=""),
-                subprocess.CompletedProcess(["orca"], 0, stdout=json.dumps(success), stderr="")]) as run:
-            self.assertEqual(capture.orca_json(["click", "--app", "pid:123", "--window-id", "66605"]), success)
-        self.assertEqual(run.call_count, 2)
-        self.assertIn("--restore-window", run.call_args_list[1].args[0])
-        self.assertEqual(run.call_args_list[1].args[0].count("--restore-window"), 1)
-
-    def test_orca_command_reports_code_and_message_after_restore_retry(self):
-        failed = {"ok": False, "error": {"code": "window_not_focused",
-                  "message": "target window is no longer topmost",
-                  "data": {"nextSteps": ["Retry with --restore-window"]}}}
-        with patch.object(capture.subprocess, "run", side_effect=[
-                subprocess.CompletedProcess(["orca"], 1, stdout=json.dumps(failed), stderr=""),
-                subprocess.CompletedProcess(["orca"], 1, stdout=json.dumps(failed), stderr="")]):
-            with self.assertRaisesRegex(capture.OrcaError, "window_not_focused: target window is no longer topmost"):
-                capture.orca_json(["click", "--app", "pid:123", "--window-id", "66605"])
-
-    def test_wait_for_anchor_polls_without_screenshots_then_refreshes(self):
-        with patch.object(capture, "verify_target_process"), \
-             patch.object(capture, "_orca_state_for_sheet", side_effect=[
-                 capture.OrcaError("Orca could not find the Select projects sheet in a listed window"),
-                 (orca_state(ORCA_THAW_SELECTION), ["--window-id", "66605"]),
-                 ({"result": {"screenshot": {"path": "captured.png"}}}, ["--window-id", "66605"])]) as state, \
-             patch.object(capture.time, "sleep") as sleep:
-            result = capture._wait_for_anchor(123, Path("/example/Igloo.app"), "Select projects")
-        self.assertEqual(result["result"]["screenshot"]["path"], "captured.png")
-        self.assertEqual(state.call_args_list, [call(123, "Select projects", include_screenshot=False),
-                                                call(123, "Select projects", include_screenshot=False),
-                                                call(123, "Select projects")])
-        sleep.assert_called_once_with(0.5)
-
-    def test_orca_probe_extracts_only_the_sheet_subtree(self):
-        self.assertEqual(capture.orca_sheet_subtree(ORCA_WIZARD_START), ORCA_WIZARD_START.rstrip())
-
     def test_probe_option_is_documented_by_the_capture_cli(self):
         output = io.StringIO()
         with patch.object(capture.sys, "argv", ["capture_states.py", "--help"]), \
@@ -690,52 +425,6 @@ class CaptureStatesTests(unittest.TestCase):
             capture.main()
         self.assertEqual(raised.exception.code, 0)
         self.assertIn("--probe", output.getvalue())
-
-    def test_orca_command_failure_is_not_suppressed(self):
-        with patch.object(capture.subprocess, "run", return_value=subprocess.CompletedProcess(
-                ["orca"], 1, stdout="", stderr="permission denied")):
-            with self.assertRaisesRegex(capture.OrcaError, r"Orca command failed \(exit 1\)"):
-                capture.orca_app_state(123)
-
-    def test_orca_screenshot_is_saved_as_private_real_pixel_evidence(self):
-        with tempfile.TemporaryDirectory() as temp:
-            folder = Path(temp)
-            source = folder / "orca-source.png"
-            source_bytes = b"\x89PNG\r\n\x1a\n" + b"x" * 2048
-            source.write_bytes(source_bytes)
-            state = {"result": {"screenshot": {"path": str(source)}}}
-            with patch.object(capture, "png_nonbackground_share", return_value=0.25):
-                result = capture.capture_orca_screenshot(state, folder, "window-orca.png")
-            output = folder / "window-orca.png"
-            self.assertEqual(output.read_bytes(), source_bytes)
-            self.assertFalse(source.exists(), "the Orca temporary screenshot is removed after copying")
-            self.assertEqual(stat.S_IMODE(output.stat().st_mode), 0o600)
-            self.assertEqual(result["status"], "PARTIAL")
-            self.assertEqual(result["path"], "window-orca.png")
-
-    def test_orca_missing_screenshot_is_open(self):
-        with tempfile.TemporaryDirectory() as temp:
-            with self.assertRaisesRegex(capture.OrcaError, "Orca returned no screenshot"):
-                capture.capture_orca_screenshot({"result": {"snapshot": {}}}, Path(temp), "window-orca.png")
-
-    def test_orca_failure_is_reported_open(self):
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            app = root / "Igloo.app"
-            executable = app / "Contents/MacOS/Igloo"
-            executable.parent.mkdir(parents=True)
-            executable.touch()
-            output = root / "output"
-            scenario = capture.scenarios()[0]
-            args = ["capture_states", "--app", str(app), "--output", str(output), "--scenario", scenario["name"],
-                    "--backend", "orca"]
-            text = io.StringIO()
-            with patch.object(sys, "argv", args), patch.object(capture.sys, "platform", "darwin"), \
-                 patch.object(capture, "launch_orca", side_effect=capture.OrcaError("window unavailable")), \
-                 contextlib.redirect_stdout(text):
-                self.assertEqual(capture.main(), 1)
-            self.assertIn("OPEN " + scenario["name"], text.getvalue())
-            self.assertNotIn("PASS " + scenario["name"], text.getvalue())
 
     def test_review_and_settings_matrix_includes_minimum_and_default_in_both_appearances(self):
         views = {"freeze-review", "preserve-review", "freeze-result", "cleanup-review", "cleanup-result",
@@ -825,12 +514,13 @@ class CaptureStatesTests(unittest.TestCase):
 
     def test_new_review_accessibility_reports_missing_controls(self):
         expected = {"cleanup-review": "Review cleanup", "wizard-review": "Expected outcome",
-                    "wizard-start": "Make space", "wizard-thaw-selection": "Create Thaw plan",
+                    "wizard-start": "Project wizard", "wizard-thaw-selection": "Create Thaw plan",
                     "wizard-thaw-review": "Thaw plan", "wizard-thaw-result": "Checkouts restored",
                     "wizard-thaw-rehydrating": "Thawing Ice Garden",
-                    "task-review": "Review task actions", "settings": "Freezer backup folder",
+                    "task-review": "Review task actions", "settings": "Reminder threshold",
                     "freeze-review": "Expected outcome", "freeze-hold": "This project is on Hold",
                     "cleanup-result": "In Trash (can be restored)", "trash-history": "Space report",
+                    "push-review": "Push one branch", "wizard-actions": "Choose actions",
                     "wizard-result": "In Trash (can be restored)", "task-history": "Task run history"}
         for view, label in expected.items():
             with self.subTest(view=view):
@@ -885,12 +575,15 @@ class CaptureStatesTests(unittest.TestCase):
         ]}
         tree["children"][-2]["label"] = "I reviewed the remote refs, original paths and local-only files shown for Ice Garden."
         self.assertEqual(capture.accessibility_missing(tree, {"view": "wizard-thaw-ready"}), [])
-        self.assertEqual(capture.accessibility_control_issues(tree, {"view": "wizard-thaw-ready"}), [])
+        self.assertEqual(capture.accessibility_control_issues(tree, {"view": "wizard-thaw-ready"}), {
+            "wizard.thaw.acceptance": "found", "wizard.thaw.execute": "found"})
         tree["children"][-1]["enabled"] = True
-        self.assertIn("wizard.thaw.execute", capture.accessibility_control_issues(tree, {"view": "wizard-thaw-ready"}))
+        self.assertEqual(capture.accessibility_control_issues(tree, {"view": "wizard-thaw-ready"})[
+            "wizard.thaw.execute"], "missing")
         tree["children"][-1]["enabled"] = False
         tree["children"][-2]["value"] = True
-        self.assertIn("wizard.thaw.acceptance", capture.accessibility_control_issues(tree, {"view": "wizard-thaw-ready"}))
+        self.assertEqual(capture.accessibility_control_issues(tree, {"view": "wizard-thaw-ready"})[
+            "wizard.thaw.acceptance"], "missing")
 
     def test_demo_capture_activates_and_keys_its_window_before_capture(self):
         source = (ROOT / "app/DemoCatalog.swift").read_text()
@@ -964,6 +657,58 @@ class CaptureStatesTests(unittest.TestCase):
                 position = freezer.index(f'"{control}"')
                 self.assertIn(".help(", freezer[max(0, position - 500):position])
 
+    def test_issue56_compact_review_and_history_layouts_budget_real_rows(self):
+        cleanup = (ROOT / "app/ReviewViews.swift").read_text()
+        review = cleanup.split("struct CleanupReview: View {", 1)[1].split("struct PushReview: View {", 1)[0]
+        self.assertIn("}.frame(maxHeight: 96)", review)
+
+        detail = (ROOT / "app/DetailViews.swift").read_text()
+        saved = detail.split("struct SavedHistoryView: View {", 1)[1].split("struct RemotesView: View {", 1)[0]
+        self.assertIn("compactTableHeight(rows.count, rowHeight: 38)", saved)
+
+        trash = cleanup.split("struct HistoryView: View {", 1)[1].split("func loadSpaceReport()", 1)[0]
+        self.assertIn("compactTableHeight(history.count, rowHeight: 32, maxRows: 4, maxHeight: 170)", trash)
+
+        tasks = (ROOT / "app/TasksView.swift").read_text()
+        table = tasks.split("struct TaskRunHistoryTable: View {", 1)[1].split("struct TaskHistoryCaptureView: View {", 1)[0]
+        self.assertIn("private var compact: Bool { sheetWidth(980) < 900 }", table)
+        self.assertIn("ideal: compact ? 300 : 340", table)
+        self.assertIn("alternatingRowBackgrounds(.disabled)", table)
+        self.assertIn("lineLimit(4).fixedSize(horizontal: false, vertical: true)", table)
+        self.assertIn("rowHeight: 84", table)
+
+        lifecycle = (ROOT / "app/LifecycleViews.swift").read_text()
+        freezer = lifecycle.split("struct FrozenProjectsView", 1)[1]
+        self.assertIn("min(compact ? 112 : 210, 36 + rowsHeight)", freezer)
+        self.assertIn("return 36", freezer)
+        self.assertIn("return 44", freezer)
+        self.assertIn("Thaw restores the Frozen project. Its Freezer copy stays available", freezer)
+        self.assertIn("fixedSize(horizontal: false, vertical: true)", freezer)
+
+        wizard = (ROOT / "app/WizardViews.swift").read_text()
+        start = wizard.split("var startStep: some View {", 1)[1].split("func enterThaw()", 1)[0]
+        self.assertIn('Text("Review cleanup and Freeze suggestions.")', start)
+        self.assertIn('Text("Restore multiple Frozen projects.")', start)
+        self.assertEqual(start.count(".fixedSize(horizontal: false, vertical: true).padding(16)"), 2)
+
+    def test_issue17_glossary_avoided_phrases_are_absent_from_copy(self):
+        paths = [ROOT / "app", ROOT / "docs/guide.md", ROOT / "README.md",
+                 ROOT / "assets/demo-catalog.json", ROOT / "assets/demo-tasks.json"]
+        contents = []
+        for path in paths:
+            if path.is_file():
+                contents.append(path.read_text())
+            else:
+                contents.extend(file.read_text() for file in path.rglob("*.swift"))
+        text = "\n".join(contents)
+        self.assertNotRegex(text, r"(?i)\barchive\s*&\s*push\b")
+        self.assertNotRegex(text, r"(?i)\barchive\s+folder\b")
+        self.assertNotRegex(text, r'(?i)Button\("archive"\)')
+        self.assertNotIn("archive important ignored files", text)
+        self.assertNotIn("Freeze archives local files", text)
+        self.assertIn("preserve important ignored files", text)
+        self.assertIn("Freeze preserves local files and Git metadata", text)
+
     def test_overview_summary_and_list_badge_read_one_blocker_source(self):
         model = (ROOT / "app/Igloo.swift").read_text()
         detail = (ROOT / "app/DetailViews.swift").read_text()
@@ -984,9 +729,9 @@ class CaptureStatesTests(unittest.TestCase):
         self.assertIn("@Environment(\\.backgroundProminence) private var backgroundProminence", navigation)
         self.assertIn("selected && backgroundProminence == .increased", navigation)
         self.assertIn("@Environment(\\.controlActiveState) private var controlActiveState", wizard)
-        self.assertIn("row.id == selectedThawID && controlActiveState == .key", wizard)
+        self.assertIn("controlActiveState == .key ? Color(nsColor: .selectedMenuItemTextColor) : Color.primary", wizard)
+        self.assertIn("row.id == selectedThawID ? selectedRowTextColor", wizard)
         self.assertIn("Color(nsColor: .selectedMenuItemTextColor)", navigation)
-        self.assertIn("selectedThawID && controlActiveState == .key ? selectedRowTextColor", wizard)
 
     def test_thaw_wizard_capture_contract_uses_shared_height_and_scrollable_list(self):
         source = (ROOT / "app/WizardViews.swift").read_text()
@@ -1012,12 +757,15 @@ class CaptureStatesTests(unittest.TestCase):
     def test_disabled_wizard_buttons_and_thaw_progress_keep_visible_contrast(self):
         source = (ROOT / "app/WizardViews.swift").read_text()
         button = source.split("struct WizardPrimaryButtonStyle", 1)[1].split("struct CleanupWizardView", 1)[0]
-        self.assertIn("isEnabled ? Color.white : Color.primary.opacity(0.28)", button)
-        self.assertIn("isEnabled ? Color.accentColor : Color.primary.opacity(0.07)", button)
+        self.assertIn("temperature?.actionLabel(for: colorScheme) ?? Color.white", button)
+        self.assertIn("temperature?.foreground(for: colorScheme) ?? Color.accentColor", button)
+        self.assertIn(".foregroundStyle(isEnabled ? label : Color.primary.opacity(0.28))", button)
+        self.assertIn(".background(isEnabled ? fill : Color.primary.opacity(0.07)", button)
         progress = source.split("if isThawExecuting {", 1)[1].split("} else if thawPlan?.status", 1)[0]
         self.assertIn("Text(thawProgressMessage)", progress)
         self.assertIn("ProgressView().progressViewStyle(.linear)", progress)
-        self.assertIn("Color(red: 0.08, green: 0.34, blue: 0.78)", progress)
+        self.assertIn(".tint(TemperatureAccent.warm.foreground(for: colorScheme))", progress)
+        self.assertIn(".symbolEffect(.variableColor.iterative", progress)
 
     def test_result_sheets_use_sized_rows_and_reduced_result_frames(self):
         cleanup = (ROOT / "app/ReviewViews.swift").read_text()
@@ -1029,6 +777,24 @@ class CaptureStatesTests(unittest.TestCase):
         self.assertIn("if isShowingResult { return 390 }", lifecycle)
         self.assertIn("reviewSheetChromeHeight + reviewPaneHeight(review) + reviewOutcomeHeight(review.outcome)", lifecycle)
         self.assertIn("Demo only: these results are simulated.", lifecycle)
+
+    def test_issue_56_brand_art_and_motion_are_lifecycle_scoped(self):
+        palette = (ROOT / "app/SpaceViews.swift").read_text()
+        artwork = (ROOT / "app/ReviewViews.swift").read_text()
+        lifecycle = (ROOT / "app/LifecycleViews.swift").read_text()
+        wizard = (ROOT / "app/WizardViews.swift").read_text()
+        self.assertIn("0x2B6E9E", palette)
+        self.assertIn("0x8FC9EA", palette)
+        self.assertIn("0x756118", palette)
+        self.assertIn("0xE6D28B", palette)
+        self.assertIn('colorScheme == .dark ? "-night" : ""', artwork)
+        self.assertIn(".mask(IglooDomeMask())", artwork)
+        self.assertIn(".mask(IglooDoorGlowMask())", artwork)
+        self.assertIn(".onChange(of: reduceMotion) { if reduceMotion { showFinalFrame() } }", artwork)
+        self.assertIn("complete = result.outcome.observed && result.outcome.checkoutsRemoved.count > 0", lifecycle)
+        self.assertIn("TemperatureStateLabel(title: \"Frozen\", accent: .cold)", lifecycle)
+        self.assertIn("plan.rows.allSatisfy { $0.status == \"done\" }", wizard)
+        self.assertIn(".symbolEffectsRemoved(reduceMotion)", wizard)
 
     def test_outcome_summary_avoids_duplicate_measurements_and_labels_each_ref(self):
         source = (ROOT / "app/ReviewViews.swift").read_text()
@@ -1059,6 +825,7 @@ class CaptureStatesTests(unittest.TestCase):
                 tree = {"role": "AXCapture", "children": [{
                     "role": "AXWindow", "windowKind": "sheet" if view != "plan" else "window",
                     "children": [{"role": {"detail.hold": "AXCheckBox",
+                                             "wizard.thaw.acceptance": "AXCheckBox",
                                              "wizard.thaw.archive.demo-icegarden": "AXCheckBox",
                                              "detail.preservationNotes": "AXTextArea"}.get(identifier, "AXButton"),
                                   "identifier": identifier, "label": identifier,
@@ -1066,20 +833,173 @@ class CaptureStatesTests(unittest.TestCase):
                                   "frame": {"x": 1, "y": 2, "width": 40, "height": 20}}
                                  for identifier in identifiers]
                 }]}
-                self.assertEqual(capture.accessibility_control_issues(tree, {"view": view}), [])
+                statuses = capture.accessibility_control_issues(tree, {"view": view})
+                self.assertEqual(statuses, {identifier: "found" for identifier in identifiers})
                 node = tree["children"][0]["children"][-1]
                 node["identifier"] = "wrong.identifier"
-                self.assertIn(identifiers[-1], capture.accessibility_control_issues(tree, {"view": view}))
+                self.assertEqual(capture.accessibility_control_issues(tree, {"view": view})[identifiers[-1]], "missing")
                 node["identifier"] = identifiers[-1]
                 node["role"] = "AXTextField"
-                self.assertIn(identifiers[-1], capture.accessibility_control_issues(tree, {"view": view}))
+                self.assertEqual(capture.accessibility_control_issues(tree, {"view": view})[identifiers[-1]], "missing")
                 node["role"] = "AXButton"
                 node["enabled"] = None
-                self.assertIn(identifiers[-1], capture.accessibility_control_issues(tree, {"view": view}))
+                self.assertEqual(capture.accessibility_control_issues(tree, {"view": view})[identifiers[-1]], "missing")
                 node["enabled"] = True
                 del node["frame"]
-                self.assertIn(identifiers[-1], capture.accessibility_control_issues(tree, {"view": view}))
+                self.assertEqual(capture.accessibility_control_issues(tree, {"view": view})[identifiers[-1]], "missing")
         self.assertIsNone(capture.accessibility_control_issues({"children": []}, {"view": "overview"}))
+
+    def test_cua_wizard_start_controls_are_found_in_the_main_window_tree(self):
+        tree_markdown = "\n".join((
+            "- [110] AXButton (Make space, Review cleanup and Freeze suggestions.) [id=wizard.start.makeSpace actions=[press]]",
+            "- [111] AXButton (Thaw projects, Restore multiple Frozen projects.) [id=wizard.start.thaw actions=[press]]",
+            '- [112] AXButton (Close) [help="Close the Project wizard." actions=[press]]',
+        ))
+        payload = {"tree_markdown": tree_markdown, "truncated": False, "total_element_count": 3}
+        statuses = capture.accessibility_control_issues(
+            tree_markdown, {"view": "wizard-start"}, source="cua",
+            complete=capture.cua_accessibility_tree_complete(payload))
+        self.assertEqual(statuses, {"wizard.start.makeSpace": "found", "wizard.start.thaw": "found"})
+        self.assertTrue(capture.cua_accessibility_tree_complete(payload))
+        self.assertIn("found: wizard.start.makeSpace, wizard.start.thaw",
+                      capture.format_accessibility_control_statuses(statuses))
+
+    def test_cua_control_absent_from_complete_tree_is_missing(self):
+        tree_markdown = "- [110] AXButton (Make space) [id=wizard.start.makeSpace actions=[press]]"
+        payload = {"tree_markdown": tree_markdown, "truncated": False, "total_element_count": 1}
+        statuses = capture.accessibility_control_issues(
+            tree_markdown, {"view": "wizard-start"}, source="cua",
+            complete=capture.cua_accessibility_tree_complete(payload))
+        self.assertEqual(statuses["wizard.start.makeSpace"], "found")
+        self.assertEqual(statuses["wizard.start.thaw"], "missing")
+
+    def test_cua_control_absent_from_truncated_tree_is_unverified(self):
+        tree_markdown = "- [110] AXButton (Make space) [id=wizard.start.makeSpace actions=[press]]"
+        payload = {"tree_markdown": tree_markdown, "truncated": True, "total_element_count": 2}
+        statuses = capture.accessibility_control_issues(
+            tree_markdown, {"view": "wizard-start"}, source="cua",
+            complete=capture.cua_accessibility_tree_complete(payload))
+        self.assertEqual(statuses["wizard.start.makeSpace"], "found")
+        self.assertEqual(statuses["wizard.start.thaw"], "unverified (tree incomplete)")
+        self.assertIn("unverified: wizard.start.thaw (tree incomplete)",
+                      capture.format_accessibility_control_statuses(statuses))
+        self.assertFalse(capture.cua_accessibility_tree_complete({
+            "tree_markdown": tree_markdown, "truncated": False, "total_element_count": 2}))
+
+    def test_cua_control_with_wrong_role_is_missing(self):
+        tree_markdown = "- [110] AXCheckBox (Make space) [id=wizard.start.makeSpace actions=[press]]"
+        statuses = capture.accessibility_control_issues(
+            tree_markdown, {"view": "wizard-start"}, source="cua", complete=True)
+        self.assertEqual(statuses["wizard.start.makeSpace"], "missing")
+        self.assertEqual(statuses["wizard.start.thaw"], "missing")
+
+    def test_cua_disabled_controls_without_ids_are_unverified_with_a_reason(self):
+        freeze_tree = "\n".join((
+            "- [113] AXButton (Cancel) [id=freeze.cancel actions=[press]]",
+            "- AXButton (Build review…)"))
+        freeze_statuses = capture.accessibility_control_issues(
+            freeze_tree, {"view": "freeze"}, source="cua", complete=True)
+        self.assertEqual(freeze_statuses["freeze.cancel"], "found")
+        self.assertEqual(freeze_statuses["freeze.buildReview"],
+                         "unverified (disabled, id not exposed by cua-driver)")
+        self.assertIn("unverified: freeze.buildReview (disabled, id not exposed by cua-driver)",
+                      capture.format_accessibility_control_statuses(freeze_statuses))
+
+        shelf_tree = "\n".join((
+            "- [136] AXButton (Done) [id=shelf.done actions=[press]]",
+            "- AXButton (Back up now)"))
+        shelf_statuses = capture.accessibility_control_issues(
+            shelf_tree, {"view": "shelf"}, source="cua", complete=True)
+        self.assertEqual(shelf_statuses["shelf.done"], "found")
+        self.assertEqual(shelf_statuses["shelf.backUpNow"],
+                         "unverified (disabled, id not exposed by cua-driver)")
+        formatted = capture.format_accessibility_control_statuses(shelf_statuses)
+        self.assertTrue(formatted.startswith("found: shelf.done; missing:"))
+        self.assertIn("unverified: shelf.backUpNow (disabled, id not exposed by cua-driver)", formatted)
+
+    def test_cua_disabled_inference_requires_the_expected_label(self):
+        tree_markdown = "- AXButton (Build review unavailable)"
+        statuses = capture.accessibility_control_issues(
+            tree_markdown, {"view": "freeze"}, source="cua", complete=True)
+        self.assertEqual(statuses["freeze.buildReview"], "missing")
+
+    def test_cua_expected_identifier_with_wrong_role_stays_missing(self):
+        tree_markdown = "- [114] AXTextField (Build review…) [id=freeze.buildReview]"
+        statuses = capture.accessibility_control_issues(
+            tree_markdown, {"view": "freeze"}, source="cua", complete=True)
+        self.assertEqual(statuses["freeze.buildReview"], "missing")
+
+    def test_cua_plan_contract_reads_detail_controls_from_main_window_tree(self):
+        tree_markdown = "\n".join((
+            "- [40] AXButton (Connect remote) [id=detail.connectRemote actions=[press]]",
+            "- [41] AXButton (Commit selected files) [id=detail.commitSelectedFiles actions=[press]]",
+            "- [42] AXButton (Preserve) [id=detail.preserve actions=[press]]",
+            "- [43] AXButton (Freeze) [id=detail.freeze actions=[press]]",
+            "- [44] AXCheckBox (Hold) [id=detail.hold actions=[press]]",
+            "- [45] AXTextArea (Preservation notes) [id=detail.preservationNotes]",
+            "- [46] AXButton (Export project report) [id=detail.exportProjectReport actions=[press]]",
+            "- [47] AXButton (Save preservation) [id=detail.savePreservation actions=[press]]",
+        ))
+        statuses = capture.accessibility_control_issues(
+            tree_markdown, {"view": "plan"}, source="cua", complete=True)
+        self.assertEqual(set(statuses.values()), {"found"})
+        self.assertEqual(set(statuses), {
+            identifier for identifier, _, _ in capture.accessibility_control_contract({"view": "plan"})})
+
+    def test_cua_control_capture_requests_the_main_window_tree_for_sheet_views(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp)
+            tree_markdown = "\n".join((
+                "- [110] AXButton (Make space, Review cleanup and Freeze suggestions.) [id=wizard.start.makeSpace actions=[press]]",
+                "- [111] AXButton (Thaw projects, Restore multiple Frozen projects.) [id=wizard.start.thaw actions=[press]]",
+                '- [112] AXButton (Close) [help="Close the Project wizard." actions=[press]]',
+            ))
+            with patch.object(capture, "cua_window_targets", return_value={"window": 123, "sheet": 124}), \
+                 patch.object(capture, "cua_call", return_value={
+                     "tree_markdown": tree_markdown, "truncated": False, "total_element_count": 3}) as call_driver:
+                stored = capture.capture_cua_accessibility_tree(42, folder, {"view": "wizard-start"}, "session")
+            tool, arguments = call_driver.call_args.args
+            self.assertEqual(tool, "get_window_state")
+            self.assertEqual(arguments["window_id"], 123)
+            self.assertEqual(arguments["max_elements"], capture.CUA_ACCESSIBILITY_TREE_LIMIT)
+            self.assertTrue(stored["complete"])
+            self.assertEqual(json.loads((folder / "cua-accessibility.json").read_text()), stored)
+
+    def test_cua_capture_flow_requests_named_controls_for_each_contract_view(self):
+        for view in ("wizard-start", "plan"):
+            with self.subTest(view=view):
+                with patch.object(capture, "verify_target_process"), \
+                     patch.object(capture, "cua_capture_windows", return_value=[{"status": "PARTIAL"}]), \
+                     patch.object(capture, "capture_cua_accessibility_tree") as read_controls:
+                    capture._capture_cua_states(
+                        42, Path("/example/Igloo.app"), Path("/tmp/scenario"), {"view": view}, "session")
+                read_controls.assert_called_once_with(42, Path("/tmp/scenario"), {"view": view}, "session")
+
+    def test_cua_validation_uses_saved_main_window_tree_for_sheet_controls(self):
+        scenario = next(row for row in capture.scenarios()
+                        if row["view"] == "wizard-start" and row["size"] == "1440x900")
+        tree_markdown = "\n".join((
+            "- [110] AXButton (Make space, Review cleanup and Freeze suggestions.) [id=wizard.start.makeSpace actions=[press]]",
+            "- [111] AXButton (Thaw projects, Restore multiple Frozen projects.) [id=wizard.start.thaw actions=[press]]",
+        ))
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp)
+            folder.chmod(0o700)
+            write_renderer_png(folder, "window", sample_png())
+            write_renderer_png(folder, "sheet", sample_png())
+            (folder / "started.json").write_text(json.dumps({"pid": 123}))
+            write_window_metadata(folder, 123, sheet=True)
+            (folder / "accessibility.json").write_text(json.dumps({
+                "pid": 123, "tree": {"role": "AXCapture", "children": []},
+                "actualWidth": 1440, "actualHeight": 900,
+            }))
+            (folder / "cua-accessibility.json").write_text(json.dumps({
+                "tree_markdown": tree_markdown, "truncated": False,
+                "total_element_count": 2, "complete": True,
+            }))
+            result = capture.validate_result(folder, scenario, reject_renderer_placeholders=False, backend="cua")
+        self.assertEqual(result["accessibilityControlIssues"], {
+            "wizard.start.makeSpace": "found", "wizard.start.thaw": "found"})
 
     def test_accessibility_dump_counts_each_captured_window_tree(self):
         tree = {"role": "AXCapture", "children": [
@@ -1395,13 +1315,396 @@ class CaptureStatesTests(unittest.TestCase):
 
     def test_launch_passes_demo_only_capture_arguments(self):
         scenario = capture.scenarios()[0]
-        args = capture.build_launch_command(Path("/example/Igloo.app"), Path("/tmp/capture"), scenario, backend="orca")
+        args = capture.build_launch_command(Path("/example/Igloo.app"), Path("/tmp/capture"), scenario, backend="cua")
         self.assertEqual(args[:4], ["/usr/bin/open", "-n", "-W", "/example/Igloo.app"])
-        for argument in ("--demo", "--demo-size", "--demo-view", "--demo-capture", "--demo-scope", "--demo-rail", "--demo-data", "--demo-window-server", "--demo-orca"):
+        for argument in ("--demo", "--demo-size", "--demo-view", "--demo-capture", "--demo-scope", "--demo-rail", "--demo-data", "--demo-window-server", "--demo-driver"):
             self.assertIn(argument, args)
 
-    def test_orca_demo_flag_selects_its_longer_app_deadline(self):
+    def test_driver_demo_flag_selects_its_longer_app_deadline(self):
         source = (ROOT / "app" / "DemoCatalog.swift").read_text()
-        self.assertIn('let orcaCapture = args.contains("--demo-orca")', source)
-        self.assertIn("if orcaCapture && (!windowServer || folder == nil)", source)
-        self.assertIn("options.orcaCapture ? 900 : (options.windowServer ? 60 : 15)", source)
+        self.assertIn('let driverCapture = args.contains("--demo-driver")', source)
+        self.assertIn("if driverCapture && (!windowServer || folder == nil)", source)
+        self.assertIn("options.driverCapture ? 900 : (options.windowServer ? 60 : 15)", source)
+
+    def test_cua_is_the_default_backend(self):
+        output = io.StringIO()
+        with patch.object(capture.sys, "argv", ["capture_states.py", "--help"]), \
+             contextlib.redirect_stdout(output), self.assertRaises(SystemExit):
+            capture.main()
+        self.assertIn("default: cua", output.getvalue())
+        self.assertNotIn("orca", output.getvalue().casefold())
+        with patch.object(capture, "launch_cua", return_value=[]) as launch:
+            capture.launch(Path("/example/Igloo.app"), Path("/tmp/capture"), capture.scenarios()[0])
+        launch.assert_called_once()
+
+    def test_cua_call_runs_one_tool_and_parses_its_json(self):
+        completed = subprocess.CompletedProcess(["cua-driver"], 0, stdout=json.dumps({"windows": []}), stderr="")
+        with patch.dict(capture.os.environ, {"CUA_DRIVER_COMMAND": "/example/cua-driver"}), \
+             patch.object(capture.subprocess, "run", return_value=completed) as run:
+            self.assertEqual(capture.cua_call("list_windows", {"pid": 42}), {"windows": []})
+        args = run.call_args.args[0]
+        self.assertEqual(args[:3], ["/example/cua-driver", "call", "list_windows"])
+        self.assertEqual(json.loads(args[3]), {"pid": 42})
+        self.assertTrue(run.call_args.kwargs["capture_output"])
+
+    def test_cua_call_reports_refusal_code_and_capped_hint(self):
+        refusal = {"code": "window_id_not_found", "hint": "No window matches. " * 100}
+        with patch.object(capture.subprocess, "run", return_value=subprocess.CompletedProcess(
+                ["cua-driver"], 1, stdout=json.dumps(refusal), stderr="")):
+            with self.assertRaisesRegex(capture.CaptureError, "^window_id_not_found: No window matches") as raised:
+                capture.cua_call("get_window_state", {"pid": 42, "window_id": 7})
+        self.assertLessEqual(len(raised.exception.message), capture.CUA_OUTPUT_LIMIT)
+
+    def test_cua_call_reports_script_errors_and_bare_failures(self):
+        script_error = {"ok": False, "error": {"message": "Error: timed out waiting for text: Results", "line": 12}}
+        cases = ((subprocess.CompletedProcess(["cua-driver"], 1, stdout=json.dumps(script_error), stderr=""),
+                  r"timed out waiting for text: Results \(script line 12\)"),
+                 (subprocess.CompletedProcess(["cua-driver"], 1, stdout="", stderr="daemon is not running"),
+                  r"cua-driver run_script failed \(exit 1\)"),
+                 (subprocess.CompletedProcess(["cua-driver"], 0, stdout="not json", stderr=""),
+                  "returned invalid data"))
+        for completed, message in cases:
+            with self.subTest(message=message), \
+                 patch.object(capture.subprocess, "run", return_value=completed), \
+                 self.assertRaisesRegex(capture.CaptureError, message):
+                capture.cua_call("run_script", {"script": "return 1;"})
+        with patch.object(capture.subprocess, "run", side_effect=FileNotFoundError("cua-driver")), \
+             self.assertRaisesRegex(capture.CaptureError, "could not run"):
+            capture.cua_call("list_windows", {"pid": 42})
+
+    def test_cua_window_targets_use_the_app_metadata_and_ignore_other_pids(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp)
+            write_window_metadata(folder, 42, sheet=True)
+            listed = {"windows": [{"window_id": 123, "pid": 42, "layer": 0, "z_index": 1},
+                                  {"window_id": 124, "pid": 99, "layer": 0, "z_index": 2}]}
+            with patch.object(capture, "cua_call", return_value=listed) as call_driver:
+                targets = capture.cua_window_targets(42, folder, "igloo-capture-42")
+            call_driver.assert_called_once_with("list_windows", {"pid": 42, "session": "igloo-capture-42"})
+            self.assertEqual(targets, {"window": 123, "sheet": None})
+            with self.assertRaisesRegex(capture.CaptureError, "PID mismatch"):
+                capture.cua_window_targets(7, folder, "igloo-capture-7")
+
+    def test_cua_window_targets_fall_back_to_the_frontmost_window_of_the_pid(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp)
+            write_window_metadata(folder, 42)
+            listed = {"windows": [{"window_id": 500, "pid": 42, "layer": 0, "z_index": 1},
+                                  {"window_id": 501, "pid": 42, "layer": 0, "z_index": 4},
+                                  {"window_id": 502, "pid": 42, "layer": 3, "z_index": 9}]}
+            with patch.object(capture, "cua_call", return_value=listed):
+                self.assertEqual(capture.cua_window_targets(42, folder, "s"), {"window": 501})
+            with patch.object(capture, "cua_call", return_value={"windows": []}), \
+                 self.assertRaisesRegex(capture.CaptureError, "lists no window"):
+                capture.cua_window_targets(42, folder, "s")
+
+    def test_cua_screenshot_is_saved_as_private_real_pixel_evidence(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp)
+            png = sample_png() + b"\0" * 1024
+            def fake_call(tool, arguments, timeout=60):
+                Path(arguments["screenshot_out_file"]).write_bytes(png)
+                return {"screenshot_file_path": arguments["screenshot_out_file"]}
+            with patch.object(capture, "cua_call", side_effect=fake_call) as call_driver, \
+                 patch.object(capture, "png_nonbackground_share", return_value=0.25):
+                result = capture.cua_screenshot(42, 123, folder, "window-cua.png", "s")
+            tool, arguments = call_driver.call_args.args
+            self.assertEqual(tool, "get_window_state")
+            self.assertEqual(arguments["pid"], 42)
+            self.assertEqual(arguments["window_id"], 123)
+            self.assertIs(arguments["include_accessibility_tree"], False)
+            self.assertEqual(arguments["screenshot_out_file"], str(folder / "window-cua.png"))
+            self.assertEqual(stat.S_IMODE((folder / "window-cua.png").stat().st_mode), 0o600)
+            self.assertEqual(result["status"], "PARTIAL")
+            self.assertEqual(result["path"], "window-cua.png")
+            with self.assertRaisesRegex(capture.CaptureError, "already exists"):
+                capture.cua_screenshot(42, 123, folder, "window-cua.png", "s")
+
+    def test_cua_missing_or_tiny_screenshot_is_an_error(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp)
+            with patch.object(capture, "cua_call", return_value={}), \
+                 self.assertRaisesRegex(capture.CaptureError, "wrote no screenshot"):
+                capture.cua_screenshot(42, 123, folder, "window-cua.png", "s")
+            def tiny(tool, arguments, timeout=60):
+                Path(arguments["screenshot_out_file"]).write_bytes(b"\x89PNG")
+            with patch.object(capture, "cua_call", side_effect=tiny), \
+                 self.assertRaisesRegex(capture.CaptureError, "too small"):
+                capture.cua_screenshot(42, 123, folder, "sheet-cua.png", "s")
+
+    def test_cua_capture_verifies_the_pid_and_reports_an_unlisted_sheet_open(self):
+        with patch.object(capture, "verify_target_process") as verify, \
+             patch.object(capture, "cua_window_targets", return_value={"window": 123, "sheet": None}), \
+             patch.object(capture, "cua_screenshot", return_value={"kind": "window", "status": "PARTIAL"}) as shot:
+            results = capture.cua_capture_windows(42, Path("/example/Igloo.app"), Path("/tmp/s"), "window", "s")
+        verify.assert_called_once_with(42, Path("/example/Igloo.app"))
+        shot.assert_called_once_with(42, 123, Path("/tmp/s"), "window-cua.png", "s")
+        self.assertEqual(results[1]["status"], "OPEN")
+        with patch.object(capture, "verify_target_process"), \
+             patch.object(capture, "cua_window_targets", return_value={"window": 123, "sheet": 124}), \
+             patch.object(capture, "cua_screenshot", return_value={"status": "PARTIAL"}) as shot:
+            capture.cua_capture_windows(42, Path("/example/Igloo.app"), Path("/tmp/s"), "03-plan", "s")
+        self.assertEqual(shot.call_args_list[1], call(42, 124, Path("/tmp/s"), "03-plan-sheet-cua.png", "s",
+                                                      kind="sheet"))
+
+    def test_capture_cua_states_runs_every_interactive_step_and_captures_after_each(self):
+        app, folder = Path("/example/Igloo.app"), Path("/tmp/scenario")
+        with patch.object(capture, "verify_target_process"), \
+             patch.object(capture, "cua_window_targets", return_value={"window": 123, "sheet": 124}), \
+             patch.object(capture, "cua_capture_windows", return_value=[{"status": "PARTIAL"}]) as shots, \
+             patch.object(capture, "cua_run_step") as run_step:
+            results = capture._capture_cua_states(42, app, folder, {"flow": "wizard-thaw"}, "s")
+        self.assertEqual(len(results), 6)
+        self.assertEqual([item.args[3] for item in shots.call_args_list],
+                         ["00-start", "01-selection", "02-selected", "03-plan", "05-confirmed", "06-result"])
+        self.assertEqual(run_step.call_count, 5)
+        self.assertTrue(all(item.args[:3] == (42, app, 123) for item in run_step.call_args_list))
+        with patch.object(capture, "verify_target_process"), \
+             patch.object(capture, "cua_capture_windows", return_value=[{"status": "PARTIAL"}]) as shots, \
+             patch.object(capture, "cua_run_step") as run_step:
+            capture._capture_cua_states(42, app, folder, {"view": "overview"}, "s")
+        shots.assert_called_once_with(42, app, folder, "window", "s")
+        run_step.assert_not_called()
+
+    def test_failed_cua_step_names_the_step(self):
+        with patch.object(capture, "verify_target_process"), \
+             patch.object(capture, "cua_window_targets", return_value={"window": 123}), \
+             patch.object(capture, "cua_capture_windows", return_value=[]), \
+             patch.object(capture, "cua_run_step", side_effect=capture.CaptureError("no enabled button")):
+            with self.assertRaisesRegex(capture.CaptureError, "step 01-selection: no enabled button"):
+                capture._capture_cua_states(42, Path("/example/Igloo.app"), Path("/tmp/s"),
+                                            {"flow": "wizard-thaw"}, "s")
+
+    def test_cua_step_verifies_the_pid_before_any_input(self):
+        step = capture.parse_interactive_steps(capture.INTERACTIVE_FLOWS["wizard-thaw"])[0]
+        with patch.object(capture, "verify_target_process", side_effect=ValueError("path mismatch")), \
+             patch.object(capture, "cua_call") as call_driver:
+            with self.assertRaisesRegex(ValueError, "path mismatch"):
+                capture.cua_run_step(42, Path("/example/Igloo.app"), 123, step, "s")
+        call_driver.assert_not_called()
+        with patch.object(capture, "verify_target_process"), \
+             patch.object(capture, "cua_call", return_value={"ok": True, "value": {"role": "AXButton"}}) as call_driver:
+            self.assertEqual(capture.cua_run_step(42, Path("/example/Igloo.app"), 123, step, "s"),
+                             {"role": "AXButton"})
+        tool, arguments = call_driver.call_args.args
+        self.assertEqual(tool, "run_script")
+        self.assertEqual(arguments["session"], "s")
+        self.assertIn('"windowId": 123', arguments["script"])
+
+    def test_cua_step_script_maps_locators_to_pid_scoped_targets(self):
+        steps = capture.parse_interactive_steps(capture.INTERACTIVE_FLOWS["wizard-thaw"])
+        script = capture.cua_step_script(42, 123, steps[3])
+        params = json.loads(script.split("const p = ", 1)[1].split(";\n", 1)[0])
+        self.assertEqual(params["pid"], 42)
+        self.assertEqual(params["windowId"], 123)
+        self.assertEqual(params["anchor"], "Thaw plan")
+        self.assertEqual(params["click"], {"roles": ["checkbox"], "name": "I reviewed the remote refs", "nth": 0})
+        self.assertIs(params["expectValue"], True)
+        self.assertEqual(params["control"], {"roles": ["button"], "name": "Thaw 1 ready project", "nth": 0,
+                                             "enabled": True})
+        self.assertIn("cua.getApp({pid: p.pid, windowId: p.windowId})", script)
+        self.assertNotIn("local.igloo", script)
+        key_step = {"key": "Down", "capture": "04-row",
+                    "wait_for_selection": {"role": "outline row", "ordinal": 1, "anchor": "Thaw plan",
+                                           "label": "Signal Lab"}}
+        params = json.loads(capture.cua_step_script(42, 123, capture.parse_interactive_steps([key_step])[0])
+                            .split("const p = ", 1)[1].split(";\n", 1)[0])
+        self.assertEqual(params["key"], "down")
+        self.assertIsNone(params["click"])
+        self.assertEqual(params["selection"], {"roles": ["row", "outlinerow"], "name": "Signal Lab", "nth": 0})
+
+    def _fake_app(self, temp):
+        app = Path(temp) / "Igloo.app"
+        executable = app / "Contents/MacOS/Igloo"
+        executable.parent.mkdir(parents=True)
+        executable.touch()
+        return app, executable
+
+    def test_launch_cua_stops_the_verified_pid_after_success_and_failure(self):
+        for failure in (None, capture.CaptureError("capture failed")):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temp:
+                app, executable = self._fake_app(temp)
+                process = Mock()
+                results = [{"kind": "window", "status": "PARTIAL"}]
+                with patch.object(capture.subprocess, "Popen", return_value=process) as popen, \
+                     patch.object(capture, "_wait_for_launched_capture", return_value=123), \
+                     patch.object(capture, "process_executable_path", return_value=executable), \
+                     patch.object(capture, "cua_call") as call_driver, \
+                     patch.object(capture.os, "kill") as kill, \
+                     patch.object(capture, "_capture_cua_states", side_effect=failure, return_value=results):
+                    if failure is None:
+                        self.assertIs(capture.launch_cua(app, Path(temp) / "scenario", capture.scenarios()[0]),
+                                      results)
+                    else:
+                        with self.assertRaisesRegex(capture.CaptureError, "capture failed"):
+                            capture.launch_cua(app, Path(temp) / "scenario", capture.scenarios()[0])
+                self.assertIn("--demo-driver", popen.call_args.args[0])
+                call_driver.assert_called_once_with("end_session", {"session": "igloo-capture-123"}, timeout=20)
+                self.assertEqual(kill.call_args_list, [call(123, 0), call(123, signal.SIGTERM)])
+                process.wait.assert_called_once_with(timeout=20)
+
+    def test_launch_cua_stops_the_started_pid_after_metadata_timeout(self):
+        with tempfile.TemporaryDirectory() as temp:
+            app, executable = self._fake_app(temp)
+            folder = Path(temp) / "scenario"
+            folder.mkdir()
+            (folder / "started.json").write_text(json.dumps({"pid": 123}))
+            process = Mock()
+            with patch.object(capture.subprocess, "Popen", return_value=process), \
+                 patch.object(capture, "_wait_for_launched_capture",
+                              side_effect=capture.CaptureError("Timed out waiting for capture metadata")), \
+                 patch.object(capture, "process_executable_path", return_value=executable), \
+                 patch.object(capture, "cua_call"), \
+                 patch.object(capture.os, "kill") as kill:
+                with self.assertRaisesRegex(capture.CaptureError, "Timed out"):
+                    capture.launch_cua(app, folder, capture.scenarios()[0])
+            self.assertEqual(kill.call_args_list, [call(123, 0), call(123, signal.SIGTERM)])
+
+    def test_launch_cua_does_not_signal_a_pid_outside_the_app(self):
+        with tempfile.TemporaryDirectory() as temp:
+            app, _ = self._fake_app(temp)
+            other = Path(temp) / "Other.app/Contents/MacOS/Igloo"
+            other.parent.mkdir(parents=True)
+            other.touch()
+            with patch.object(capture.subprocess, "Popen", return_value=Mock()), \
+                 patch.object(capture, "_wait_for_launched_capture", return_value=123), \
+                 patch.object(capture, "process_executable_path", return_value=other), \
+                 patch.object(capture, "cua_call"), \
+                 patch.object(capture.os, "kill") as kill, \
+                 patch.object(capture, "_capture_cua_states") as states:
+                with self.assertRaisesRegex(capture.CaptureError, "PID 123 may still be running"):
+                    capture.launch_cua(app, Path(temp) / "scenario", capture.scenarios()[0])
+            states.assert_not_called()
+            self.assertEqual(kill.call_args_list, [call(123, 0)])
+
+    def test_cua_probe_prints_a_capped_tree_without_screenshots(self):
+        with patch.object(capture, "verify_target_process"), \
+             patch.object(capture, "cua_window_targets", return_value={"window": 123, "sheet": 124}), \
+             patch.object(capture, "cua_call", return_value={"tree_markdown": "x" * 50000}) as call_driver:
+            tree = capture.cua_probe_tree(42, Path("/example/Igloo.app"), Path("/tmp/s"), "s")
+        tool, arguments = call_driver.call_args.args
+        self.assertEqual((tool, arguments["window_id"], arguments["include_screenshot"]),
+                         ("get_window_state", 124, False))
+        self.assertTrue(tree.endswith("[tree output capped]"))
+        self.assertLess(len(tree), capture.CUA_PROBE_LIMIT + 100)
+
+    def test_cua_failure_is_reported_open(self):
+        with tempfile.TemporaryDirectory() as temp:
+            app, _ = self._fake_app(temp)
+            scenario = capture.scenarios()[0]
+            args = ["capture_states", "--app", str(app), "--output", str(Path(temp) / "output"),
+                    "--scenario", scenario["name"]]
+            text = io.StringIO()
+            with patch.object(sys, "argv", args), patch.object(capture.sys, "platform", "darwin"), \
+                 patch.object(capture, "launch_cua", side_effect=capture.CaptureError("window unavailable")), \
+                 contextlib.redirect_stdout(text):
+                self.assertEqual(capture.main(), 1)
+            self.assertIn("OPEN " + scenario["name"] + ": window unavailable", text.getvalue())
+            self.assertNotIn("may still be running", text.getvalue())
+
+    def test_every_app_view_has_a_capture_inventory_entry(self):
+        declaration = re.compile(r"^\s*(?:(?:private|fileprivate|internal|public)\s+)?struct\s+(\w+)\s*(?:<[^>{]*>)?"
+                                 r"\s*:\s*([^{]*)\{", re.MULTILINE)
+        views = set()
+        for source in sorted((ROOT / "app").glob("*.swift")):
+            for name, conformances in declaration.findall(source.read_text()):
+                if "View" in re.findall(r"\w+", conformances):
+                    views.add(name)
+        self.assertIn("OrganizerView", views)
+        rows = {}
+        for line in (ROOT / "docs/capture-inventory.md").read_text().splitlines():
+            if line.startswith("| `"):
+                cells = [cell.strip() for cell in line.strip("|").split("|")]
+                rows[cells[0].strip("`")] = cells
+        missing = sorted(views - set(rows))
+        self.assertEqual(missing, [], "add each view to docs/capture-inventory.md")
+        matrix_views = {row["view"] for row in capture.scenarios()}
+        for name, cells in rows.items():
+            with self.subTest(view=name):
+                self.assertEqual(len(cells), 4)
+                scenario_cell = cells[3]
+                if scenario_cell.startswith("None:"):
+                    continue
+                patterns = re.findall(r"`([^`]+)`", scenario_cell)
+                self.assertTrue(patterns, "name a scenario view or state the reason after None:")
+                for pattern in patterns:
+                    self.assertTrue(any(fnmatch.fnmatchcase(view, pattern) for view in matrix_views), pattern)
+
+    def test_new_inventory_scenarios_run_at_minimum_and_default_sizes_in_both_appearances(self):
+        new_views = {"help-getting-started", "help-freeze-thaw", "help-safety-storage", "tasks-rules", "tasks-schedule",
+                     "space-sunburst", "space-icicle", "space-marimekko", "space-drilldown", "repositories",
+                     "remote-setup", "commit-setup", "wizard-rules", "git-branches", "git-saved-history",
+                     "git-remotes", "scope-selected", "push-review", "wizard-actions"}
+        matrix = capture.scenarios()
+        for view in new_views:
+            minimum = "1300x700" if view == "scope-selected" else "850x700"
+            for appearance in ("light", "dark"):
+                for size in (minimum, "1440x900"):
+                    with self.subTest(view=view, appearance=appearance, size=size):
+                        self.assertTrue(any(row["view"] == view and row["appearance"] == appearance and
+                                            row["size"] == size for row in matrix))
+        source = (ROOT / "app/DemoCatalog.swift").read_text()
+        swift_sheets = source.split("static let extraSheetViews: Set<String> = [", 1)[1].split("]", 1)[0]
+        swift_details = source.split("static let detailViews = [", 1)[1].split("]", 1)[0]
+        for view in new_views:
+            with self.subTest(view=view):
+                if view in capture.SHEET_VIEWS:
+                    self.assertIn(f'"{view}"', swift_sheets)
+                else:
+                    self.assertIn(view, capture.DETAIL_VIEWS)
+                    self.assertIn(f'"{view}"', swift_details)
+
+    def test_demo_initial_states_name_existing_view_choices(self):
+        catalog = (ROOT / "app/DemoCatalog.swift").read_text()
+        self.assertIn('"Saved history"', (ROOT / "app/DetailViews.swift").read_text())
+        self.assertIn('ForEach(["Sunburst", "Icicle", "Marimekko"]', (ROOT / "app/SpaceViews.swift").read_text())
+        self.assertIn('ForEach(["Rules", "Schedule", "History"]', (ROOT / "app/TasksView.swift").read_text())
+        help_view = (ROOT / "app/Igloo.swift").read_text().split("struct AppHelpView: View {", 1)[1]
+        for topic in ("Getting started", "Freeze & thaw", "Safety & storage"):
+            self.assertIn(f'.tag("{topic}")', help_view)
+            self.assertIn(f'"{topic}"', catalog)
+        self.assertIn('basis == "Selected project"', (ROOT / "app/ScopeInspector.swift").read_text())
+        self.assertIn('"remote-setup": "no-remote", "commit-setup": "no-commit"', catalog)
+
+    def test_demo_capture_reads_native_accessibility_identifiers(self):
+        source = (ROOT / "app/DemoCatalog.swift").read_text()
+        self.assertIn('[(attribute("AXIdentifier") as? String), (object as? NSView)?.identifier?.rawValue]', source)
+        self.assertIn('.compactMap { $0 }.first { !$0.isEmpty }', source)
+
+    def test_settings_explains_the_freeze_threshold_used_by_reminders(self):
+        settings = (ROOT / "app/PreferencesViews.swift").read_text()
+        guide = (ROOT / "docs/guide.md").read_text()
+        catalog = (ROOT / "app/DemoCatalog.swift").read_text()
+        self.assertIn("Reminder threshold: more than \\(reminderFreezeDays) days", settings)
+        self.assertIn("saved Freeze threshold in Project wizard", guide)
+        self.assertIn('case "settings": expectedLabels = ["Igloo Settings", "Freezer backup folder", "Reminder threshold"]', catalog)
+
+    def test_issue56_view_copy_matches_help_docs_and_demo_expectations(self):
+        lifecycle = (ROOT / "app/LifecycleViews.swift").read_text()
+        wizard = (ROOT / "app/WizardViews.swift").read_text()
+        catalog = (ROOT / "app/DemoCatalog.swift").read_text()
+        navigation = (ROOT / "app/NavigationViews.swift").read_text()
+        docs = (ROOT / "docs/guide.md").read_text() + (ROOT / "docs/tasks.md").read_text()
+        self.assertIn('Button("Show Freezer copy")', lifecycle)
+        self.assertIn('"Show Freezer copy", "Freezer backup verified"', catalog)
+        self.assertIn('return "Freezer backup verified "', lifecycle)
+        self.assertIn('return "No verified Freezer backup copy: "', lifecycle)
+        self.assertIn('Choose **Show Freezer copy**', docs)
+        self.assertIn("Each Freezer row names the verified backup copy", docs)
+        self.assertIn('Button("Open Terminal") { store.terminal(checkout) }\n                        .disabled(store.isDemo)', lifecycle)
+        self.assertIn('Text("Project wizard")', wizard)
+        self.assertIn('**Project wizard**', docs)
+        self.assertIn('"Make space", "Thaw projects"', catalog)
+        self.assertIn('"Cleanup candidates"', navigation)
+        self.assertIn('"Cleanup candidates"]', catalog)
+        self.assertIn("cleanup candidates", docs)
+        self.assertIn('remote = "archive"', lifecycle)
+        self.assertIn('.onChange(of: mode) { accepted = false }', lifecycle)
+        self.assertIn('Resolve all \\(count) open', lifecycle)
+        self.assertIn('Text("in \\(grouped.count) of \\(projects.count) projects")', (ROOT / "app/SpaceViews.swift").read_text())
+
+    def test_hold_save_state_waits_for_hold_and_note_saves(self):
+        lifecycle = (ROOT / "app/LifecycleViews.swift").read_text().split("struct PlanView", 1)[1].split("struct LifecycleControls", 1)[0]
+        self.assertIn('store.invoke(["hold", project.id, hold ? "true" : "false"]', lifecycle)
+        self.assertIn('store.invoke(["note", project.id, note]', lifecycle)
+        self.assertLess(lifecycle.index('store.invoke(["note", project.id, note]'), lifecycle.index("saved = true"))

@@ -119,6 +119,209 @@ struct OutcomeSummaryRow: View {
     }
 }
 
+enum IglooIllustrationKind: String {
+    case freezeResult = "freeze-result"
+    case thawResult = "thaw-result"
+    case freezerEmpty = "freezer-empty"
+}
+
+enum IglooIllustrationMotion: Equatable {
+    case none
+    case frostIn
+    case warmUp
+
+    var duration: Double {
+        switch self {
+        case .none: return 0
+        case .frostIn: return 0.32
+        case .warmUp: return 0.36
+        }
+    }
+}
+
+struct IglooDomeMask: Shape {
+    func path(in rect: CGRect) -> Path {
+        func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+            CGPoint(x: rect.minX + rect.width * x / 160,
+                    y: rect.minY + rect.height * y / 120)
+        }
+        var path = Path()
+        path.move(to: point(17, 96))
+        path.addCurve(to: point(79, 18), control1: point(17, 47), control2: point(43, 19))
+        path.addCurve(to: point(142, 96), control1: point(117, 18), control2: point(140, 52))
+        path.addQuadCurve(to: point(17, 96), control: point(85, 114))
+        path.closeSubpath()
+        return path
+    }
+}
+
+struct IglooDoorGlowMask: Shape {
+    func path(in rect: CGRect) -> Path {
+        func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+            CGPoint(x: rect.minX + rect.width * x / 160,
+                    y: rect.minY + rect.height * y / 120)
+        }
+        var path = Path()
+        path.move(to: point(91, 103))
+        path.addLine(to: point(91, 84))
+        path.addQuadCurve(to: point(98, 74), control: point(91, 75))
+        path.addLine(to: point(103, 74))
+        path.addLine(to: point(107, 78))
+        path.addLine(to: point(115, 78))
+        path.addQuadCurve(to: point(120, 86), control: point(120, 78))
+        path.addLine(to: point(120, 103))
+        path.closeSubpath()
+        return path
+    }
+}
+
+struct IglooIllustration: View {
+    let kind: IglooIllustrationKind
+    let size: CGSize
+    var motion: IglooIllustrationMotion = .none
+    var operationID = "static"
+    var shouldAnimate = false
+    var showFinalEffect = false
+
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.displayScale) private var displayScale
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @StateObject private var animation = IllustrationAnimationState()
+    private var playedOperationID: String? {
+        get { animation.playedOperationID }
+        nonmutating set { animation.playedOperationID = newValue }
+    }
+    private var effectProgress: Double {
+        get { animation.effectProgress }
+        nonmutating set { animation.effectProgress = newValue }
+    }
+
+    private var resourceName: String {
+        kind.rawValue + (colorScheme == .dark ? "-night" : "") + (displayScale >= 1.5 ? "-2x" : "")
+    }
+
+    private var illustration: NSImage? {
+        guard let url = Bundle.main.url(forResource: resourceName, withExtension: "png", subdirectory: "brand"),
+              let image = NSImage(contentsOf: url) else { return nil }
+        image.size = NSSize(width: size.width, height: size.height)
+        return image
+    }
+
+    var body: some View {
+        ZStack {
+            if let illustration {
+                Image(nsImage: illustration)
+                    .resizable()
+                    .interpolation(.high)
+                    .frame(width: size.width, height: size.height)
+            }
+            if showFinalEffect && motion == .frostIn {
+                LinearGradient(colors: [.white.opacity(0.22), TemperatureAccent.cold.foreground(for: colorScheme).opacity(0.30),
+                                        TemperatureAccent.cold.foreground(for: colorScheme).opacity(0.18)],
+                               startPoint: .topLeading, endPoint: .bottomTrailing)
+                    .opacity(effectProgress)
+                    .mask(IglooDomeMask())
+                    .blendMode(.softLight)
+            } else if showFinalEffect && motion == .warmUp {
+                RadialGradient(colors: [TemperatureAccent.warm.foreground(for: colorScheme).opacity(0.5),
+                                        TemperatureAccent.warm.foreground(for: colorScheme).opacity(0.18), .clear],
+                               center: UnitPoint(x: 105.0 / 160.0, y: 88.0 / 120.0), startRadius: 1,
+                               endRadius: size.width * 0.18)
+                    .opacity(effectProgress)
+                    .mask(IglooDoorGlowMask())
+                    .blendMode(.screen)
+            }
+        }
+        .frame(width: size.width, height: size.height)
+        .accessibilityHidden(true)
+        .onAppear(perform: startEffect)
+        .onChange(of: operationID) { startEffect() }
+        .onChange(of: shouldAnimate) { if shouldAnimate { startEffect() } else if showFinalEffect { showFinalFrame() } }
+        .onChange(of: reduceMotion) { if reduceMotion { showFinalFrame() } }
+    }
+
+    private func startEffect() {
+        guard showFinalEffect, motion != .none else { return }
+        guard shouldAnimate else { showFinalFrame(); return }
+        guard playedOperationID != operationID else { return }
+        playedOperationID = operationID
+        guard !reduceMotion else { showFinalFrame(); return }
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { effectProgress = 0 }
+        DispatchQueue.main.async {
+            withAnimation(.easeOut(duration: motion.duration)) { effectProgress = 1 }
+        }
+    }
+
+    private func showFinalFrame() {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { effectProgress = 1 }
+    }
+}
+
+struct LifecycleResultHeader: View {
+    let title: String?
+    let message: String?
+    let accent: TemperatureAccent
+    let kind: IglooIllustrationKind
+    let imageSize: CGSize
+    let motion: IglooIllustrationMotion
+    let operationID: String
+    let success: Bool
+    var animateSuccess = true
+
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @StateObject private var animation = ResultSymbolAnimationState()
+    private var playedOperationID: String? {
+        get { animation.playedOperationID }
+        nonmutating set { animation.playedOperationID = newValue }
+    }
+    private var successTrigger: Int {
+        get { animation.successTrigger }
+        nonmutating set { animation.successTrigger = newValue }
+    }
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 10) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    if success {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 16))
+                            .frame(width: 16, height: 16)
+                            .foregroundStyle(accent.foreground(for: colorScheme))
+                            .symbolEffect(.bounce, options: .nonRepeating, value: successTrigger)
+                            .symbolEffectsRemoved(reduceMotion || !animateSuccess)
+                            .accessibilityHidden(true)
+                    }
+                    if let title {
+                        Text(title).font(.headline).foregroundStyle(accent.foreground(for: colorScheme))
+                    }
+                }
+                if let message { Text(message).font(.callout) }
+            }
+            Spacer(minLength: 4)
+            IglooIllustration(kind: kind, size: imageSize, motion: motion,
+                              operationID: operationID, shouldAnimate: animateSuccess,
+                              showFinalEffect: success)
+        }
+        .frame(maxWidth: .infinity, minHeight: imageSize.height, alignment: .leading)
+        .onAppear(perform: startSuccessEffect)
+        .onChange(of: operationID) { startSuccessEffect() }
+        .onChange(of: success) { if $0 { startSuccessEffect() } }
+    }
+
+    private func startSuccessEffect() {
+        guard success, playedOperationID != operationID else { return }
+        playedOperationID = operationID
+        guard animateSuccess, !reduceMotion else { return }
+        DispatchQueue.main.async { successTrigger += 1 }
+    }
+}
+
 struct OutcomeSummaryView: View {
     let outcome: ReviewOutcome
     let includeThaw: Bool
@@ -320,7 +523,7 @@ struct CleanupReview: View {
                 ScrollView {
                     OutcomeSummaryView(outcome: outcome,
                                        estimateLabel: "Estimate: about \(bytes(plan.totalSize)) to move to Trash")
-                }.frame(maxHeight: 120)
+                }.frame(maxHeight: 96)
             }
             Text(noun(plan.items.count, "directory", "directories") + " · \(bytes(plan.totalSize)) to move to Trash")
             ScrollView {
@@ -342,7 +545,7 @@ struct CleanupReview: View {
                         }
                     }
                 }.frame(maxWidth: .infinity, alignment: .leading)
-            }
+            }.frame(minHeight: 110, maxHeight: 300)
             Text("Files remain in Trash until you empty it. Restore through History. Dependencies may contain custom edits; only continue after reviewing the listed folders. This preview expires after ten minutes.")
                 .font(.callout).foregroundStyle(.secondary)
             Toggle("I have reviewed these folders for local edits.", isOn: $reviewed)
@@ -354,8 +557,9 @@ struct CleanupReview: View {
                     store.plan = nil
                     store.action(["trash", id])
                 }.buttonStyle(WizardPrimaryButtonStyle()).disabled(plan.items.isEmpty || !reviewed || store.busy || store.isDemo)
+                    .help(store.isDemo ? "Cleanup is unavailable in demo mode." : store.busy ? "Wait for the current operation to finish." : plan.items.isEmpty ? "There are no eligible folders in this review." : !reviewed ? "Review and confirm the listed folders first." : "Move the reviewed folders to Trash.")
             }
-        }.padding(24).frame(width: 700, height: 550)
+        }.padding(24).frame(width: 700)
     }
 }
 
@@ -386,6 +590,7 @@ struct PushReview: View {
                     store.pushRequest = nil
                     store.action(["push", r.project.path, r.branch.name, r.branch.sha, r.remote.name, r.remote.pushURL])
                 }.buttonStyle(WizardPrimaryButtonStyle()).disabled(!reviewed || store.busy || commit.isEmpty)
+                    .help(store.busy ? "Wait for the current operation to finish." : commit.isEmpty ? "Analyze Projects again to verify this branch commit." : !reviewed ? "Review and confirm the branch and destination first." : "Push this reviewed branch.")
             }
         }.padding(24).frame(width: 660)
     }
@@ -400,12 +605,18 @@ struct HistoryView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Trash & restore history").font(.title2).fontWeight(.semibold)
-            Table(store.snapshot?.history.reversed().map { $0 } ?? [], selection: $selected) {
-                TableColumn("Original directory") { Text($0.original).lineLimit(1).truncationMode(.middle).help($0.original) }.width(min: 320)
-                TableColumn("Size") { Text(bytes($0.size)) }.width(90)
-                TableColumn("State", value: \.status).width(85)
-                TableColumn("Date") { Text(shortDate($0.at)) }.width(90)
-            }.frame(minHeight: 100, idealHeight: 140, maxHeight: 160)
+            if let history = store.snapshot?.history, !history.isEmpty {
+                Table(history.reversed().map { $0 }, selection: $selected) {
+                    TableColumn("Original directory") { Text($0.original).lineLimit(1).truncationMode(.middle).help($0.original) }.width(min: 320)
+                    TableColumn("Size") { Text(bytes($0.size)) }.width(90)
+                    TableColumn("State", value: \.status).width(85)
+                    TableColumn("Date") { Text(shortDate($0.at)) }.width(90)
+                }.alternatingRowBackgrounds(.disabled)
+                    .frame(height: compactTableHeight(history.count, rowHeight: 32, maxRows: 4, maxHeight: 170))
+            } else {
+                ContentUnavailableView("No Trash history", systemImage: "trash", description: Text("Moved folders appear here until they are restored."))
+                    .frame(height: 58)
+            }
             Text("Restore requires the original path to be empty and the Trash item to remain available. The app never overwrites a replacement directory or permanently empties Trash.")
                 .font(.caption).foregroundStyle(.secondary)
             Divider()
@@ -413,6 +624,7 @@ struct HistoryView: View {
                 Text("Space report").font(.headline).accessibilityAddTraits(.isHeader)
                 Spacer()
                 Button("Refresh report") { loadSpaceReport() }.disabled(store.busy)
+                    .help(store.busy ? "Wait for the current operation to finish." : "Refresh the space report.")
             }
             if let report {
                 HStack(alignment: .top, spacing: 18) {
@@ -420,13 +632,14 @@ struct HistoryView: View {
                     totals("All time", report.totals.allTime)
                 }
                 Table(report.runs) {
-                    TableColumn("Run") { Text($0.label).help($0.kind + " · " + $0.status) }.width(min: 130)
-                    TableColumn("Date") { Text(String($0.started.prefix(10))) }.width(95)
-                    TableColumn("Estimate") { Text(bytes($0.estimateBytes)) }.width(100)
-                    TableColumn("Freed from disk") { Text(measuredSpace($0.observed?.freedBytes)) }.width(130)
-                    TableColumn("In Trash") { Text(measuredSpace($0.observed?.inTrashBytes)) }.width(100)
-                    TableColumn("Restored from Trash") { Text(measuredSpace($0.observed?.restoredBytes)) }.width(150)
-                }.frame(minHeight: 100, idealHeight: 150, maxHeight: 180)
+                    TableColumn("Run") { Text($0.label).help($0.kind + " · " + $0.status) }.width(min: 110)
+                    TableColumn("Date") { Text(String($0.started.prefix(10))) }.width(90)
+                    TableColumn("Estimate") { Text(bytes($0.estimateBytes)) }.width(90)
+                    TableColumn("Freed from disk") { Text(measuredSpace($0.observed?.freedBytes)) }.width(120)
+                    TableColumn("In Trash") { Text(measuredSpace($0.observed?.inTrashBytes)) }.width(90)
+                    TableColumn("Restored from Trash") { Text(measuredSpace($0.observed?.restoredBytes)) }.width(140)
+                }.alternatingRowBackgrounds(.disabled)
+                    .frame(minHeight: 100, idealHeight: 150, maxHeight: 180)
             } else {
                 Text(store.busy ? "Loading space report…" : "Space report is unavailable.")
                     .font(.caption).foregroundStyle(.secondary)
@@ -435,8 +648,10 @@ struct HistoryView: View {
                 Button("Done") { store.historyShown = false }.keyboardShortcut(.cancelAction)
                 Spacer()
                 Button("Show in Trash") { if let i = item { store.reveal(i.destination) } }.disabled(item == nil || store.isDemo)
+                    .help(store.isDemo ? "Finder is unavailable in demo mode." : item == nil ? "Select a Trash item first." : "Show the selected Trash item in Finder.")
                 Button("Restore selected…") { restoreConfirm = true }
                     .disabled(store.busy || store.isDemo || item == nil || item?.status == "restored")
+                    .help(store.isDemo ? "Restore is unavailable in demo mode." : store.busy ? "Wait for the current operation to finish." : item == nil ? "Select a Trash item first." : item?.status == "restored" ? "This item has already been restored." : "Restore the selected directory.")
             }
         }.padding(24).frame(width: sheetWidth(980), height: 650)
         .onAppear { loadSpaceReport() }
@@ -464,3 +679,15 @@ struct HistoryView: View {
     }
 }
 
+
+// The Command Line Tools toolchain has no SwiftUIMacros plugin, so `@State` does not compile. These boxes hold the
+// animation state with `@StateObject`, as the rest of the app does.
+final class IllustrationAnimationState: ObservableObject {
+    @Published var playedOperationID: String?
+    @Published var effectProgress = 0.0
+}
+
+final class ResultSymbolAnimationState: ObservableObject {
+    @Published var playedOperationID: String?
+    @Published var successTrigger = 0
+}

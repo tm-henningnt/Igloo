@@ -19,6 +19,37 @@ enum DemoCatalog {
         switch args.first {
         case "snapshot": data = resource("demo-catalog")
         case "task-list": data = resource("demo-tasks")
+        case "wizard-scan":
+            let remote: [String: Any] = ["name": "origin",
+                                         "url": "https://github.com/example/harbor-cli.git",
+                                         "pushURL": "https://github.com/example/harbor-cli.git"]
+            data = try! JSONSerialization.data(withJSONObject: [
+                "rules": ["cacheDays": 30, "freezeDays": 180, "ignoreActive": true, "ageBasis": "git",
+                          "cacheKinds": ["node_modules", ".venv", "venv", ".turbo"]],
+                "generated": "2026-10-01T10:00:00+00:00",
+                "rows": [
+                    ["id": "/Users/demo/Projects/Harbor CLI", "path": "/Users/demo/Projects/Harbor CLI",
+                     "name": "Harbor CLI", "ageDays": 214, "action": "freeze",
+                     "reason": "Quiet project with a verified remote.", "active": false, "activityKnown": true,
+                     "size": 4_831_838_208, "cacheSize": 1_073_741_824, "cacheCount": 2,
+                     "changedCount": 0, "localCount": 0, "branchCount": 1, "stashCount": 0,
+                     "remotes": [remote], "remote": "origin"],
+                    ["id": "/Users/demo/Projects/Signal Lab", "path": "/Users/demo/Projects/Signal Lab",
+                     "name": "Signal Lab", "ageDays": 96, "action": "cleanup",
+                     "reason": "Eligible cache folders are older than the cleanup threshold.",
+                     "active": false, "activityKnown": true, "size": 2_147_483_648,
+                     "cacheSize": 536_870_912, "cacheCount": 1, "changedCount": 0,
+                     "localCount": 0, "branchCount": 0, "stashCount": 0,
+                     "remotes": [remote], "remote": "origin"],
+                    ["id": "/Users/demo/Projects/Aurora Notes", "path": "/Users/demo/Projects/Aurora Notes",
+                     "name": "Aurora Notes", "ageDays": 14, "action": "keep",
+                     "reason": "Recent activity keeps this project unchanged.", "active": true,
+                     "activityKnown": true, "size": 8_804_682_956, "cacheSize": 0, "cacheCount": 0,
+                     "changedCount": 2, "localCount": 1, "branchCount": 2, "stashCount": 1,
+                     "remotes": [remote], "remote": "origin"]
+                ],
+                "scanIssues": 0
+            ])
         // A read-only check: the Remote sheet and the GitHub browser run it when they open.
         case "github-status":
             data = try! JSONSerialization.data(withJSONObject: ["authenticated": true, "login": "example", "owners": ["example"],
@@ -175,11 +206,16 @@ struct DemoCaptureSheet: Identifiable {
 enum DemoCapture {
     static let extraSheetViews: Set<String> = ["freeze-review", "preserve-review", "freeze-result", "freeze-failure", "freeze-hold",
         "freeze-no-remote", "freeze-no-files", "freeze-no-commit", "freeze-own-source", "freeze-process",
-        "cleanup-review", "cleanup-result", "cleanup-hold", "trash-history", "wizard-review", "wizard-result",
+        "cleanup-review", "cleanup-result", "cleanup-hold", "trash-history", "push-review", "wizard-review", "wizard-result",
         "wizard-start", "wizard-thaw-selection", "wizard-thaw-review", "wizard-thaw-ready", "wizard-thaw-result",
         "wizard-thaw-occupied", "wizard-thaw-remote", "wizard-thaw-corrupt", "wizard-thaw-not-frozen",
-        "wizard-thaw-rehydrating",
-        "task-review", "task-history", "settings", "settings-cloud", "repositories-loading"]
+        "wizard-thaw-rehydrating", "wizard-actions",
+        "task-review", "task-history", "settings", "settings-cloud", "repositories-loading",
+        "help-getting-started", "help-freeze-thaw", "help-safety-storage", "tasks-rules", "tasks-schedule",
+        "space-sunburst", "space-icicle", "space-marimekko", "space-drilldown", "repositories",
+        "remote-setup", "commit-setup", "wizard-rules"]
+    /// Main-window views that open one Git section or the selected-project scope.
+    static let detailViews = ["git-branches", "git-saved-history", "git-remotes", "scope-selected"]
     static let updateViews = AppUpdater.demoFailureNames.map { "update-" + $0 } + ["update-markdown", "update-ready", "update-install-failed"]
     static let sheetViews = extraSheetViews.union(["freeze", "shelf"]).union(updateViews)
     struct Options {
@@ -190,14 +226,14 @@ enum DemoCapture {
         let rail: String
         let data: String
         let windowServer: Bool
-        let orcaCapture: Bool
+        let driverCapture: Bool
     }
 
     static let options: Options? = {
         let args = CommandLine.arguments
         guard args.contains("--demo") else { return nil }
         let flags = ["--demo-capture", "--demo-size", "--demo-view", "--demo-scope", "--demo-rail", "--demo-data",
-                     "--demo-window-server", "--demo-orca"]
+                     "--demo-window-server", "--demo-driver"]
         guard flags.contains(where: args.contains) else { return nil }
         func value(_ flag: String, default fallback: String) -> String {
             guard let i = args.firstIndex(of: flag) else { return fallback }
@@ -216,7 +252,7 @@ enum DemoCapture {
         let scope = value("--demo-scope", default: "shown")
         let rail = value("--demo-rail", default: "full")
         let data = value("--demo-data", default: "normal")
-        guard (Set(["overview", "git", "worktrees", "local-files", "cleanup", "plan", "freeze", "shelf", "hold"] + updateViews).union(extraSheetViews)).contains(view),
+        guard (Set(["overview", "git", "worktrees", "local-files", "cleanup", "plan", "freeze", "shelf", "hold"] + detailViews + updateViews).union(extraSheetViews)).contains(view),
               ["shown", "hidden"].contains(scope), ["compact", "full"].contains(rail),
               ["normal", "long", "empty"].contains(data),
               !(data == "empty" && view == "freeze") else { fail("Invalid demo capture scenario") }
@@ -226,17 +262,40 @@ enum DemoCapture {
         }
         let folder = folderText.isEmpty ? nil : URL(fileURLWithPath: folderText, isDirectory: true)
         let windowServer = args.contains("--demo-window-server")
-        let orcaCapture = args.contains("--demo-orca")
+        let driverCapture = args.contains("--demo-driver")
         if windowServer && folder == nil { fail("--demo-window-server requires --demo-capture") }
-        if orcaCapture && (!windowServer || folder == nil) { fail("--demo-orca requires --demo-window-server and --demo-capture") }
+        if driverCapture && (!windowServer || folder == nil) { fail("--demo-driver requires --demo-window-server and --demo-capture") }
         return Options(folder: folder, size: size, view: view, scope: scope, rail: rail, data: data,
-                       windowServer: windowServer, orcaCapture: orcaCapture)
+                       windowServer: windowServer, driverCapture: driverCapture)
     }()
 
     static var tab: String? {
         guard let options else { return nil }
         return ["overview": "Overview", "git": "Branches", "worktrees": "Worktrees", "local-files": "Local files",
-                "cleanup": "Cleanup", "plan": "Review plan", "hold": "Review plan", "freeze": "Review plan", "shelf": "Overview"][options.view]
+                "cleanup": "Cleanup", "plan": "Review plan", "hold": "Review plan", "freeze": "Review plan", "shelf": "Overview",
+                "git-branches": "Branches", "git-saved-history": "Branches", "git-remotes": "Branches",
+                "scope-selected": "Overview"][options.view]
+    }
+
+    /// The first state of a view that a demo scenario opens on a given section, topic, layout or basis.
+    static func initialState(_ key: String) -> String? {
+        guard let view = options?.view else { return nil }
+        let states: [String: [String: String]] = [
+            "gitSection": ["git-branches": "Branches", "git-saved-history": "Saved history", "git-remotes": "Remotes"],
+            "helpTopic": ["help-getting-started": "Getting started", "help-freeze-thaw": "Freeze & thaw",
+                          "help-safety-storage": "Safety & storage"],
+            "tasksSection": ["tasks-rules": "Rules", "tasks-schedule": "Schedule"],
+            "spaceLayout": ["space-sunburst": "Sunburst", "space-icicle": "Icicle", "space-marimekko": "Marimekko",
+                            "space-drilldown": "Sunburst"],
+            "scopeBasis": ["scope-selected": "Selected project"],
+        ]
+        return states[key]?[view]
+    }
+
+    /// The Space drill-down scenario focuses the largest demo project.
+    static var spaceFocus: String? {
+        guard options?.view == "space-drilldown" else { return nil }
+        return DemoCatalog.snapshot().projects.max { $0.size < $1.size }?.id
     }
 
     @MainActor static func sheetRoot(_ view: String, store: OrganizerStore) -> AnyView {
@@ -258,6 +317,22 @@ enum DemoCapture {
             return AnyView(TaskHistoryCaptureView().environmentObject(store))
         case "repositories-loading":
             return AnyView(RemoteRepositoriesView(captureLoading: true).environmentObject(store))
+        case "repositories":
+            return AnyView(RemoteRepositoriesView().environmentObject(store))
+        case "help-getting-started", "help-freeze-thaw", "help-safety-storage":
+            return AnyView(AppHelpView().environmentObject(store))
+        case "tasks-rules", "tasks-schedule":
+            return AnyView(TasksView().environmentObject(store))
+        case "space-sunburst", "space-icicle", "space-marimekko", "space-drilldown":
+            return AnyView(SpaceView().environmentObject(store))
+        case "remote-setup", "commit-setup":
+            guard let project = store.selected else { return AnyView(Text("No demo project")) }
+            if view == "remote-setup" { return AnyView(RemoteSetupView(project: project).environmentObject(store)) }
+            return AnyView(CommitSetupView(project: project).environmentObject(store))
+        case "wizard-rules":
+            return AnyView(CleanupWizardView(startMakeSpace: true).environmentObject(store))
+        case "wizard-actions":
+            return AnyView(CleanupWizardView(captureView: view).environmentObject(store))
         case "cleanup-result":
             guard let outcome = DemoPreservationCatalog.load()?.demoResults?.cleanup else {
                 return AnyView(Text("Demo cleanup result unavailable"))
@@ -287,6 +362,14 @@ enum DemoCapture {
             guard var plan else { return AnyView(Text("Demo cleanup unavailable")) }
             plan.held = view == "cleanup-hold"
             return AnyView(CleanupReview(plan: plan).environmentObject(store))
+        case "push-review":
+            guard let project = DemoCatalog.snapshot().projects.first(where: { $0.name == "Aurora Notes" }),
+                  let branch = project.branches.first(where: { $0.name == "feature/search" }),
+                  let remote = project.remotes.first(where: { $0.name == "origin" }) else {
+                return AnyView(Text("Demo push review unavailable"))
+            }
+            return AnyView(PushReview(request: PushRequest(project: project, branch: branch, remote: remote))
+                .environmentObject(store))
         case "wizard-review":
             return AnyView(CleanupWizardView(captureReview: true).environmentObject(store))
         case "wizard-start", "wizard-thaw-selection", "wizard-thaw-review", "wizard-thaw-ready", "wizard-thaw-result",
@@ -332,13 +415,14 @@ enum DemoCapture {
         }
         if CommandLine.arguments.contains("--demo-light") { NSApp.appearance = NSAppearance(named: .aqua) }
         if CommandLine.arguments.contains("--demo-dark") { NSApp.appearance = NSAppearance(named: .darkAqua) }
-        let timeout: TimeInterval = options.orcaCapture ? 900 : (options.windowServer ? 60 : 15)
+        let timeout: TimeInterval = options.driverCapture ? 900 : (options.windowServer ? 60 : 15)
         let deadline = Date().addingTimeInterval(timeout)
         if options.folder != nil {
             DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { fail("Capture timed out") }
         }
         var configured = false
         var captureWindowActivated = false
+        var activationStartedAt: Date?
         var accessibilityPostedAt: Date?
         var lastSize = NSSize.zero
         var stable = 0
@@ -357,7 +441,8 @@ enum DemoCapture {
                         $0.git && $0.hold != true && ($0.blockers ?? []).isEmpty && !$0.remotes.isEmpty
                     })?.id
                 } else if let code = ["freeze-no-remote": "no-remote", "freeze-no-files": "no-files", "freeze-no-commit": "no-commit",
-                                      "freeze-own-source": "own-source", "freeze-process": "open-processes"][options.view] {
+                                      "freeze-own-source": "own-source", "freeze-process": "open-processes",
+                                      "remote-setup": "no-remote", "commit-setup": "no-commit"][options.view] {
                     store.selection = store.snapshot?.projects.first(where: { ($0.blockers ?? []).contains(where: { $0.code == code }) })?.id
                 }
                 if options.view == "freeze" { store.freezeSetup = store.selected }
@@ -376,8 +461,12 @@ enum DemoCapture {
                 target.makeKeyAndOrderFront(nil)
                 // The settings-cloud dialog is a sheet on the target and takes the key status.
                 captureWindowActivated = NSApp.isActive && (target.isKeyWindow || window.isKeyWindow || target.attachedSheet?.isKeyWindow == true)
+                activationStartedAt = activationStartedAt ?? Date()
             }
-            guard options.folder == nil || captureWindowActivated else {
+            // macOS can refuse activation while the user works in another app. Capture inactive
+            // after 5 s rather than block this and every later scenario; the metadata says so.
+            let activationExpired = activationStartedAt.map { Date().timeIntervalSince($0) >= 5 } ?? false
+            guard options.folder == nil || captureWindowActivated || activationExpired else {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { poll() }
                 return
             }
@@ -429,14 +518,17 @@ enum DemoCapture {
             let mainRoot = AnyView(OrganizerView().environmentObject(store).environmentObject(AppUpdater()))
             let png = renderOffscreen(mainRoot, size: actualSize, scheme: scheme)
             var sheetPNG: Data?
-            if sheetViews.contains(options.view) {
+            // TasksView reloads in onAppear; tearing that render down trips a SwiftUI assertion.
+            // The real-pixel capture still covers these views.
+            if sheetViews.contains(options.view) && !["tasks-rules", "tasks-schedule"].contains(options.view) {
                 sheetPNG = renderOffscreen(sheetRoot(options.view, store: store), size: view.bounds.size, scheme: scheme)
             }
             let actual = window.contentView?.bounds.size ?? .zero
             var result: [String: Any] = ["pid": ProcessInfo.processInfo.processIdentifier, "view": options.view,
                                          "windowWidth": window.contentLayoutRect.width, "windowHeight": window.contentLayoutRect.height,
                                          "actualWidth": actual.width, "actualHeight": actual.height,
-                                         "backingScale": window.backingScaleFactor, "renderer": "ImageRenderer SwiftUI roots; native window chrome excluded", "tree": tree]
+                                         "backingScale": window.backingScaleFactor, "renderer": "ImageRenderer SwiftUI roots; native window chrome excluded", "tree": tree,
+                                         "activated": captureWindowActivated]
             if let requested = options.size {
                 result["requestedWidth"] = requested.width
                 result["requestedHeight"] = requested.height
@@ -518,7 +610,7 @@ enum DemoCapture {
     private static func hasExpectedControls(_ tree: [String: Any], view: String) -> Bool {
         let expectedLabels: [String]
         switch view {
-        case "plan": expectedLabels = ["Preservation", "Connect remote", "Freeze", "Hold"]
+        case "plan": expectedLabels = ["Preservation", "Connect remote", "Freeze", "Hold", "Cleanup candidates"]
         case "freeze": expectedLabels = ["Requirements", "Cancel", "Build review"]
         case "freeze-no-files": expectedLabels = ["Add files to this project", "Open in Finder", "Open Terminal"]
         case "freeze-hold": expectedLabels = ["This project is on Hold", "Requirements"]
@@ -526,11 +618,13 @@ enum DemoCapture {
         case "freeze-result": expectedLabels = ["Outcome", "Checkout removed", "Net space change after the archive copy", "Done"]
         case "freeze-failure": expectedLabels = ["Outcome", "Done"]
         case "cleanup-review": expectedLabels = ["Review cleanup", "Expected outcome"]
+        case "push-review": expectedLabels = ["Push one branch", "feature/search", "Destination:", "Push this branch"]
         case "cleanup-hold": expectedLabels = ["Review cleanup", "This project is on Hold"]
         case "cleanup-result": expectedLabels = ["Cleanup result", "Freed from disk", "In Trash (can be restored)", "Done"]
-        case "wizard-result": expectedLabels = ["Cleanup wizard", "Results", "Estimate", "Checkout removed", "In Trash (can be restored)"]
+        case "wizard-result": expectedLabels = ["Make space", "Results", "Estimate", "Checkout removed", "In Trash (can be restored)"]
         case "wizard-review": expectedLabels = ["Expected outcome", "Review"]
-        case "wizard-start": expectedLabels = ["Make space", "Thaw projects"]
+        case "wizard-start": expectedLabels = ["Project wizard", "Make space", "Thaw projects"]
+        case "wizard-actions": expectedLabels = ["Make space", "Choose actions", "Harbor CLI", "Signal Lab", "Build review"]
         case "wizard-thaw-selection": expectedLabels = ["Frozen projects", "Create Thaw plan"]
         case "wizard-thaw-review": expectedLabels = ["Thaw plan", "Expected outcome"]
         case "wizard-thaw-ready": expectedLabels = ["Only ready projects will run", "Ice Garden", "I reviewed the remote refs"]
@@ -541,10 +635,14 @@ enum DemoCapture {
         case "wizard-thaw-rehydrating": expectedLabels = ["Thawing Ice Garden"]
         case "wizard-thaw-result": expectedLabels = ["Checkouts restored", "Remote refs restored", "Start a new Thaw plan", "Done"]
         case "task-review": expectedLabels = ["Review task actions", "Expected outcome"]
-        case "settings": expectedLabels = ["Igloo Settings", "Freezer backup folder"]
+        case "settings": expectedLabels = ["Igloo Settings", "Freezer backup folder", "Reminder threshold"]
         case "settings-cloud": expectedLabels = ["Confirm cloud backup"]
         case "repositories-loading": expectedLabels = ["GitHub repositories", "Loading repositories for example"]
-        case "shelf": expectedLabels = ["Done", "Show archive", "Thaw from remote"]
+        case "repositories": expectedLabels = ["GitHub repositories", "orbit-maps"]
+        case "help-getting-started", "help-freeze-thaw", "help-safety-storage": expectedLabels = ["Igloo Help"]
+        case "remote-setup": expectedLabels = ["Connect a remote"]
+        case "commit-setup": expectedLabels = ["Select files to commit"]
+        case "shelf": expectedLabels = ["Done", "Show Freezer copy", "Freezer backup verified", "Thaw from remote"]
         case "update-markdown": expectedLabels = []
         case "update-ready": expectedLabels = ["Install and relaunch"]
         case "update-install-failed": expectedLabels = ["Install and relaunch"]
@@ -644,10 +742,13 @@ enum DemoCapture {
                                      "enabled": enabled() as Any? ?? NSNull(), "frame": frame,
                                      "class": NSStringFromClass(type(of: object))]
         for (key, name) in [("value", "AXValue"), ("help", "AXHelp"),
-                            ("roleDescription", "AXRoleDescription"), ("identifier", "AXIdentifier")] {
+                            ("roleDescription", "AXRoleDescription")] {
             if let value = attribute(name) as? String, !value.isEmpty { result[key] = value }
             else if key == "value", let value = attribute(name) as? NSNumber { result[key] = value }
         }
+        let identifier = [(attribute("AXIdentifier") as? String), (object as? NSView)?.identifier?.rawValue]
+            .compactMap { $0 }.first { !$0.isEmpty }
+        if let identifier, !identifier.isEmpty { result["identifier"] = identifier }
         if !nativeTitle.isEmpty { result["nativeTitle"] = nativeTitle }
         if !attributedTitle.isEmpty { result["attributedTitle"] = attributedTitle }
         if let value = (object as? NSControl)?.stringValue, !value.isEmpty { result["stringValue"] = value }

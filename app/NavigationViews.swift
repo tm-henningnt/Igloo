@@ -5,7 +5,7 @@ struct OrganizerNavigation: View {
     @EnvironmentObject var store: OrganizerStore
     var compact = false
     private let projects = [("All projects", "folder"), ("Quiet projects", "moon"), ("Active sessions", "bolt")]
-    private let reviews = [("Needs preservation", "tray.full"), ("Cleanup opportunities", "externaldrive.badge.minus"),
+    private let reviews = [("Needs preservation", "tray.full"), ("Cleanup candidates", "externaldrive.badge.minus"),
                            ("No remote", "network.slash"), ("No Git metadata", "folder.badge.questionmark"), ("On hold", "archivebox")]
     var body: some View {
         if compact {
@@ -17,7 +17,7 @@ struct OrganizerNavigation: View {
                         railFilters(reviews)
                         Divider().padding(.horizontal, 10)
                         railButton("Tasks", "checklist") { store.tasksShown = true }
-                        railButton("Cleanup wizard", "wand.and.stars") { store.wizardShown = true }
+                        railButton("Project wizard", "wand.and.stars") { store.wizardShown = true }
                         railButton("Space explorer", "chart.pie") { store.explorerProjectIDs = nil; store.spaceShown = true }
                         railButton("GitHub repositories", "network") { store.repositoriesShown = true }
                         Divider().padding(.horizontal, 10)
@@ -28,6 +28,7 @@ struct OrganizerNavigation: View {
                 railButton("How to use", "questionmark.circle") { store.helpShown = true }
                     .padding(.bottom, 10)
             }.frame(width: 48).background(.bar).disabled(store.busy)
+                .help(store.busy ? "Wait for the current operation to finish." : "Choose a project view or action.")
         } else {
             VStack(spacing: 0) {
                 List(selection: $store.filter) {
@@ -35,7 +36,7 @@ struct OrganizerNavigation: View {
                     Section("Needs review") { filterRows(reviews) }
                     Section("Tools") {
                         Button { store.tasksShown = true } label: { Label("Tasks", systemImage: "checklist").frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle()) }
-                        Button { store.wizardShown = true } label: { Label("Cleanup wizard", systemImage: "wand.and.stars").frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle()) }
+                        Button { store.wizardShown = true } label: { Label("Project wizard", systemImage: "wand.and.stars").frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle()) }
                         Button { store.explorerProjectIDs = nil; store.spaceShown = true } label: { Label("Space explorer", systemImage: "chart.pie").frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle()) }
                         Button { store.repositoriesShown = true } label: { Label("GitHub repositories", systemImage: "network").frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle()) }
                     }.buttonStyle(.plain)
@@ -60,6 +61,7 @@ struct OrganizerNavigation: View {
                 }.buttonStyle(.plain).padding(14)
             }.navigationTitle("Projects").navigationSplitViewColumnWidth(min: 210, ideal: 224, max: 270)
                 .disabled(store.busy)
+                .help(store.busy ? "Wait for the current operation to finish." : "Choose a project view or action.")
         }
     }
     @ViewBuilder private func filterRows(_ items: [(String, String)]) -> some View {
@@ -76,7 +78,7 @@ struct OrganizerNavigation: View {
                 .frame(width: 34, height: 30).contentShape(Rectangle())
                 .background(selected ? Color.primary.opacity(0.10) : Color.clear, in: RoundedRectangle(cornerRadius: 6))
         }.buttonStyle(.plain).foregroundStyle(selected ? .primary : .secondary)
-            .help(title).accessibilityLabel(title)
+            .help(store.busy ? "Wait for the current operation to finish." : title).accessibilityLabel(title)
     }
 }
 

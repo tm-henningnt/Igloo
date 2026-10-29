@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Launch independent demo captures from an already built Igloo app on macOS."""
 import argparse
-import base64
 import colorsys
 import ctypes
 import fnmatch
@@ -27,38 +26,47 @@ ROOT = Path(__file__).resolve().parents[1]
 
 SHEET_VIEWS = {"freeze", "shelf", "freeze-review", "preserve-review", "freeze-result", "freeze-failure",
                "freeze-hold", "freeze-no-remote", "freeze-no-files", "freeze-no-commit", "freeze-own-source", "freeze-process",
-               "cleanup-review", "cleanup-result", "cleanup-hold", "trash-history", "wizard-review", "wizard-result",
+               "cleanup-review", "cleanup-result", "cleanup-hold", "trash-history", "push-review", "wizard-review", "wizard-result",
                "wizard-start", "wizard-thaw-selection", "wizard-thaw-review", "wizard-thaw-ready", "wizard-thaw-result",
                "wizard-thaw-occupied", "wizard-thaw-remote", "wizard-thaw-corrupt", "wizard-thaw-not-frozen",
                "wizard-thaw-rehydrating",
-               "task-review", "task-history", "settings", "settings-cloud", "repositories-loading"}
+               "task-review", "task-history", "settings", "settings-cloud", "repositories-loading",
+               "help-getting-started", "help-freeze-thaw", "help-safety-storage", "tasks-rules", "tasks-schedule",
+               "space-sunburst", "space-icicle", "space-marimekko", "space-drilldown", "repositories",
+               "remote-setup", "commit-setup", "wizard-rules", "wizard-actions"}
+# Main-window views that open one Git section or the scope inspector on the selected project.
+DETAIL_VIEWS = ("git-branches", "git-saved-history", "git-remotes", "scope-selected")
 UPDATE_FAILURES = ("quota", "quota-no-reset", "forbidden", "offline", "timeout", "server", "malformed",
                    "cancelled-download", "digest-mismatch")
 SHEET_VIEWS.update("update-" + name for name in UPDATE_FAILURES)
 SHEET_VIEWS.update({"update-markdown", "update-ready", "update-install-failed"})
 
+# Each locator names a role, the visible name that cua-driver matches, a
+# 1-based ordinal among the matching elements, and anchor text that the app
+# must show before the step acts. A wait anchor is text that only the next
+# screen shows.
 INTERACTIVE_FLOWS = {
     "wizard-thaw": [
-        {"click": {"role": "button", "ordinal": 2, "anchor": "Choose a path"}, "capture": "01-selection",
-         "wait_for": {"anchor": "Select projects"}},
-        {"click": {"role": "checkbox", "ordinal": 1,
-                    "parent": {"role": "outline row", "ordinal": 1}, "anchor": "Select projects"},
-         "capture": "02-selected",
-         "expect": {"value": True}},
-        {"click": {"role": "button", "ordinal": 3, "anchor": "Select projects"}, "capture": "03-plan",
-         "wait_for": {"anchor": "Thaw plan"}},
-        {"click": {"role": "checkbox", "ordinal": 1, "anchor": "Thaw plan"}, "capture": "05-confirmed",
-         "expect": {"value": True},
-         "expect_control": {"locator": {"role": "button", "ordinal": 3, "anchor": "Thaw plan"},
+        {"click": {"role": "button", "name": "Thaw projects", "ordinal": 1, "anchor": "Choose a path"},
+         "capture": "01-selection", "wait_for": {"anchor": "Select projects"}},
+        {"click": {"role": "checkbox", "name": "Ice Garden", "ordinal": 1, "anchor": "Select projects"},
+         "capture": "02-selected", "expect": {"value": True}},
+        {"click": {"role": "button", "name": "Create Thaw plan", "ordinal": 1, "anchor": "Select projects"},
+         "capture": "03-plan", "wait_for": {"anchor": "Expected outcome"}},
+        {"click": {"role": "checkbox", "name": "I reviewed the remote refs", "ordinal": 1, "anchor": "Thaw plan"},
+         "capture": "05-confirmed", "expect": {"value": True},
+         "expect_control": {"locator": {"role": "button", "name": "Thaw 1 ready project", "ordinal": 1,
+                                        "anchor": "Thaw plan"},
                             "enabled": True}},
-        {"click": {"role": "button", "ordinal": 3, "anchor": "Thaw plan"}, "capture": "06-result",
-         "wait_for": {"anchor": "Results"}, "expect_labels": ["Local-only files restored"]},
+        {"click": {"role": "button", "name": "Thaw 1 ready project", "ordinal": 1, "anchor": "Thaw plan"},
+         "capture": "06-result", "wait_for": {"anchor": "Local-only files restored"},
+         "expect_labels": ["Local-only files restored"]},
     ]
 }
 
 
-def validate_orca_locator(locator, name="Interactive click"):
-    if not isinstance(locator, dict) or set(locator) - {"role", "ordinal", "parent", "anchor", "label"}:
+def validate_locator(locator, name="Interactive click"):
+    if not isinstance(locator, dict) or set(locator) - {"role", "name", "ordinal", "anchor", "label"}:
         raise ValueError(f"{name} requires a role, ordinal, and anchor")
     if not isinstance(locator.get("role"), str) or not locator["role"].strip():
         raise ValueError(f"{name} requires a role")
@@ -66,13 +74,11 @@ def validate_orca_locator(locator, name="Interactive click"):
         raise ValueError(f"{name} ordinal must be a positive integer")
     if not isinstance(locator.get("anchor"), str) or not locator["anchor"].strip():
         raise ValueError(f"{name} requires an anchor")
-    if "label" in locator and (not isinstance(locator["label"], str) or not locator["label"].strip()):
-        raise ValueError(f"{name} label must be non-empty text")
-    parent = locator.get("parent")
-    if parent is not None and (not isinstance(parent, dict) or set(parent) != {"role", "ordinal"} or
-                               not isinstance(parent["role"], str) or not parent["role"].strip() or
-                               type(parent["ordinal"]) is not int or parent["ordinal"] < 1):
-        raise ValueError(f"{name} parent requires a role and positive ordinal")
+    for field in ("name", "label"):
+        if field in locator and (not isinstance(locator[field], str) or not locator[field].strip()):
+            raise ValueError(f"{name} {field} must be non-empty text")
+    if not locator.get("name") and not locator.get("label"):
+        raise ValueError(f"{name} requires a name or label")
     return dict(locator)
 
 
@@ -92,14 +98,14 @@ def parse_interactive_steps(steps):
             raise ValueError("Interactive step requires exactly one click or key action")
         click, capture_name = step.get("click"), step.get("capture")
         if has_click:
-            click = validate_orca_locator(click)
+            click = validate_locator(click)
         else:
             key = step.get("key")
             if key not in ("Up", "Down"):
                 raise ValueError("Interactive key must be Up or Down")
             if "wait_for_selection" not in step or "wait_for" in step or "expect" in step or "expect_control" in step:
                 raise ValueError("Interactive key requires a selection wait and cannot declare click expectations")
-            selection = validate_orca_locator(step["wait_for_selection"], "Interactive selection")
+            selection = validate_locator(step["wait_for_selection"], "Interactive selection")
             if selection["role"] != "outline row" or not selection.get("label"):
                 raise ValueError("Interactive selection requires a labeled outline row")
         if has_click and "wait_for_selection" in step:
@@ -120,7 +126,7 @@ def parse_interactive_steps(steps):
                                     type(control["enabled"]) is not bool):
             raise ValueError("Interactive control expectation is invalid")
         if control is not None:
-            control["locator"] = validate_orca_locator(control["locator"], "Interactive control")
+            control["locator"] = validate_locator(control["locator"], "Interactive control")
         labels = step.get("expect_labels", [])
         if not isinstance(labels, list) or any(not isinstance(label, str) or not label for label in labels):
             raise ValueError("Interactive expected labels must be non-empty strings")
@@ -138,6 +144,10 @@ def parse_interactive_steps(steps):
 
 def has_sheet_image(view):
     return view in SHEET_VIEWS or view.startswith("update-")
+
+
+# The app skips the offscreen sheet render for these views (see DemoCatalog); the real-pixel capture covers them.
+NO_SHEET_RENDER_VIEWS = {"tasks-rules", "tasks-schedule"}
 
 
 def renderer_path(folder, kind):
@@ -166,6 +176,9 @@ def scenarios():
                   ("plan", "1300x700", "shown", "full", "normal"),
                   ("overview", "1440x900", "hidden", "compact", "long"),
                   ("overview", "1440x900", "shown", "full", "empty")]
+        cases += [(view, size, *update_scope[size], "normal") for view in DETAIL_VIEWS
+                  for size in ("850x700", "1440x900") if view != "scope-selected"]
+        cases += [("scope-selected", size, "shown", "full", "normal") for size in ("1300x700", "1440x900")]
         cases += [(view, "1300x700", "shown", "full", "normal")
                   for view in ("cleanup-result", "freeze-result", "wizard-result", "task-history", "trash-history")]
         # Minimum-size row checks must reach 850 points. Cover every rail and
@@ -253,17 +266,19 @@ def select_scenarios(matrix, explicit=None, since=None, repo=ROOT):
 def build_launch_command(app, folder, scenario, window_server=False, backend=None):
     if not folder.is_absolute():
         raise ValueError("--demo-capture requires an absolute path")
-    hold_open = backend in ("orca", "window-server")
+    hold_open = backend in ("cua", "window-server")
     args = ["/usr/bin/open", "-n"]
     if hold_open or window_server:
         args.append("-W")
     args += [str(app), "--args", "--demo", "--demo-" + scenario["appearance"],
             "--demo-size", scenario["size"], "--demo-view", scenario["view"], "--demo-scope", scenario["scope"],
-            "--demo-rail", scenario["rail"], "--demo-data", scenario["data"], "--demo-capture", str(folder)]
+            "--demo-rail", scenario["rail"], "--demo-data", scenario["data"], "--demo-capture", str(folder),
+            # After a crash, macOS can ask to reopen windows and block every later launch.
+            "-ApplePersistenceIgnoreState", "YES"]
     if hold_open or window_server:
         args.append("--demo-window-server")
-    if backend == "orca":
-        args.append("--demo-orca")
+    if backend == "cua":
+        args.append("--demo-driver")
     return args
 
 
@@ -324,18 +339,16 @@ def capture_window_server(folder):
     return results
 
 
-class OrcaError(ValueError):
-    """Orca could not read or act on the launched demo window."""
+class CaptureError(ValueError):
+    """The capture driver could not read or act on the launched demo window."""
 
-    def __init__(self, message, code=None, next_steps=()):
+    def __init__(self, message, code=None):
         super().__init__(message)
         self.message = message
         self.code = code
-        self.next_steps = tuple(next_steps)
 
     def __str__(self):
         return f"{self.code}: {self.message}" if self.code else self.message
-
 
 def process_executable_path(pid):
     if sys.platform != "darwin":
@@ -389,420 +402,275 @@ def stop_verified_process(pid, app):
     return True
 
 
-def _orca_error(payload):
-    error = payload.get("error") if isinstance(payload, dict) else None
-    if not isinstance(error, dict):
+CUA_OUTPUT_LIMIT = 300
+CUA_PROBE_LIMIT = 20000
+CUA_ROLE_ALIASES = {"outline row": ("row", "outlinerow")}
+CUA_ACCESSIBILITY_TREE_LIMIT = 1000
+
+
+def _cap(text, limit=CUA_OUTPUT_LIMIT):
+    text = " ".join(str(text).split())
+    return text if len(text) <= limit else text[:limit - 3] + "..."
+
+
+def _cua_error(payload, tool):
+    """Return a CaptureError for a cua-driver refusal or script failure, or None."""
+    if not isinstance(payload, dict):
         return None
-    code = error.get("code") if isinstance(error.get("code"), str) else None
-    message = error.get("message") if isinstance(error.get("message"), str) else None
-    data = error.get("data") if isinstance(error.get("data"), dict) else {}
-    next_steps = data.get("nextSteps", error.get("nextSteps", []))
-    if not isinstance(next_steps, list):
-        next_steps = []
-    next_steps = [step for step in next_steps if isinstance(step, str)]
-    if not message:
-        message = "Orca could not read the window"
-    return OrcaError(message, code=code, next_steps=next_steps)
+    error = payload.get("error")
+    if isinstance(error, dict):
+        code = error.get("code") if isinstance(error.get("code"), str) else None
+        message = error.get("message") if isinstance(error.get("message"), str) else f"cua-driver {tool} failed"
+        line = error.get("line")
+        if type(line) is int:
+            message = f"{message} (script line {line})"
+        return CaptureError(_cap(message), code=code)
+    if isinstance(payload.get("code"), str):
+        detail = next((payload[key] for key in ("hint", "suggestion", "message")
+                       if isinstance(payload.get(key), str)), f"cua-driver {tool} refused the call")
+        return CaptureError(_cap(detail), code=payload["code"])
+    return None
 
 
-def _orca_restore_suggested(error):
-    return any("--restore-window" in step for step in error.next_steps)
-
-
-def orca_json(arguments, _restore_attempted=False):
-    command = shlex.split(os.environ.get("ORCA_CLI_COMMAND", "orca"))
+def cua_call(tool, arguments, timeout=60):
+    """Run one `cua-driver call` and return its JSON object. Output is parsed, never printed."""
+    command = shlex.split(os.environ.get("CUA_DRIVER_COMMAND", "cua-driver"))
     if not command:
-        raise OrcaError("Orca command is unavailable")
-    args = command + ["computer"] + list(arguments) + ["--json"]
+        raise CaptureError("cua-driver command is unavailable")
+    args = command + ["call", tool, json.dumps(arguments)]
     try:
-        result = subprocess.run(args, check=False, timeout=45, capture_output=True, text=True)
+        result = subprocess.run(args, check=False, timeout=timeout, capture_output=True, text=True)
     except (OSError, subprocess.SubprocessError) as error:
-        raise OrcaError(f"Orca could not read the window ({type(error).__name__})") from error
+        raise CaptureError(f"cua-driver {tool} could not run ({type(error).__name__})") from error
     payload = None
-    parse_error = None
     for output in (result.stdout, result.stderr):
-        if not output:
-            continue
         try:
-            candidate = json.loads(output)
-        except (TypeError, ValueError) as error:
-            parse_error = error
+            candidate = json.loads(output) if output and output.strip() else None
+        except (TypeError, ValueError):
             continue
         if isinstance(candidate, dict):
             payload = candidate
             break
+    error = _cua_error(payload, tool)
+    if error is not None:
+        raise error
     if payload is None:
         if result.returncode != 0:
-            raise OrcaError(f"Orca command failed (exit {result.returncode})") from parse_error
-        raise OrcaError("Orca returned invalid window data") from parse_error
-    error = _orca_error(payload)
-    if error is not None or payload.get("ok") is False or result.returncode != 0:
-        error = error or OrcaError(f"Orca command failed (exit {result.returncode})")
-        if not _restore_attempted and _orca_restore_suggested(error) and "--restore-window" not in arguments:
-            return orca_json(list(arguments) + ["--restore-window"], _restore_attempted=True)
-        raise error
+            raise CaptureError(f"cua-driver {tool} failed (exit {result.returncode})")
+        raise CaptureError(f"cua-driver {tool} returned invalid data")
+    if result.returncode != 0 or payload.get("ok") is False:
+        raise CaptureError(f"cua-driver {tool} failed (exit {result.returncode})")
     return payload
 
 
-def _window_target_args(window):
-    if window.get("id") is not None:
-        return ["--window-id", str(window["id"])]
-    if type(window.get("index")) is int and window["index"] >= 0:
-        return ["--window-index", str(window["index"])]
-    return []
+def cua_session(pid):
+    return f"igloo-capture-{pid}"
 
 
-def _orca_windows(payload):
-    result = payload.get("result", payload) if isinstance(payload, dict) else {}
-    if isinstance(result, list):
-        windows = result
-    else:
-        windows = result.get("windows", result.get("items", [])) if isinstance(result, dict) else []
-    if isinstance(windows, dict):
-        windows = list(windows.values())
-    if not isinstance(windows, list):
-        return []
-    normalized = []
-    for position, window in enumerate(windows):
-        if not isinstance(window, dict):
-            continue
-        identifier = next((window[key] for key in ("windowId", "window_id", "id", "windowNumber")
-                           if window.get(key) is not None), None)
-        index = next((window[key] for key in ("windowIndex", "window_index", "index")
-                      if type(window.get(key)) is int and window[key] >= 0), position)
-        record = dict(window)
-        record["id"] = identifier
-        record["index"] = index
-        if _window_target_args(record):
-            normalized.append(record)
-    return normalized
-
-
-def _window_sort_key(window, anchor, position):
-    text = " ".join(str(window.get(key, "")) for key in ("title", "label", "name")).casefold()
-    kind = " ".join(str(window.get(key, "")) for key in ("role", "type", "kind", "subrole")).casefold()
-    is_main = any(window.get(key) is True for key in ("isMain", "isMainWindow", "is_main", "main"))
-    is_sheet = "sheet" in kind or "dialog" in kind or any(
-        window.get(key) is True for key in ("isSheet", "is_sheet", "isDialog"))
-    is_frontmost = any(window.get(key) is True for key in ("isKey", "isKeyWindow", "isFocused", "focused", "key"))
-    return (0 if is_sheet or not is_main else 1, 0 if is_frontmost else 1,
-            0 if anchor.casefold() in text else 1, -position)
-
-
-def _snapshot_window_id(state):
-    snapshot = _snapshot(state)
-    window = snapshot.get("window") if isinstance(snapshot, dict) else None
-    if not isinstance(window, dict):
-        return None
-    return next((window[key] for key in ("windowId", "window_id", "id", "windowNumber")
-                 if window.get(key) is not None), None)
-
-
-def _state_has_sheet_anchor(state, anchor):
-    snapshot = _snapshot(state)
-    nodes = parse_orca_tree_text(snapshot.get("treeText"))
-    return bool(_orca_sheet_for_anchor(nodes, anchor))
-
-
-def _orca_state_for_sheet(pid, anchor, locator=None, include_screenshot=True):
-    windows_payload = orca_json(["list-windows", "--app", f"pid:{pid}"])
-    windows = _orca_windows(windows_payload)
-    windows.sort(key=lambda window: _window_sort_key(window, anchor, window["index"]))
-    failures = []
-    for window in windows:
-        target = _window_target_args(window)
-        try:
-            state = orca_app_state(pid, window=target, include_screenshot=False)
-        except OrcaError as error:
-            failures.append(error)
-            continue
-        snapshot_id = _snapshot_window_id(state)
-        if snapshot_id is not None and window["id"] is not None and str(snapshot_id) != str(window["id"]):
-            continue
-        if not _state_has_sheet_anchor(state, anchor):
-            continue
-        if locator is not None and find_orca_locator(state, locator) is None:
-            continue
-        if include_screenshot:
-            state = orca_app_state(pid, window=target)
-        return state, target
-    if failures:
-        raise failures[-1]
-    suffix = " with the requested control" if locator is not None else ""
-    raise OrcaError(f"Orca could not find the {anchor} sheet{suffix} in a listed window")
-
-
-def orca_app_state(pid, window=None, include_screenshot=True):
-    arguments = ["get-app-state", "--app", f"pid:{pid}"]
-    if window:
-        arguments.extend(window)
-    if not include_screenshot:
-        arguments.append("--no-screenshot")
-    return orca_json(arguments)
-
-
-def _snapshot(state):
-    result = state.get("result", state) if isinstance(state, dict) else {}
-    return result.get("snapshot", {}) if isinstance(result, dict) else {}
-
-
-def _walk_nodes(value):
-    if isinstance(value, dict):
-        yield value
-        for child in value.values():
-            yield from _walk_nodes(child)
-    elif isinstance(value, list):
-        for child in value:
-            yield from _walk_nodes(child)
-
-
-ORCA_TREE_ROLES = ("scroll area", "outline row", "progress indicator", "radio button", "split group",
-                   "table row", "application", "window", "sheet", "button", "checkbox", "heading",
-                   "list", "cell", "text", "row", "table", "group", "image", "tab", "unknown")
-
-
-def parse_orca_tree_text(tree_text):
-    if not isinstance(tree_text, str):
-        return []
-    roles = sorted(ORCA_TREE_ROLES, key=len, reverse=True)
-    nodes = []
-    for line_number, line in enumerate(tree_text.splitlines()):
-        match = re.match(r"^\s*(?:\[(\d+)\]|(\d+))\s+(.*)$", line)
-        if not match:
-            continue
-        index = int(match.group(1) or match.group(2))
-        remainder = match.group(3)
-        role = next((candidate for candidate in roles
-                     if remainder.casefold().startswith(candidate) and
-                     (len(remainder) == len(candidate) or remainder[len(candidate)] in " ,:(\t")), None)
-        if role is None:
-            role = remainder.split(maxsplit=1)[0].rstrip(",:") if remainder else "unknown"
-        details = remainder[len(role):].strip(" \t,: ")
-        prefix = line[:len(line) - len(line.lstrip(" \t"))]
-        depth = prefix.count("\t") if "\t" in prefix else len(prefix) // 2
-        value_match = re.search(r"\bvalue\s*[:=]\s*(true|false|1|0)\b", details, re.IGNORECASE)
-        node = {"elementIndex": index, "role": role, "text": details, "depth": depth,
-                "line": line_number}
-        if role == "outline row":
-            node["selected"] = bool(re.match(r"\(selected\)(?:\s|$)", details, re.IGNORECASE))
-        if value_match:
-            node["value"] = value_match.group(1).casefold() in ("true", "1")
-        if role in ("button", "checkbox", "radio button"):
-            node["enabled"] = not re.search(r"\bdisabled\b|\(disabled\)", details, re.IGNORECASE)
-        nodes.append(node)
-    return nodes
-
-
-def _orca_subtree(nodes, root):
-    end = next((position for position in range(nodes.index(root) + 1, len(nodes))
-                if nodes[position]["depth"] <= root["depth"]), len(nodes))
-    return nodes[nodes.index(root):end]
-
-
-def _orca_sheet_for_anchor(nodes, anchor):
-    folded_anchor = anchor.casefold()
-    for node in nodes:
-        if node["role"] != "sheet":
-            continue
-        subtree = _orca_subtree(nodes, node)
-        if any(folded_anchor in item["text"].casefold() for item in subtree):
-            return subtree
-    return None
-
-
-def _orca_role_ordinal(nodes, role, ordinal, label=None):
-    matches = [node for node in nodes if node["role"] == role and
-               (label is None or label.casefold() in node["text"].casefold())]
-    return matches[ordinal - 1] if len(matches) >= ordinal else None
-
-
-def find_orca_locator(state, locator):
-    snapshot = _snapshot(state)
-    nodes = parse_orca_tree_text(snapshot.get("treeText"))
-    sheet = _orca_sheet_for_anchor(nodes, locator["anchor"])
-    if not sheet:
-        return None
-    candidates = sheet[1:]
-    parent = locator.get("parent")
-    if parent:
-        parent_node = _orca_role_ordinal(candidates, parent["role"], parent["ordinal"])
-        if parent_node is None:
-            return None
-        parent_subtree = _orca_subtree(nodes, parent_node)
-        candidates = [node for node in parent_subtree[1:] if node in candidates]
-    return _orca_role_ordinal(candidates, locator["role"], locator["ordinal"], locator.get("label"))
-
-
-def orca_sheet_subtree(tree_text):
-    nodes = parse_orca_tree_text(tree_text)
-    sheet = next((node for node in nodes if node["role"] == "sheet"), None)
-    if sheet is None:
-        raise OrcaError("Orca snapshot has no sheet subtree")
-    subtree = _orca_subtree(nodes, sheet)
-    lines = tree_text.splitlines()
-    return "\n".join(lines[subtree[0]["line"]:subtree[-1]["line"] + 1])
-
-
-def _element_index(node):
-    if not isinstance(node, dict):
-        return None
-    for key in ("elementIndex", "element_index"):
-        value = node.get(key)
-        if type(value) is int and value >= 0:
-            return value
-        if isinstance(value, str) and value.isdigit():
-            return int(value)
-    return None
-
-
-def _state_strings(state):
-    snapshot = _snapshot(state)
-    values = []
-    tree_text = snapshot.get("treeText")
-    if isinstance(tree_text, str):
-        values.append(tree_text)
-    for node in _walk_nodes(snapshot):
-        for key in ("label", "title", "value", "text"):
-            value = node.get(key)
-            if isinstance(value, str):
-                values.append(value)
-    return values
-
-
-def _boolean_value(value):
-    if type(value) is bool:
-        return value
-    if type(value) is int and value in (0, 1):
-        return bool(value)
-    if isinstance(value, str) and value.casefold() in ("true", "false", "on", "off", "checked", "unchecked", "1", "0"):
-        return value.casefold() in ("true", "on", "checked", "1")
-    return None
-
-
-def _wait_for_anchor(pid, app, anchor, timeout=20):
-    deadline = time.monotonic() + timeout
-    while True:
-        verify_target_process(pid, app)
-        try:
-            state, _ = _orca_state_for_sheet(pid, anchor, include_screenshot=False)
-        except OrcaError as error:
-            if error.code or not str(error).startswith("Orca could not find the "):
-                raise
-            state = None
-        if state is not None:
-            verify_target_process(pid, app)
-            state, _ = _orca_state_for_sheet(pid, anchor)
-            return state
-        if time.monotonic() >= deadline:
-            raise OrcaError(f"Timed out waiting for sheet text {anchor}")
-        time.sleep(0.5)
-
-
-def _selected_outline_row_text(state, anchor):
-    nodes = parse_orca_tree_text(_snapshot(state).get("treeText"))
-    sheet = _orca_sheet_for_anchor(nodes, anchor)
-    if not sheet:
-        return None
-    for node in sheet:
-        if node["role"] == "outline row" and node.get("selected"):
-            return re.sub(r"^\(selected\)\s*", "", node["text"], flags=re.IGNORECASE).strip() or "unknown"
-    return None
-
-
-def _wait_for_selection(pid, app, key, locator, timeout=20):
-    deadline = time.monotonic() + timeout
-    current = None
-    while True:
-        verify_target_process(pid, app)
-        try:
-            state, window = _orca_state_for_sheet(pid, locator["anchor"], include_screenshot=False)
-        except OrcaError as error:
-            if error.code or not str(error).startswith("Orca could not find the "):
-                raise
-            state, window = None, []
-        if state is not None:
-            selected = find_orca_locator(state, locator)
-            if selected is not None and selected.get("selected") is True:
-                verify_target_process(pid, app)
-                screenshot_state = orca_app_state(pid, window=window)
-                selected = find_orca_locator(screenshot_state, locator)
-                if selected is not None and selected.get("selected") is True:
-                    return screenshot_state
-                state = screenshot_state
-            current = _selected_outline_row_text(state, locator["anchor"])
-        if time.monotonic() >= deadline:
-            current_text = current or "unknown"
-            raise OrcaError(f"Orca key {key} did not change selection to {locator['label']}; "
-                            f"current selected row is {current_text}")
-        time.sleep(0.5)
-
-
-def _verify_step_state(state, step):
-    expectation = step.get("expect")
-    if expectation:
-        node = find_orca_locator(state, step["click"])
-        if node is None or _boolean_value(node.get("value")) is not expectation["value"]:
-            raise OrcaError("Orca did not verify the expected control value")
-    control = step.get("expect_control")
-    if control:
-        target = find_orca_locator(state, control["locator"])
-        enabled = _boolean_value(target.get("enabled")) if target else None
-        if enabled is not control["enabled"]:
-            raise OrcaError("Orca did not verify the expected control state")
-    missing = [label for label in step.get("expect_labels", [])
-               if not any(label.casefold() in text.casefold() for text in _state_strings(state))]
-    if missing:
-        raise OrcaError("Orca did not verify the expected screen text")
-
-
-def write_private_bytes(path, data):
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(descriptor, "wb") as output:
-        os.fchmod(output.fileno(), 0o600)
-        output.write(data)
-
-
-def capture_orca_screenshot(state, folder, filename):
-    result = state.get("result", state) if isinstance(state, dict) else {}
-    screenshot = result.get("screenshot", {}) if isinstance(result, dict) else {}
-    if not isinstance(screenshot, dict):
-        raise OrcaError("Orca returned no screenshot")
-    source_path = None
+def cua_window_targets(pid, folder, session):
+    """Map the app's own window metadata to window IDs that cua-driver lists for the same PID."""
     try:
-        source = screenshot.get("path")
-        if isinstance(source, str) and source:
-            source_path = Path(source)
-            source_mode = source_path.lstat().st_mode
-            if stat.S_ISLNK(source_mode) or not stat.S_ISREG(source_mode):
-                raise OrcaError("Orca screenshot path is not a regular file")
-            png = source_path.read_bytes()
-        elif isinstance(screenshot.get("data"), str):
-            png = base64.b64decode(screenshot["data"], validate=True)
-        else:
-            raise OrcaError("Orca returned no screenshot")
-    except OrcaError:
-        raise
+        metadata = json.loads((folder / "windows.json").read_text())
     except (OSError, ValueError) as error:
-        raise OrcaError("Orca screenshot could not be read") from error
+        raise CaptureError(f"Missing or invalid window metadata: {error}") from error
+    windows = validate_windows(metadata)
+    if metadata["pid"] != pid:
+        raise CaptureError("Window metadata PID mismatch")
+    payload = cua_call("list_windows", {"pid": pid, "session": session})
+    records = payload.get("windows")
+    if not isinstance(records, list):
+        raise CaptureError("cua-driver returned no window list")
+    listed = {record["window_id"]: record for record in records
+              if isinstance(record, dict) and record.get("pid") == pid and type(record.get("window_id")) is int}
+    targets = {window["kind"]: window["windowNumber"] for window in windows if window["windowNumber"] in listed}
+    if "window" not in targets:
+        candidates = [record for record in listed.values() if record.get("layer") == 0]
+        if not candidates:
+            raise CaptureError("cua-driver lists no window for the launched PID")
+        frontmost = max(candidates, key=lambda record: record["z_index"] if type(record.get("z_index")) is int else -1)
+        targets["window"] = frontmost["window_id"]
+    if "sheet" not in targets and any(window["kind"] == "sheet" for window in windows):
+        targets["sheet"] = None
+    return targets
+
+
+def cua_screenshot(pid, window_id, folder, filename, session, kind="window"):
+    """Save the real window pixels that cua-driver captures for one window ID."""
+    path = folder / filename
+    if path.exists() or path.is_symlink():
+        raise CaptureError(f"{filename} already exists")
+    cua_call("get_window_state", {"pid": pid, "window_id": window_id, "include_accessibility_tree": False,
+                                  "max_image_dimension": 0, "screenshot_out_file": str(path), "session": session})
+    try:
+        mode = path.lstat().st_mode
+        if stat.S_ISLNK(mode) or not stat.S_ISREG(mode):
+            raise CaptureError("cua-driver screenshot is not a regular file")
+        path.chmod(0o600)
+        png = path.read_bytes()
+    except CaptureError:
+        raise
+    except OSError as error:
+        raise CaptureError("cua-driver wrote no screenshot") from error
     if len(png) < 1024:
-        raise OrcaError("Orca screenshot is too small to be reliable")
+        raise CaptureError("cua-driver screenshot is too small to be reliable")
     try:
         # Dark appearance screenshots fall mostly into one sampled colour bucket.
-        share = png_nonbackground_share(png, reject_placeholders=False, min_share=0.002)
+        share = png_nonbackground_share(png, allow_sparse_sheet=kind == "sheet", reject_placeholders=False,
+                                        min_share=0.002)
     except ValueError as error:
-        raise OrcaError(f"Orca screenshot is invalid: {error}") from error
-    path = folder / filename
-    try:
-        write_private_bytes(path, png)
-    except OSError as error:
-        raise OrcaError("Could not save the Orca screenshot") from error
-    if source_path is not None:
-        try:
-            source_path.unlink()
-        except OSError as error:
-            raise OrcaError("Could not remove the Orca temporary screenshot") from error
-    return {"kind": "window", "status": "PARTIAL", "path": filename,
+        raise CaptureError(f"cua-driver screenshot is invalid: {error}") from error
+    return {"kind": kind, "status": "PARTIAL", "path": filename,
             "reason": f"real-pixel screenshot captured; non-background share {share:.3%}; visual review required"}
+
+
+def cua_capture_windows(pid, app, folder, stem, session):
+    """Capture the main window and, when present, its sheet as `<stem>-cua.png` files."""
+    verify_target_process(pid, app)
+    targets = cua_window_targets(pid, folder, session)
+    results = [cua_screenshot(pid, targets["window"], folder, f"{stem}-cua.png", session)]
+    if "sheet" in targets:
+        if targets["sheet"] is None:
+            results.append({"kind": "sheet", "status": "OPEN",
+                            "reason": "cua-driver does not list the sheet window; review the sheet in "
+                                      f"{stem}-cua.png"})
+        else:
+            results.append(cua_screenshot(pid, targets["sheet"], folder, f"{stem}-sheet-cua.png", session,
+                                          kind="sheet"))
+    return results
+
+
+def cua_target(locator):
+    """Map a step locator to a cua target: role aliases, a name, and a 0-based nth."""
+    name = locator.get("name") or locator.get("label")
+    if not name:
+        raise ValueError("A cua target requires a name")
+    role = locator["role"].casefold()
+    roles = CUA_ROLE_ALIASES.get(role, ("".join(char for char in role if char.isalpha()),))
+    return {"roles": list(roles), "name": name, "nth": locator["ordinal"] - 1}
+
+
+# The step script runs inside the cua-driver sandbox. It has no filesystem
+# access, so the launcher saves each screenshot after the script returns.
+CUA_STEP_SCRIPT = r"""
+const p = __PARAMS__;
+const app = await cua.getApp({pid: p.pid, windowId: p.windowId});
+const norm = (value) => String(value ?? "").toLowerCase().replace(/^ax/, "").replace(/[^a-z]/g, "");
+const strings = (row) => [row.label, row.value, row.text, row.name, row.title].filter((v) => typeof v === "string");
+const truth = (value) => {
+  if (value === true || value === 1) return true;
+  if (value === false || value === 0) return false;
+  const text = String(value ?? "").toLowerCase();
+  if (["true", "1", "on", "checked"].includes(text)) return true;
+  if (["false", "0", "off", "unchecked"].includes(text)) return false;
+  return null;
+};
+async function rows(query) {
+  try { return await app.query(query); } catch (error) { return []; }
+}
+async function shown(text) {
+  const wanted = text.toLowerCase();
+  for (const query of [{text}, {name: text}]) {
+    const found = await rows(query);
+    if (found.some((row) => strings(row).some((value) => value.toLowerCase().includes(wanted)))) return true;
+  }
+  return false;
+}
+async function waitShown(text) {
+  for (let attempt = 0; attempt < p.attempts; attempt++) {
+    if (await shown(text)) return;
+    await cua.sleep(500);
+  }
+  throw new Error("timed out waiting for text: " + text);
+}
+async function find(target) {
+  const wanted = target.name.toLowerCase();
+  const matches = (await rows({name: target.name})).filter((row) =>
+    row.element_token && target.roles.includes(norm(row.role)) &&
+    strings(row).some((value) => value.toLowerCase().includes(wanted)));
+  return matches[target.nth] ?? null;
+}
+async function waitFor(target, check, message) {
+  for (let attempt = 0; attempt < p.attempts; attempt++) {
+    const row = await find(target);
+    if (row && check(row)) return row;
+    await cua.sleep(500);
+  }
+  throw new Error(message);
+}
+await waitShown(p.anchor);
+let acted = null;
+if (p.click) {
+  const row = await waitFor(p.click, (item) => item.enabled !== false,
+                            `no enabled ${p.click.roles[0]} named ${p.click.name}`);
+  await app.click(row.element_token);
+  acted = {role: row.role, label: row.label};
+} else {
+  await app.pressKey(p.key);
+  acted = {key: p.key};
+}
+if (p.waitFor) await waitShown(p.waitFor);
+if (p.selection) {
+  await waitFor(p.selection, (item) => item.selected === true,
+                `key ${p.key} did not change selection to ${p.selection.name}`);
+}
+if (p.expectValue !== null) {
+  await waitFor(p.click, (item) => truth(item.value) === p.expectValue, "the expected control value did not appear");
+}
+if (p.control) {
+  await waitFor(p.control, (item) => (item.enabled !== false) === p.control.enabled,
+                "the expected control state did not appear");
+}
+for (const label of p.labels) await waitShown(label);
+return acted;
+"""
+
+
+def cua_step_script(pid, window_id, step, attempts=40):
+    """Build the run_script body for one interactive step from its declarative definition."""
+    click = step.get("click")
+    selection = step.get("wait_for_selection")
+    control = step.get("expect_control")
+    params = {
+        "pid": pid, "windowId": window_id, "attempts": attempts,
+        "anchor": (click or selection)["anchor"],
+        "click": cua_target(click) if click else None,
+        "key": step["key"].lower() if "key" in step else None,
+        "waitFor": step["wait_for"]["anchor"] if step.get("wait_for") else None,
+        "selection": cua_target(selection) if selection else None,
+        "expectValue": step["expect"]["value"] if step.get("expect") else None,
+        "control": ({**cua_target(control["locator"]), "enabled": control["enabled"]} if control else None),
+        "labels": list(step.get("expect_labels", [])),
+    }
+    return CUA_STEP_SCRIPT.replace("__PARAMS__", json.dumps(params))
+
+
+def cua_run_step(pid, app, window_id, step, session):
+    """Verify the PID, then run one step inside cua-driver and check its verified result."""
+    verify_target_process(pid, app)
+    payload = cua_call("run_script", {"session": session, "script": cua_step_script(pid, window_id, step),
+                                      "timeout_ms": 90000, "max_calls": 400}, timeout=120)
+    if payload.get("ok") is not True:
+        raise CaptureError(f"cua-driver step {step['capture']} did not finish")
+    return payload.get("value")
+
+
+def _capture_cua_states(pid, app, folder, scenario, session):
+    verify_target_process(pid, app)
+    if not scenario.get("flow"):
+        results = cua_capture_windows(pid, app, folder, "window", session)
+        capture_cua_accessibility_tree(pid, folder, scenario, session)
+        return results
+    steps = parse_interactive_steps(INTERACTIVE_FLOWS[scenario["flow"]])
+    results = list(cua_capture_windows(pid, app, folder, "00-start", session))
+    capture_cua_accessibility_tree(pid, folder, scenario, session)
+    window_id = cua_window_targets(pid, folder, session)["window"]
+    for step in steps:
+        try:
+            cua_run_step(pid, app, window_id, step, session)
+        except CaptureError as error:
+            raise CaptureError(f"step {step['capture']}: {error}") from error
+        results += cua_capture_windows(pid, app, folder, step["capture"], session)
+    return results
 
 
 def write_private_json(path, data):
@@ -820,68 +688,23 @@ def _wait_for_launched_capture(folder, process, timeout=45):
         if pid is not None and (folder / "windows.json").is_file() and (folder / "accessibility.json").is_file():
             return pid
         if process.poll() is not None:
-            raise OrcaError("App exited before Orca capture metadata was written")
+            raise CaptureError("App exited before capture metadata was written")
         if time.monotonic() >= deadline:
             # The app writes metadata only after it becomes active; macOS can refuse that while the user works elsewhere.
-            raise OrcaError("Timed out waiting for Orca capture metadata; the app may not have become active")
+            raise CaptureError("Timed out waiting for capture metadata; the app may not have become active")
         time.sleep(0.1)
 
 
-def _click_orca_locator(pid, app, locator):
-    verify_target_process(pid, app)
-    state, window = _orca_state_for_sheet(pid, locator["anchor"], locator=locator,
-                                           include_screenshot=False)
-    node = find_orca_locator(state, locator)
-    index = _element_index(node)
-    if index is None:
-        raise OrcaError(f"Orca could not find an actionable {locator['role']} at ordinal {locator['ordinal']} in the anchored sheet")
-    verify_target_process(pid, app)
-    orca_json(["click", "--app", f"pid:{pid}", *window, "--element-index", str(index)])
-
-
-def _press_orca_key(pid, app, key):
-    verify_target_process(pid, app)
-    orca_json(["press-key", "--app", f"pid:{pid}", "--key", key, "--no-screenshot"])
-
-
-def _capture_orca_states(pid, app, folder, scenario):
-    verify_target_process(pid, app)
-    results = []
-    if scenario.get("flow"):
-        steps = parse_interactive_steps(INTERACTIVE_FLOWS[scenario["flow"]])
-        state, _ = _orca_state_for_sheet(pid, steps[0]["click"]["anchor"])
-        results.append(capture_orca_screenshot(state, folder, "00-start-orca.png"))
-        for step in steps:
-            if "click" in step:
-                _click_orca_locator(pid, app, step["click"])
-            else:
-                _press_orca_key(pid, app, step["key"])
-            wait_for = step.get("wait_for")
-            if wait_for:
-                state = _wait_for_anchor(pid, app, wait_for["anchor"])
-            elif "wait_for_selection" in step:
-                state = _wait_for_selection(pid, app, step["key"], step["wait_for_selection"])
-            else:
-                verify_target_process(pid, app)
-                state, _ = _orca_state_for_sheet(pid, step["click"]["anchor"])
-            _verify_step_state(state, step)
-            results.append(capture_orca_screenshot(state, folder, step["capture"] + "-orca.png"))
-    else:
-        state = orca_app_state(pid)
-        results.append(capture_orca_screenshot(state, folder, "window-orca.png"))
-    return results
-
-
-def launch_orca(app, folder, scenario):
-    args = build_launch_command(app, folder, scenario, backend="orca")
-    process = subprocess.Popen(args)
+def _run_cua_launch(app, folder, scenario, action, label):
+    """Launch one demo instance, run `action(pid, session)`, then stop the verified PID."""
+    process = subprocess.Popen(build_launch_command(app, folder, scenario, backend="cua"))
     pid = None
-    results = None
+    value = None
     failure = None
     try:
         pid = _wait_for_launched_capture(folder, process)
         verify_target_process(pid, app)
-        results = _capture_orca_states(pid, app, folder, scenario)
+        value = action(pid, cua_session(pid))
     except Exception as error:
         failure = error
     if pid is None:
@@ -889,61 +712,95 @@ def launch_orca(app, folder, scenario):
         pid = started_pid(folder)
     if pid is not None:
         try:
-            stop_verified_process(pid, app)
-        except (OSError, ValueError) as error:
-            detail = f"PID {pid} may still be running because its executable path could not be verified"
-            failure = OrcaError(f"{failure}; {detail}" if failure else detail)
-    try:
-        process.wait(timeout=20)
-    except subprocess.SubprocessError as error:
-        detail = ("after a TERM request to its verified PID" if pid is not None else
-                  "because the app PID could not be verified")
-        message = f"Orca capture app did not exit {detail}; its process may still be running"
-        failure = OrcaError(f"{failure}; {message}" if failure else message)
-    if failure is not None:
-        if isinstance(failure, (ValueError, OSError, subprocess.SubprocessError)):
-            raise OrcaError(f"{failure}") from failure
-        raise failure
-    return results
-
-
-def launch_orca_probe(app, folder, scenario):
-    """Print the current Orca sheet subtree without clicking or taking screenshots."""
-    process = subprocess.Popen(build_launch_command(app, folder, scenario, backend="orca"))
-    pid = None
-    subtree = None
-    failure = None
-    try:
-        pid = _wait_for_launched_capture(folder, process)
-        verify_target_process(pid, app)
-        if scenario.get("flow"):
-            first = parse_interactive_steps(INTERACTIVE_FLOWS[scenario["flow"]])[0]
-            state, _ = _orca_state_for_sheet(pid, first["click"]["anchor"], include_screenshot=False)
-        else:
-            state = orca_app_state(pid, include_screenshot=False)
-        subtree = orca_sheet_subtree(_snapshot(state).get("treeText"))
-    except Exception as error:
-        failure = error
-    if pid is None:
-        pid = started_pid(folder)
-    if pid is not None:
+            cua_call("end_session", {"session": cua_session(pid)}, timeout=20)
+        except CaptureError:
+            pass
         try:
             stop_verified_process(pid, app)
-        except (OSError, ValueError) as error:
+        except (OSError, ValueError):
             detail = f"PID {pid} may still be running because its executable path could not be verified"
-            failure = OrcaError(f"{failure}; {detail}" if failure else detail)
+            failure = CaptureError(f"{failure}; {detail}" if failure else detail)
     try:
         process.wait(timeout=20)
-    except subprocess.SubprocessError as error:
+    except subprocess.SubprocessError:
         detail = ("after a TERM request to its verified PID" if pid is not None else
                   "because the app PID could not be verified")
-        message = f"Orca probe app did not exit {detail}; its process may still be running"
-        failure = OrcaError(f"{failure}; {message}" if failure else message)
+        message = f"{label} app did not exit {detail}; its process may still be running"
+        failure = CaptureError(f"{failure}; {message}" if failure else message)
     if failure is not None:
+        if isinstance(failure, CaptureError):
+            raise failure
         if isinstance(failure, (ValueError, OSError, subprocess.SubprocessError)):
-            raise OrcaError(f"{failure}") from failure
+            raise CaptureError(f"{failure}") from failure
         raise failure
-    return subtree
+    return value
+
+
+def launch_cua(app, folder, scenario):
+    return _run_cua_launch(app, folder, scenario,
+                           lambda pid, session: _capture_cua_states(pid, app, folder, scenario, session),
+                           "cua-driver capture")
+
+
+def cua_probe_tree(pid, app, folder, session):
+    verify_target_process(pid, app)
+    targets = cua_window_targets(pid, folder, session)
+    window_id = targets.get("sheet") or targets["window"]
+    payload = cua_call("get_window_state", {"pid": pid, "window_id": window_id, "include_screenshot": False,
+                                            "max_elements": CUA_ACCESSIBILITY_TREE_LIMIT, "session": session})
+    tree = payload.get("tree_markdown")
+    if not isinstance(tree, str) or not tree.strip():
+        raise CaptureError("cua-driver returned no accessibility tree")
+    return tree if len(tree) <= CUA_PROBE_LIMIT else tree[:CUA_PROBE_LIMIT] + "\n[tree output capped]"
+
+
+def cua_accessibility_element_count(tree_markdown):
+    """Count indexed AX rows returned in cua-driver's markdown tree."""
+    if not isinstance(tree_markdown, str):
+        return 0
+    return len(re.findall(r"(?m)^\s*-\s+\[\d+\]\s+AX[A-Za-z0-9]+\b", tree_markdown))
+
+
+def cua_accessibility_tree_complete(payload):
+    """Treat explicit truncation or a short markdown tree as incomplete evidence."""
+    if not isinstance(payload, dict):
+        return False
+    tree_markdown = payload.get("tree_markdown")
+    if not isinstance(tree_markdown, str) or not tree_markdown.strip() or payload.get("truncated") is True:
+        return False
+    total = payload.get("total_element_count")
+    returned = cua_accessibility_element_count(tree_markdown)
+    return not (type(total) is int and total > returned)
+
+
+def capture_cua_accessibility_tree(pid, folder, scenario, session):
+    """Save the main-window CUA tree used by named-control checks, including for sheets."""
+    if not accessibility_control_contract(scenario):
+        return None
+    try:
+        targets = cua_window_targets(pid, folder, session)
+        payload = cua_call("get_window_state", {
+            "pid": pid, "window_id": targets["window"], "include_screenshot": False,
+            "max_elements": CUA_ACCESSIBILITY_TREE_LIMIT, "session": session,
+        })
+    except (CaptureError, ValueError):
+        payload = {"tree_markdown": "", "truncated": True}
+    tree_markdown = payload.get("tree_markdown")
+    stored = {
+        "tree_markdown": tree_markdown if isinstance(tree_markdown, str) else "",
+        "truncated": payload.get("truncated") is True,
+        "total_element_count": payload.get("total_element_count"),
+        "returned_element_count": cua_accessibility_element_count(tree_markdown),
+        "complete": cua_accessibility_tree_complete(payload),
+    }
+    write_private_json(Path(folder) / "cua-accessibility.json", stored)
+    return stored
+
+
+def launch_cua_probe(app, folder, scenario):
+    """Print the bounded accessibility tree of the launched window without input or screenshots."""
+    return _run_cua_launch(app, folder, scenario,
+                           lambda pid, session: cua_probe_tree(pid, app, folder, session), "cua-driver probe")
 
 
 def launch_window_server(app, folder, scenario):
@@ -970,9 +827,9 @@ def launch_window_server(app, folder, scenario):
 
 
 def launch(app, folder, scenario, window_server=False, backend=None):
-    backend = backend or ("window-server" if window_server else "orca")
-    if backend == "orca":
-        return launch_orca(app, folder, scenario)
+    backend = backend or ("window-server" if window_server else "cua")
+    if backend == "cua":
+        return launch_cua(app, folder, scenario)
     if backend == "window-server":
         return launch_window_server(app, folder, scenario)
     raise ValueError("Unknown capture backend")
@@ -1110,7 +967,7 @@ def png_nonbackground_share(png, allow_sparse_sheet=False, reject_placeholders=T
 
 
 def accessibility_missing(tree, scenario):
-    required = {"plan": ["Preservation", "Connect remote", "Freeze", "Hold"],
+    required = {"plan": ["Preservation", "Connect remote", "Freeze", "Hold", "Cleanup candidates"],
                 "hold": ["Preservation", "Hold"],
                 "freeze": ["Requirements", "Cancel", "Build review"],
                 "freeze-no-files": ["Add files to this project", "Open in Finder", "Open Terminal"],
@@ -1121,12 +978,14 @@ def accessibility_missing(tree, scenario):
                 "freeze-failure": ["Outcome", "Done"],
                 "cleanup-result": ["Cleanup result", "Freed from disk", "In Trash (can be restored)", "Done"],
                 "trash-history": ["Trash & restore history", "Space report", "Last 30 days", "All time"],
-                "wizard-result": ["Cleanup wizard", "Results", "Estimate", "Checkout removed", "Freed from disk", "In Trash (can be restored)"],
+                "wizard-result": ["Make space", "Results", "Estimate", "Checkout removed", "Freed from disk", "In Trash (can be restored)"],
                 "task-history": ["Task run history", "Space", "Estimate"],
                 "cleanup-review": ["Review cleanup", "Expected outcome"],
                 "cleanup-hold": ["Review cleanup", "This project is on Hold"],
+                "push-review": ["Push one branch", "feature/search", "Destination:", "Push this branch"],
                 "wizard-review": ["Expected outcome", "Review"],
-                "wizard-start": ["Make space", "Thaw projects"],
+                "wizard-start": ["Project wizard", "Make space", "Thaw projects"],
+                "wizard-actions": ["Make space", "Choose actions", "Harbor CLI", "Signal Lab", "Build review"],
                 "wizard-thaw-selection": ["Frozen projects", "Create Thaw plan"],
                 "wizard-thaw-review": ["Thaw plan", "Expected outcome"],
                 "wizard-thaw-ready": ["Thaw projects", "Only ready projects will run", "Ice Garden",
@@ -1138,10 +997,18 @@ def accessibility_missing(tree, scenario):
                 "wizard-thaw-rehydrating": ["Thawing Ice Garden"],
                 "wizard-thaw-result": ["Checkouts restored", "Remote refs restored", "Start a new Thaw plan", "Done"],
                 "task-review": ["Review task actions", "Expected outcome"],
-                "settings": ["Igloo Settings", "Freezer backup folder"],
+                "settings": ["Igloo Settings", "Freezer backup folder", "Reminder threshold"],
                 "settings-cloud": ["Confirm cloud backup"],
                 "repositories-loading": ["GitHub repositories", "Loading repositories for example"],
-                "shelf": ["Done", "Show archive", "Thaw from remote"]}.get(scenario["view"], [])
+                "repositories": ["GitHub repositories", "orbit-maps"],
+                "help-getting-started": ["Igloo Help", "Getting started"],
+                "help-freeze-thaw": ["Igloo Help", "Freeze & thaw"],
+                "help-safety-storage": ["Igloo Help", "Safety & storage"],
+                "tasks-rules": ["Tasks", "Rules"],
+                "tasks-schedule": ["Tasks", "Run while your Mac user is logged in"],
+                "remote-setup": ["Connect a remote"],
+                "commit-setup": ["Select files to commit"],
+                "shelf": ["Done", "Show Freezer copy", "Freezer backup verified", "Thaw from remote"]}.get(scenario["view"], [])
     def labels(node):
         if not isinstance(node, dict):
             return []
@@ -1151,35 +1018,99 @@ def accessibility_missing(tree, scenario):
     return [name for name in required if not any(name.casefold() in value for value in values)]
 
 
-def accessibility_control_issues(tree, scenario):
-    """Return missing control issues, or None when the view has no control contract."""
-    required = {
+def accessibility_control_contract(scenario):
+    """Return expected named controls for a view, preserving identifier, role and visible label."""
+    return {
         "plan": [
-            ("detail.connectRemote", "AXButton"), ("detail.commitSelectedFiles", "AXButton"),
-            ("detail.preserve", "AXButton"), ("detail.freeze", "AXButton"),
-            ("detail.hold", "AXCheckBox"), ("detail.preservationNotes", "AXTextArea"),
-            ("detail.exportProjectReport", "AXButton"), ("detail.savePreservation", "AXButton"),
+            ("detail.connectRemote", "AXButton", "Connect remote…"),
+            ("detail.commitSelectedFiles", "AXButton", "Commit selected files…"),
+            ("detail.preserve", "AXButton", "Preserve…"),
+            ("detail.freeze", "AXButton", "Freeze…"),
+            ("detail.hold", "AXCheckBox", "Hold"),
+            ("detail.preservationNotes", "AXTextArea", "Preservation notes"),
+            ("detail.exportProjectReport", "AXButton", "Export project report…"),
+            ("detail.savePreservation", "AXButton", "Save"),
         ],
-        "freeze": [("freeze.cancel", "AXButton"), ("freeze.buildReview", "AXButton")],
+        "freeze": [("freeze.cancel", "AXButton", "Cancel"),
+                   ("freeze.buildReview", "AXButton", "Build review…")],
         "shelf": [
-            ("shelf.backUpNow", "AXButton"), ("shelf.verifyBackup", "AXButton"),
-            ("shelf.done", "AXButton"), ("shelf.showArchive", "AXButton"),
-            ("shelf.freeze", "AXButton"), ("shelf.offlineRecovery", "AXButton"),
-            ("shelf.thawRemote", "AXButton"),
+            ("shelf.backUpNow", "AXButton", "Back up now"),
+            ("shelf.verifyBackup", "AXButton", "Verify backup"),
+            ("shelf.done", "AXButton", "Done"),
+            ("shelf.showArchive", "AXButton", "Show Freezer copy"),
+            ("shelf.freeze", "AXButton", "Freeze…"),
+            ("shelf.offlineRecovery", "AXButton", "Offline recovery…"),
+            ("shelf.thawRemote", "AXButton", "Thaw from remote…"),
         ],
-        "wizard-start": [("wizard.start.makeSpace", "AXButton"), ("wizard.start.thaw", "AXButton")],
-        "wizard-thaw-selection": [("wizard.thaw.back", "AXButton"), ("wizard.thaw.prepare", "AXButton"),
-                                  ("wizard.thaw.archive.demo-icegarden", "AXCheckBox")],
-        "wizard-thaw-review": [("wizard.thaw.acceptance", "AXButton"), ("wizard.thaw.execute", "AXButton")],
-        "wizard-thaw-ready": [("wizard.thaw.acceptance", "AXCheckBox"), ("wizard.thaw.execute", "AXButton")],
-        "wizard-thaw-occupied": [("wizard.thaw.showPath", "AXButton")],
-        "wizard-thaw-remote": [("wizard.thaw.checkRemote", "AXButton")],
-        "wizard-thaw-corrupt": [("wizard.thaw.openFreezer", "AXButton")],
-        "wizard-thaw-not-frozen": [("wizard.thaw.openFreezer", "AXButton")],
-        "wizard-thaw-result": [("wizard.thaw.newPlan", "AXButton")],
-    }.get(scenario["view"], [])
+        "wizard-start": [("wizard.start.makeSpace", "AXButton", "Make space"),
+                         ("wizard.start.thaw", "AXButton", "Thaw projects")],
+        "wizard-thaw-selection": [("wizard.thaw.back", "AXButton", "Back"),
+                                  ("wizard.thaw.prepare", "AXButton", "Create Thaw plan"),
+                                  ("wizard.thaw.archive.demo-icegarden", "AXCheckBox", "Ice Garden")],
+        "wizard-thaw-review": [("wizard.thaw.acceptance", "AXCheckBox", "I reviewed the remote refs"),
+                               ("wizard.thaw.execute", "AXButton", "Thaw ")],
+        "wizard-thaw-ready": [("wizard.thaw.acceptance", "AXCheckBox", "I reviewed the remote refs"),
+                              ("wizard.thaw.execute", "AXButton", "Thaw ")],
+        "wizard-thaw-occupied": [("wizard.thaw.showPath", "AXButton", "Show path in Finder")],
+        "wizard-thaw-remote": [("wizard.thaw.checkRemote", "AXButton", "Check remote again")],
+        "wizard-thaw-corrupt": [("wizard.thaw.openFreezer", "AXButton", "Open Freezer")],
+        "wizard-thaw-not-frozen": [("wizard.thaw.openFreezer", "AXButton", "Open Freezer")],
+        "wizard-thaw-result": [("wizard.thaw.newPlan", "AXButton", "Start a new Thaw plan")],
+    }.get(scenario.get("view"), [])
+
+
+def _cua_markdown_controls(tree_markdown):
+    """Parse CUA markdown rows into identifier, role, visible label and action fields."""
+    controls = []
+    if not isinstance(tree_markdown, str):
+        return controls
+    for line in tree_markdown.splitlines():
+        identifier_match = re.search(r"\[id=([^\s\]]+)", line)
+        role_match = re.search(r"\b(AX[A-Za-z0-9]+)\b", line)
+        if not role_match:
+            continue
+        label_match = re.search(r"\((.*?)\)", line)
+        help_match = re.search(r"\bhelp=(?:\"([^\"]*)\"|'([^']*)'|([^\s\]]+))", line)
+        label = label_match.group(1).strip() if label_match else ""
+        help_text = next((value for value in help_match.groups() if value is not None), "").strip() if help_match else ""
+        controls.append({
+            "identifier": identifier_match.group(1) if identifier_match else None,
+            "role": role_match.group(1) if role_match else None,
+            "label": label,
+            "has_label_or_help": bool(label or help_text),
+            "has_actions": bool(re.search(r"\bactions=\[", line)),
+        })
+    return controls
+
+
+def accessibility_control_issues(tree, scenario, *, source="window-server", complete=True):
+    """Classify expected controls as found, missing, or unverified for the selected tree source."""
+    required = accessibility_control_contract(scenario)
     if not required:
         return None
+
+    if source == "cua":
+        captured = _cua_markdown_controls(tree)
+        statuses = {}
+        for identifier, role, expected_label in required:
+            candidates = [item for item in captured if item["identifier"] == identifier]
+            if any(item["role"] == role and item["has_label_or_help"] for item in candidates):
+                statuses[identifier] = "found"
+            elif candidates:
+                statuses[identifier] = "missing"
+            else:
+                disabled_without_id = any(
+                    item["identifier"] is None and item["role"] == role
+                    and item["label"].startswith(expected_label) and not item["has_actions"]
+                    for item in captured
+                )
+                if disabled_without_id:
+                    statuses[identifier] = "unverified (disabled, id not exposed by cua-driver)"
+                else:
+                    statuses[identifier] = "missing" if complete else "unverified (tree incomplete)"
+        return statuses
+    if source != "window-server":
+        raise ValueError("Unknown accessibility control source")
 
     def nodes(node):
         if isinstance(node, dict):
@@ -1203,19 +1134,39 @@ def accessibility_control_issues(tree, scenario):
                         for key in ("x", "y", "width", "height"))
                 and frame["width"] > 0 and frame["height"] > 0)
 
-    issues = [identifier for identifier, role in required
-              if not any(valid(node, identifier, role) for node in captured)]
+    statuses = {identifier: ("found" if any(valid(node, identifier, role) for node in captured) else "missing")
+                for identifier, role, _ in required}
     if scenario["view"] == "wizard-thaw-ready":
         expected_enabled = {"wizard.thaw.acceptance": True, "wizard.thaw.execute": False}
         for identifier, enabled in expected_enabled.items():
             node = next((item for item in captured if item.get("identifier") == identifier), None)
             if node is None or node.get("enabled") is not enabled:
-                issues.append(identifier)
+                statuses[identifier] = "missing"
         node = next((item for item in captured if item.get("identifier") == "wizard.thaw.acceptance"), None)
         value = node.get("value") if node else None
         if not (value is False or type(value) is int and value == 0):
-            issues.append("wizard.thaw.acceptance")
-    return list(dict.fromkeys(issues))
+            statuses["wizard.thaw.acceptance"] = "missing"
+    return statuses
+
+
+def format_accessibility_control_statuses(statuses):
+    if statuses is None:
+        return "not configured for this view"
+    if not isinstance(statuses, dict):
+        return "not configured for this view" if not statuses else (
+            f"found: none; missing: {', '.join(str(value) for value in statuses)}; unverified: none")
+    groups = []
+    for status in ("found", "missing", "unverified"):
+        entries = []
+        for identifier, outcome in statuses.items():
+            if outcome == status:
+                entries.append(identifier)
+            elif (status == "unverified" and isinstance(outcome, str)
+                  and outcome.startswith("unverified (") and outcome.endswith(")")):
+                reason = outcome[len("unverified ("):-1]
+                entries.append(f"{identifier} ({reason})")
+        groups.append(f"{status}: {', '.join(entries) if entries else 'none'}")
+    return "; ".join(groups)
 
 
 def accessibility_node_counts(tree):
@@ -1232,7 +1183,7 @@ def accessibility_node_counts(tree):
     return {"total": sum(windows.values()), "windows": windows}
 
 
-def validate_result(folder, scenario, reject_renderer_placeholders=True):
+def validate_result(folder, scenario, reject_renderer_placeholders=True, backend="window-server"):
     try:
         mode = folder.lstat().st_mode
     except OSError as error:
@@ -1257,7 +1208,7 @@ def validate_result(folder, scenario, reject_renderer_placeholders=True):
             raise
         result["nonBackgroundShare"] = None
         result["rendererDiagnostic"] = str(error)
-    if has_sheet_image(scenario["view"]):
+    if has_sheet_image(scenario["view"]) and scenario["view"] not in NO_SHEET_RENDER_VIEWS:
         try:
             result["sheetNonBackgroundShare"] = png_nonbackground_share(
                 renderer_path(folder, "sheet").read_bytes(), allow_sparse_sheet=True,
@@ -1286,7 +1237,16 @@ def validate_result(folder, scenario, reject_renderer_placeholders=True):
     if abs(actual_width - expected_width) > 0.5 or abs(actual_height - expected_height) > 0.5:
         raise ValueError(f"Capture size mismatch: requested {width}x{height}, actual {actual_width}x{actual_height}, expected {expected_width}x{expected_height}")
     result["accessibilityMissing"] = accessibility_missing(result["tree"], scenario)
-    result["accessibilityControlIssues"] = accessibility_control_issues(result["tree"], scenario)
+    if backend == "cua":
+        try:
+            cua_tree = json.loads((folder / "cua-accessibility.json").read_text())
+        except (OSError, ValueError):
+            cua_tree = {"tree_markdown": "", "complete": False}
+        result["accessibilityControlIssues"] = accessibility_control_issues(
+            cua_tree.get("tree_markdown"), scenario, source="cua",
+            complete=cua_tree.get("complete") is True and cua_accessibility_tree_complete(cua_tree))
+    else:
+        result["accessibilityControlIssues"] = accessibility_control_issues(result["tree"], scenario)
     result["accessibilityNodeCounts"] = accessibility_node_counts(result["tree"])
     return result
 
@@ -1349,12 +1309,12 @@ def main():
     parser.add_argument("--since", help="select scenarios for changed app views since this commit")
     parser.add_argument("--list", action="store_true", help="list scenarios without launching")
     backend = parser.add_mutually_exclusive_group()
-    backend.add_argument("--backend", choices=("orca", "window-server"), default="orca",
-                         help="real-pixel capture backend (default: orca)")
+    backend.add_argument("--backend", choices=("cua", "window-server"), default="cua",
+                         help="real-pixel capture backend (default: cua)")
     backend.add_argument("--window-server", action="store_const", dest="backend", const="window-server",
                          help="compatibility alias for --backend window-server")
     parser.add_argument("--probe", action="store_true",
-                        help="launch one scenario and print its Orca sheet subtree without clicking")
+                        help="launch one scenario and print its bounded cua-driver accessibility tree without input")
     args = parser.parse_args()
     matrix = scenarios()
     try:
@@ -1368,9 +1328,8 @@ def main():
     if not selected:
         print("OPEN: --since selected no changed app-view scenarios; no capture was run", flush=True)
         return 1
-    if args.probe and (args.backend != "orca" or len(selected) != 1 or len(args.scenario or []) != 1 or args.since or
-                       not has_sheet_image(selected[0]["view"])):
-        parser.error("--probe requires Orca and exactly one explicit sheet --scenario")
+    if args.probe and (args.backend != "cua" or len(selected) != 1 or len(args.scenario or []) != 1 or args.since):
+        parser.error("--probe requires the cua backend and exactly one explicit --scenario")
     if not args.output:
         parser.error("--output is required")
     if sys.platform != "darwin":
@@ -1400,7 +1359,7 @@ def main():
     if args.probe:
         scenario = selected[0]
         try:
-            print(launch_orca_probe(app, output / scenario["name"], scenario), flush=True)
+            print(launch_cua_probe(app, output / scenario["name"], scenario), flush=True)
             return 0
         except (OSError, ValueError, subprocess.SubprocessError) as error:
             print(f"OPEN {scenario['name']}: {error}", flush=True)
@@ -1423,21 +1382,20 @@ def main():
                 except (OSError, ValueError) as error:
                     diagnostic = str(error)
                 print(f"PARTIAL {scenario['name']} renderer sheet diagnostic: {diagnostic}", flush=True)
-            result = validate_result(folder, scenario, reject_renderer_placeholders=False)
+            result = validate_result(folder, scenario, reject_renderer_placeholders=False, backend=args.backend)
             width, height = (int(part) for part in scenario["size"].split("x"))
             expected_width, expected_height = expected_size(scenario)
             missing = result.get("accessibilityMissing", [])
             detail = ", ".join(missing) if missing else "completeness not independently established"
             control_issues = result.get("accessibilityControlIssues", [])
-            controls = ("not configured for this view" if control_issues is None else
-                        (", ".join(control_issues) if control_issues else "none"))
+            controls = format_accessibility_control_statuses(control_issues)
             counts = result.get("accessibilityNodeCounts", {})
             windows = ", ".join(f"{kind}={count}" for kind, count in sorted(counts.get("windows", {}).items()))
-            print(f"PARTIAL {scenario['name']}: PID {result['pid']}; requested {width}x{height}, actual {result['actualWidth']}x{result['actualHeight']}, expected {expected_width}x{expected_height}; AX labels {detail}; named controls missing {controls}; AX nodes {counts.get('total', 0)} [{windows}]; PNG needs visual review", flush=True)
+            print(f"PARTIAL {scenario['name']}: PID {result['pid']}; requested {width}x{height}, actual {result['actualWidth']}x{result['actualHeight']}, expected {expected_width}x{expected_height}; AX labels {detail}; named controls {controls}; AX nodes {counts.get('total', 0)} [{windows}]; PNG needs visual review", flush=True)
         except (OSError, ValueError, subprocess.SubprocessError) as error:
             pid = started_pid(folder)
             detail = (f"; PID {pid} may still be running (not stopped)"
-                      if pid is not None and (args.backend == "window-server" or not isinstance(error, OrcaError)) else "")
+                      if pid is not None and (args.backend == "window-server" or not isinstance(error, CaptureError)) else "")
             print(f"OPEN {scenario['name']}: {error}{detail}", flush=True)
             if args.backend == "window-server" and has_sheet_image(scenario["view"]):
                 try:
@@ -1445,11 +1403,10 @@ def main():
                     missing = sheet.get("accessibilityMissing", [])
                     ax = ", ".join(missing) if missing else "completeness not independently established"
                     control_issues = sheet.get("accessibilityControlIssues", [])
-                    controls = ("not configured for this view" if control_issues is None else
-                                (", ".join(control_issues) if control_issues else "none"))
+                    controls = format_accessibility_control_statuses(control_issues)
                     counts = sheet.get("accessibilityNodeCounts", {})
                     windows = ", ".join(f"{kind}={count}" for kind, count in sorted(counts.get("windows", {}).items()))
-                    print(f"PARTIAL {scenario['name']} renderer sheet diagnostic: PID {sheet['pid']}; AX labels {ax}; named controls missing {controls}; AX nodes {counts.get('total', 0)} [{windows}]; real-pixel evidence needs visual review", flush=True)
+                    print(f"PARTIAL {scenario['name']} renderer sheet diagnostic: PID {sheet['pid']}; AX labels {ax}; named controls {controls}; AX nodes {counts.get('total', 0)} [{windows}]; real-pixel evidence needs visual review", flush=True)
                 except (OSError, ValueError) as sheet_error:
                     print(f"OPEN {scenario['name']} sheet: {sheet_error}", flush=True)
             failed = True

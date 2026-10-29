@@ -88,6 +88,59 @@ enum IglooPalette {
     }
 }
 
+enum TemperatureAccent: Equatable {
+    case cold
+    case warm
+
+    func foreground(for colorScheme: ColorScheme) -> Color {
+        switch (self, colorScheme) {
+        case (.cold, .light): return Self.hex(0x2B6E9E)
+        case (.cold, .dark): return Self.hex(0x8FC9EA)
+        case (.warm, .light): return Self.hex(0x756118)
+        case (.warm, .dark): return Self.hex(0xE6D28B)
+        @unknown default: return .primary
+        }
+    }
+
+    func badgeSurface(for colorScheme: ColorScheme) -> Color {
+        switch (self, colorScheme) {
+        case (.cold, .light): return Self.hex(0xEAF3F9)
+        case (.cold, .dark): return Self.hex(0x233544)
+        case (.warm, .light): return Self.hex(0xF7F2DF)
+        case (.warm, .dark): return Self.hex(0x373322)
+        @unknown default: return Color.primary.opacity(0.06)
+        }
+    }
+
+    func actionLabel(for colorScheme: ColorScheme) -> Color {
+        colorScheme == .dark ? Self.hex(0x1D2630) : .white
+    }
+
+    var symbol: String { self == .cold ? "snowflake" : "arrow.uturn.backward" }
+
+    private static func hex(_ value: UInt32) -> Color {
+        Color(red: Double((value >> 16) & 0xFF) / 255,
+              green: Double((value >> 8) & 0xFF) / 255,
+              blue: Double(value & 0xFF) / 255)
+    }
+}
+
+struct TemperatureStateLabel: View {
+    let title: String
+    let accent: TemperatureAccent
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: accent.symbol).font(.system(size: 14))
+                .accessibilityHidden(true)
+            Text(title)
+        }
+            .foregroundStyle(accent.foreground(for: colorScheme))
+            .accessibilityElement(children: .combine)
+    }
+}
+
 struct SpaceSector: Shape {
     var start: Double
     var end: Double
@@ -110,7 +163,7 @@ struct SpaceView: View {
     var initialProjectIDs: Set<String>? = nil
     @LocalState var restrictToInitialScope = true
     @EnvironmentObject var store: OrganizerStore
-    @LocalState var layout = "Sunburst"
+    @LocalState var layout = DemoCapture.initialState("spaceLayout") ?? "Sunburst"
     @LocalState var colorBy = "Age"
     @LocalState var groupBy = "Projects"
     @LocalState var projectKind = "All project types"
@@ -122,7 +175,7 @@ struct SpaceView: View {
     @LocalState var search = ""
     @LocalState var cleanupOnly = false
     @LocalState var breakdown = "Projects"
-    @LocalState var focused: String?
+    @LocalState var focused: String? = DemoCapture.spaceFocus
     @LocalState var hovered: String?
     let ages = ["All ages", "Under 30 days", "30–89 days", "90–364 days", "1 year or older", "Unknown age"]
     var projects: [Project] {
@@ -220,7 +273,7 @@ struct SpaceView: View {
             }.controlSize(.small)
             HStack {
                 Text(bytes(total)).font(.title).monospacedDigit()
-                Text("in " + noun(grouped.count, "project")).foregroundStyle(.secondary)
+                Text("in \(grouped.count) of \(projects.count) projects").foregroundStyle(.secondary)
                 Toggle("Cleanup candidates only", isOn: $cleanupOnly).toggleStyle(.checkbox)
                 Spacer()
                 Button("Reset filters") {

@@ -312,6 +312,11 @@ class PlanningTests(unittest.TestCase):
         with self.assertRaisesRegex(o.Refusal, "already accepted"):
             wizard.execute_thaw(review["id"])
 
+    def test_thaw_review_names_verified_freezer_copy_as_recovery_source(self):
+        identifier = self.freeze_for_thaw(1)[0]
+        review = wizard.prepare_thaw([identifier])
+        self.assertIn("verified Freezer archive copy is the recovery source", review["rows"][0]["message"])
+
     def test_thaw_prepare_returns_rows_for_exactly_the_selected_archives(self):
         identifiers = self.freeze_for_thaw(3)
         selected = [identifiers[2], identifiers[0]]

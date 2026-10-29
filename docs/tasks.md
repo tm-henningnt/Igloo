@@ -18,7 +18,7 @@ Recent projects stay as they are. Projects between the two ages get cache cleanu
 
 Put a project on **Hold** to exclude it from wizard proposals and task actions, including scheduled cleanup. The review lists it with “On hold.” Notes stay with the project. Existing Keep decisions become Hold; the other old decisions become unheld and keep their notes. Manual cleanup, Preserve and Freeze remain available and show the Hold in their Review.
 
-The Cleanup wizard starts with **Make space** and **Thaw projects**. Only **Make space** has rules to save as a task. Its **Save rules as a task** button creates a review-only task from those rules; individual project overrides are not copied. Tasks do not thaw projects.
+The Project wizard starts with **Make space** and **Thaw projects**. Only **Make space** has rules to save as a task. Its **Save rules as a task** button creates a review-only task from those rules; individual project overrides are not copied. Tasks do not thaw projects.
 
 ## Review and run
 
@@ -30,7 +30,7 @@ Preserve keeps the checkout after verifying local recovery and the reviewed remo
 
 Every Review summarizes checkout paths, space estimates, Freezer archives, refs and their destinations, folders moved to Trash, and projects left out. Wizard and task summaries include their ready rows. Results show an **Estimate** beside measured **Freed from disk**, **In Trash**, and **Restored from Trash** values. Freed from disk is the gross allocated size removed from a checkout. Bytes moved to Trash remain on disk, so a Cleanup can correctly show 0 bytes freed from disk and a positive In Trash value. Restored from Trash counts bytes returned through Trash & restore history and lowers In Trash for that run. **Net space change after recovery** is the actual disk-space change after accounting for archives; it can differ from Freed from disk because archives use disk space.
 
-A **Thaw plan** lists checkouts and remote refs to restore, the Freezer archive used for recovery, and any blocked projects. The remote supplies refs when available, with the Freezer archive as a fallback for missing Frozen refs. Thaw does not measure space. After a Thaw, results report the checkouts and remote refs restored. Freeze estimates use allocated file bytes and an uncompressed recovery estimate; compression and filesystem allocation can change the result.
+A **Thaw plan** lists checkouts and remote refs to restore, the verified Freezer archive copy used for recovery, and any blocked projects. The remote supplies refs when available, with the verified Freezer archive copy as a fallback for missing Frozen refs. Thaw does not measure space. After a Thaw, results report the checkouts and remote refs restored. Freeze estimates use allocated file bytes and an uncompressed recovery estimate; compression and filesystem allocation can change the result.
 
 The Review states the number of recovery sets and their Freezer location. Exact recovery paths are assigned during execution and appear in the result.
 

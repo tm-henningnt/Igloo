@@ -119,6 +119,7 @@ struct OverviewView: View {
                                 Button(kind) { store.action(["categorize", project.path, kind]) }
                             }
                         } label: { Text(project.kind) }.disabled(store.busy)
+                            .help(store.busy ? "Wait for the current operation to finish." : "Choose a project type.")
                     }
                     if !project.technologyText.isEmpty {
                         LabeledContent("Technology", value: project.technologyText).font(.callout)
@@ -203,24 +204,26 @@ struct ChangesView: View {
                 }
             }
             Text("\(rows.count) of \(project.changes.count) changes").font(.caption).foregroundStyle(.secondary)
-            Table(rows, selection: $selected) {
-                TableColumn("File") { FilePathCell(path: $0.path) }.width(min: 180)
-                TableColumn("Change") { Text(changeName($0.status)).help($0.status) }.width(85)
-                TableColumn("Checkout") { Text(checkoutName($0.checkout, project: project)).lineLimit(1).help($0.checkout) }.width(min: 110)
-            }.overlay {
-                if rows.isEmpty {
-                    ContentUnavailableView(project.changes.isEmpty ? "No uncommitted source changes" : "No matching changes",
-                        systemImage: "doc.badge.checkmark",
-                        description: Text(project.changes.isEmpty ? "Ignored configuration and data are listed in Local files." : "Try another checkout or search."))
-                }
+            if rows.isEmpty {
+                ContentUnavailableView(project.changes.isEmpty ? "No uncommitted source changes" : "No matching changes",
+                    systemImage: "doc.badge.checkmark",
+                    description: Text(project.changes.isEmpty ? "Ignored configuration and data are listed in Local files." : "Try another checkout or search."))
+            } else {
+                Table(rows, selection: $selected) {
+                    TableColumn("File") { FilePathCell(path: $0.path) }.width(min: 180)
+                    TableColumn("Change") { Text(changeName($0.status)).help($0.status) }.width(85)
+                    TableColumn("Checkout") { Text(checkoutName($0.checkout, project: project)).lineLimit(1).help($0.checkout) }.width(min: 110)
+                }.frame(height: compactTableHeight(rows.count, rowHeight: 38))
             }
             if let file = file {
                 Text(file.checkout + "/" + file.path + "\nGit status: " + file.status).font(.caption).textSelection(.enabled)
             }
             HStack {
                 Button("Show selected") { if let f = file { store.reveal(f.checkout + "/" + f.path) } }.disabled(file == nil)
+                    .help(file == nil ? "Select a changed file first." : "Show the selected file in Finder.")
                 Spacer()
                 Button("Review source commit…") { store.commitSetup = project }.disabled(store.busy || project.changes.isEmpty)
+                    .help(store.busy ? "Wait for the current operation to finish." : project.changes.isEmpty ? "There are no changed files to commit." : "Review selected source files.")
             }
         }.padding(16)
     }
@@ -255,17 +258,19 @@ struct BranchesView: View {
             }
             Text("\(rows.count) of " + noun(project.branches.count, "branch", "branches") + " · \(project.uncovered) uncovered · \(project.unknown) unverified")
                 .font(.caption).foregroundStyle(.secondary)
-            Table(rows, selection: $selected) {
-                TableColumn("Branch") { row in
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(row.name).lineLimit(1).truncationMode(.middle).help(row.name)
-                        if row.privateHistory { Text("Private / archive history").font(.caption).foregroundStyle(.secondary) }
-                    }
-                }.width(min: 180)
-                TableColumn("Remote coverage", value: \.coverage).width(min: 145)
-                TableColumn("Updated") { Text(shortDate($0.date)) }.width(85)
-            }.overlay {
-                if rows.isEmpty { ContentUnavailableView("No matching branches", systemImage: "arrow.triangle.branch", description: Text("Try a different coverage filter or search.")) }
+            if rows.isEmpty {
+                ContentUnavailableView("No matching branches", systemImage: "arrow.triangle.branch", description: Text("Try a different coverage filter or search."))
+            } else {
+                Table(rows, selection: $selected) {
+                    TableColumn("Branch") { row in
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(row.name).lineLimit(1).truncationMode(.middle).help(row.name)
+                            if row.privateHistory { Text("Private / archive history").font(.caption).foregroundStyle(.secondary) }
+                        }
+                    }.width(min: 180)
+                    TableColumn("Remote coverage", value: \.coverage).width(min: 145)
+                    TableColumn("Updated") { Text(shortDate($0.date)) }.width(85)
+                }.frame(height: compactTableHeight(rows.count, rowHeight: 38))
             }
             if let b = branch {
                 VStack(alignment: .leading, spacing: 5) {
@@ -285,6 +290,7 @@ struct BranchesView: View {
                 Button("Push selected branch…") {
                     if let b = branch, let r = remote { store.pushRequest = PushRequest(project: project, branch: b, remote: r) }
                 }.disabled(store.busy || branch == nil || branch?.privateHistory == true || branch?.uncovered == 0 || remote == nil)
+                    .help(store.busy ? "Wait for the current operation to finish." : branch == nil ? "Select a branch first." : branch?.privateHistory == true ? "Private history needs a preservation review before it can be pushed." : branch?.uncovered == 0 ? "This branch has no unverified commits to push." : remote == nil ? "Connect a remote first." : "Review the selected branch and destination.")
             }
         }.padding(16).onAppear { remoteName = project.remotes.first?.name ?? "" }
     }
@@ -313,12 +319,14 @@ struct SavedHistoryView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             DetailSearch(prompt: "Find a stash, tag, note or detached checkout", text: $search)
-            Table(rows, selection: $selected) {
-                TableColumn("Kind", value: \.kind).width(95)
-                TableColumn("Name", value: \.name).width(min: 170)
-                TableColumn("Preservation", value: \.status).width(min: 140)
-            }.overlay {
-                if rows.isEmpty { ContentUnavailableView("No matching saved history", systemImage: "tray", description: Text("Stashes, refs and detached checkouts appear here when present.")) }
+            if rows.isEmpty {
+                ContentUnavailableView("No matching saved history", systemImage: "tray", description: Text("Stashes, refs and detached checkouts appear here when present."))
+            } else {
+                Table(rows, selection: $selected) {
+                    TableColumn("Kind", value: \.kind).width(95)
+                    TableColumn("Name", value: \.name).width(min: 170)
+                    TableColumn("Preservation", value: \.status).width(min: 140)
+                }.frame(height: compactTableHeight(rows.count, rowHeight: 38))
             }
             if let row = rows.first(where: { $0.id == selected }) {
                 let hash = shortGitHash(row.sha)
@@ -348,6 +356,7 @@ struct RemotesView: View {
                     Divider()
                 }
                 Button("Connect remote…") { store.remoteSetup = project }.disabled(store.busy)
+                    .help(store.busy ? "Wait for the current operation to finish." : "Connect an existing remote or create a private repository.")
                 Text("Last verified: " + shortDate(project.verifiedAt) + " · " + project.remoteStatus).font(.caption).foregroundStyle(.secondary)
             }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -387,6 +396,7 @@ struct WorktreesView: View {
                 }
                 Spacer()
                 Button("Show selected") { if let t = tree { store.reveal(t.path) } }.disabled(tree?.exists != true)
+                    .help(tree == nil ? "Select a worktree first." : tree?.exists != true ? "The selected worktree path is missing." : "Show the selected worktree in Finder.")
             }
         }.padding(16)
     }
@@ -426,31 +436,36 @@ struct LocalFilesView: View {
             }
             if mode == "Config & data" {
                 Text("\(files.count) of \(project.localFiles.count) filename matches").font(.caption).foregroundStyle(.secondary)
-                Table(files, selection: $selected) {
-                    TableColumn("File") { FilePathCell(path: $0.path, base: checkoutForFile($0.path, project: project)) }.width(min: 200)
-                    TableColumn("Checkout") { Text(checkoutName(checkoutForFile($0.path, project: project), project: project)).lineLimit(1).truncationMode(.middle) }.width(min: 110)
-                    TableColumn("Git state") { file in
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(file.tracked ? "Tracked" : file.ignored ? "Ignored" : "Local")
-                            if file.template { Text("Template").font(.caption).foregroundStyle(.secondary) }
-                        }
-                    }.width(80)
-                }.overlay {
-                    if files.isEmpty { ContentUnavailableView("No matching local files", systemImage: "doc", description: Text("Try another status filter or search. Filename checks do not inspect file values.")) }
+                if files.isEmpty {
+                    ContentUnavailableView("No matching local files", systemImage: "doc", description: Text("Try another status filter or search. Filename checks do not inspect file values."))
+                } else {
+                    Table(files, selection: $selected) {
+                        TableColumn("File") { FilePathCell(path: $0.path, base: checkoutForFile($0.path, project: project)) }.width(min: 200)
+                        TableColumn("Checkout") { Text(checkoutName(checkoutForFile($0.path, project: project), project: project)).lineLimit(1).truncationMode(.middle) }.width(min: 110)
+                        TableColumn("Git state") { file in
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(file.tracked ? "Tracked" : file.ignored ? "Ignored" : "Local")
+                                if file.template { Text("Template").font(.caption).foregroundStyle(.secondary) }
+                            }
+                        }.width(80)
+                    }.frame(height: compactTableHeight(files.count, rowHeight: 38))
                 }
             } else {
                 Text("\(ignored.count) of \(project.ignoredFiles.count) ignored entries").font(.caption).foregroundStyle(.secondary)
-                Table(ignored, selection: $selected) {
-                    TableColumn("Ignored entry") { FilePathCell(path: $0.path) }.width(min: 240)
-                    TableColumn("Checkout") { Text(checkoutName($0.checkout, project: project)).lineLimit(1).help($0.checkout) }.width(min: 120)
-                }.overlay {
-                    if ignored.isEmpty { ContentUnavailableView("No matching ignored entries", systemImage: "doc", description: Text("Try another filename or checkout.")) }
+                if ignored.isEmpty {
+                    ContentUnavailableView("No matching ignored entries", systemImage: "doc", description: Text("Try another filename or checkout."))
+                } else {
+                    Table(ignored, selection: $selected) {
+                        TableColumn("Ignored entry") { FilePathCell(path: $0.path) }.width(min: 240)
+                        TableColumn("Checkout") { Text(checkoutName($0.checkout, project: project)).lineLimit(1).help($0.checkout) }.width(min: 120)
+                    }.frame(height: compactTableHeight(ignored.count, rowHeight: 38))
                 }
             }
             HStack {
                 if let path = selectedPath { Text(path).font(.caption).lineLimit(2).textSelection(.enabled) }
                 Spacer()
                 Button("Show selected") { if let path = selectedPath { store.reveal(path) } }.disabled(selectedPath == nil)
+                    .help(selectedPath == nil ? "Select a local file first." : "Show the selected path in Finder.")
             }
             Text("Filename checks only; values and secret contents are not displayed. Ignored entries may include valuable source assets, data or credentials.")
                 .font(.caption).foregroundStyle(.secondary)
@@ -484,6 +499,7 @@ struct CleanupView: View {
                 Text(noun(rows.count, "folder") + " · \(bytes(project.cleanupSize)) eligible").font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Button("Select visible eligible") { selected.formUnion(rows.filter(\.eligible).map(\.id)) }.disabled(store.busy)
+                    .help(store.busy ? "Wait for the current operation to finish." : "Select every visible folder marked eligible.")
                 if !selected.isEmpty { Button("Clear") { selected = [] } }
             }
             Table(rows, selection: $selected) {
@@ -500,6 +516,7 @@ struct CleanupView: View {
                 Spacer()
                 Button("Review selected cleanup…") { store.preview(chosen.map(\.id).sorted()) }
                     .buttonStyle(WizardPrimaryButtonStyle()).disabled(store.busy || chosen.isEmpty)
+                    .help(store.busy ? "Wait for the current operation to finish." : chosen.isEmpty ? "Select one or more folders to review." : "Build a fresh cleanup review.")
             }
         }.padding(16)
     }

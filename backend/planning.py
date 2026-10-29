@@ -390,7 +390,7 @@ def thaw_row(identifier):
         if not thaw_remote_ready(location, destination):
             row["message"] = "The remote is unreachable. Restore remote access, then use Check remote again."
             return row
-        row.update(status="ready", message="Ready. The remote is reachable; the Freezer archive supplies any Frozen refs missing from it.")
+        row.update(status="ready", message="Ready. The remote is reachable; the verified Freezer archive copy is the recovery source for Frozen refs missing from it.")
     except O.Refusal as error:
         message = str(error).lower()
         if "archive" in message or "checksum" in message:

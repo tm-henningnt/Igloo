@@ -16,7 +16,7 @@ Igloo is a native macOS app that helps you sort it out. See what's taking up spa
 - Preserve local files and Git recovery in the Freezer and push reviewed source while keeping the checkout. Freeze also removes verified checkouts; thaw the project when you need it again.
 - Resolve requirements shown in the Freeze checklist, put projects on Hold, and review an outcome summary before accepting changes.
 - Connect Git remotes, create private GitHub repositories, commit selected files, and browse or clone your repositories.
-- Use the cleanup wizard to keep recent projects, clean older ones, and propose freezing projects past a second age threshold.
+- Use the Project wizard to keep recent projects, clean older ones, propose freezing projects past a second age threshold, or Thaw Frozen projects.
 - Save tasks, run them with the `igloo` CLI, and schedule daily or weekly reviews or cache cleanup.
 
 You choose the rules and review the proposed changes. Scheduled cleanup needs your explicit permission; projects that need freezing stay held for review.
