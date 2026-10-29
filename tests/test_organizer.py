@@ -247,6 +247,29 @@ class GuardTests(unittest.TestCase):
         self.assertEqual(row["observed"], {
             "freedBytes": 0, "inTrashBytes": 0, "restoredBytes": allocated})
 
+    def test_space_report_totals_skip_reviews_counted_by_their_run(self):
+        started = o.now()
+        o.record_space_run("wizard-run", "wizard", started=started, status="completed", label="Wizard",
+                           estimate_bytes=700, observed={"freedBytes": 700, "inTrashBytes": 300, "restoredBytes": 0})
+        observed = {"freedBytes": 700, "inTrashBytes": 0, "restoredBytes": 0}
+        o.save(o.STATE / "plans" / ("freeze-" + "b" * 32 + ".json"),
+               {"id": "b" * 32, "created": started, "executed": started, "spaceRunID": "wizard-run",
+                "outcome": {"bytesFreedEstimate": 700, "observedSpace": observed}})
+        o.save(o.STATE / "plans" / ("c" * 32 + ".json"),
+               {"id": "c" * 32, "created": started, "executed": started, "items": [], "spaceRunID": "wizard-run",
+                "observed": {"freedBytes": 0, "inTrashBytes": 300, "restoredBytes": 0}})
+        o.save(o.STATE / "plans" / ("d" * 32 + ".json"),
+               {"id": "d" * 32, "created": started, "executed": started, "items": [],
+                "observed": {"freedBytes": 0, "inTrashBytes": 50, "restoredBytes": 0}})
+        report = o.space_report()
+        self.assertEqual(sorted(row["id"] for row in report["runs"]), ["d" * 32, "wizard-run"])
+        for name in ("last30Days", "allTime"):
+            totals = report["totals"][name]
+            self.assertEqual(totals["estimateBytes"], sum(row.get("estimateBytes", 0) for row in report["runs"]))
+            for field in o.SPACE_FIELDS:
+                self.assertEqual(totals["observed"][field], sum(row["observed"][field] for row in report["runs"]))
+            self.assertEqual(totals["observed"], {"freedBytes": 700, "inTrashBytes": 350, "restoredBytes": 0})
+
     def test_restore_never_overwrites_replacement(self):
         plan = self.plan()
         with patch.object(o, "process_cwds", return_value=[]), patch.object(Path, "home", return_value=self.root):

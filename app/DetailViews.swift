@@ -71,13 +71,8 @@ struct OverviewView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(project.active ? "Project in use" : !project.activityKnown ? "Activity needs verification" : project.needsPreservation ? "Local work to preserve" : "Ready for a closer review")
-                        .font(.headline)
-                    Text(project.active ? "Close project shells, agents and applications before cleanup or freezing." :
-                         !project.activityKnown ? "Refresh the project to check running sessions before making changes." :
-                         project.needsPreservation ? "Review the items below before removing a checkout." :
-                         "The catalog found no immediate preservation flags. Review ignored files before removing anything.")
-                        .font(.callout).foregroundStyle(.secondary)
+                    Text(project.overviewSummary.title).font(.headline)
+                    Text(project.overviewSummary.detail).font(.callout).foregroundStyle(.secondary)
                 }
                 Grid(alignment: .leading, horizontalSpacing: 24, verticalSpacing: 10) {
                     fact("Remote", project.remoteStatus)
@@ -504,7 +499,7 @@ struct CleanupView: View {
                 Text("\(chosen.count) selected · \(bytes(selectedSize))").font(.callout).monospacedDigit()
                 Spacer()
                 Button("Review selected cleanup…") { store.preview(chosen.map(\.id).sorted()) }
-                    .buttonStyle(.borderedProminent).disabled(store.busy || chosen.isEmpty)
+                    .buttonStyle(WizardPrimaryButtonStyle()).disabled(store.busy || chosen.isEmpty)
             }
         }.padding(16)
     }

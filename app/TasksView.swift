@@ -81,11 +81,19 @@ struct TasksView: View {
     @LocalState var clock = "09:00"
     @LocalState var message = ""
     @LocalState var cliInstalled = false
+    @LocalState var cliPath = ""
     @LocalState var runs: [TaskRun] = []
     @LocalState var review: WizardPlan?
     @LocalState var selectedRun: String?
     @LocalState var deleteConfirm = false
     var item: TaskItem? { items.first { $0.id == selected } }
+    var locations: String {
+        if store.isDemo || UserPreferences.appIdentifier == ConfigRoot.releaseIdentifier {
+            return "CLI: ~/.local/bin/igloo · Tasks: ~/.config/igloo/tasks.json"
+        }
+        return "CLI: " + (cliPath as NSString).abbreviatingWithTildeInPath + " · Tasks: "
+            + ConfigRoot.displayPath(UserPreferences.file.deletingLastPathComponent().appendingPathComponent("tasks.json"))
+    }
     var dirty: Bool { newTask || assembled != item?.definition }
     var assembled: SavedTask {
         var value = draft
@@ -141,7 +149,7 @@ struct TasksView: View {
                                 store.invoke(["task-save", encode(assembled)], as: Reply.self) { value in
                                     message = value.message ?? ""; selected = draft.id; newTask = false; reload()
                                 }
-                            }.buttonStyle(.borderedProminent).disabled(store.busy || !dirty || draft.name.isEmpty || draft.id.isEmpty || store.isDemo)
+                            }.buttonStyle(WizardPrimaryButtonStyle()).disabled(store.busy || !dirty || draft.name.isEmpty || draft.id.isEmpty || store.isDemo)
                         }
                     } else {
                         ContentUnavailableView("Save your first task", systemImage: "checklist",
@@ -152,7 +160,7 @@ struct TasksView: View {
             Divider()
             HStack {
                 if store.busy { ProgressView().controlSize(.small) }
-                Text(message.isEmpty ? "CLI: ~/.local/bin/igloo · Tasks: ~/.config/igloo/tasks.json" : message)
+                Text(message.isEmpty ? locations : message)
                     .font(.caption).foregroundStyle(.secondary).lineLimit(3).textSelection(.enabled)
                 Spacer()
                 Button("Done") { dismiss() }.keyboardShortcut(.cancelAction).disabled(store.busy)
@@ -276,7 +284,7 @@ struct TasksView: View {
     }
     func reload() {
         store.invoke(["task-list"], as: TaskListing.self) { value in
-            items = value.tasks; cliInstalled = value.cliInstalled
+            items = value.tasks; cliInstalled = value.cliInstalled; cliPath = value.cliPath
             if initialRules != nil && selected == nil && !newTask { begin() }
             else if let item = item { edit(item) }
             else if selected == nil && !newTask { selected = items.first?.id }
@@ -328,7 +336,7 @@ struct TaskPlanReview: View {
                 Spacer()
                 Button(plan.outcome?.actionLabel ?? "Move reviewed folders to Trash") {
                     store.invoke(["task-apply", plan.id], as: TaskRun.self) { _ in dismiss(); completed() }
-                }.buttonStyle(.borderedProminent).disabled(store.busy || !accepted || !allowApply || plan.status != "review" || !plan.rows.contains { $0.status == "ready" } || store.isDemo)
+                }.buttonStyle(WizardPrimaryButtonStyle()).disabled(store.busy || !accepted || !allowApply || plan.status != "review" || !plan.rows.contains { $0.status == "ready" } || store.isDemo)
             }
         }.padding(24).frame(width: 850, height: 640).interactiveDismissDisabled(store.busy)
     }

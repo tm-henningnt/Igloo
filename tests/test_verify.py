@@ -170,6 +170,29 @@ class Example(unittest.TestCase):
         self.assertIn("FAIL public content:", result.stdout)
         self.assertIn("docs/public.md:1", result.stdout)
 
+    def test_public_content_rejects_process_role_from_policy(self):
+        terms = json.loads((ROOT / "private-paths.json").read_text())["terms"]
+        role = "orch" + "estrator"
+        self.assertIn(role, terms)
+        self.write("private-paths.json", json.dumps({"paths": [], "terms": terms, "allowedLines": {}}))
+        self.write("README.md", "The " + role + " checks this page.\n")
+        self.write("public-files.json", json.dumps({"files": ["README.md", "release.json"]}))
+        result = self.fast()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("FAIL public content:", result.stdout)
+        self.assertIn("README.md:1", result.stdout)
+
+    def test_public_content_rejects_draft_release_notes(self):
+        for text, line in (("Igloo 9.9.9\n" + "Dr" + "aft notes.\n", 2), ("Igloo 9.9.9\n\n- " + "TO" + "DO list fixes\n", 3)):
+            with self.subTest(line=line):
+                self.write("private-paths.json", json.dumps({"paths": [], "terms": [], "allowedLines": {}}))
+                self.write("release-notes/9.9.9.md", text)
+                self.write("public-files.json", json.dumps({"files": ["release-notes/9.9.9.md", "release.json"]}))
+                result = self.fast()
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("draft text in public release notes: release-notes/9.9.9.md:%d" % line, result.stdout)
+                self.assertNotIn("list fixes", result.stdout)
+
     def test_public_updater_tests_import_without_private_release_tests(self):
         self.write("tests/test_updates.py", (ROOT / "tests/test_updates.py").read_text())
         result = subprocess.run([sys.executable, "-B", "-c", "import tests.test_updates"],

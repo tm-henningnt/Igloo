@@ -32,7 +32,7 @@ struct PlanView: View {
                         store.action(["note", project.id, note])
                     }
                 }
-                    .buttonStyle(.borderedProminent).disabled(store.busy)
+                    .buttonStyle(WizardPrimaryButtonStyle()).disabled(store.busy)
                     .accessibilityIdentifier("detail.savePreservation")
             }.padding(12).background(.bar)
         }
@@ -52,6 +52,9 @@ struct LifecycleControls: View {
                         .accessibilityIdentifier("detail.connectRemote")
                     Button("Commit selected files…") { store.commitSetup = project }
                         .disabled(project.changes.isEmpty)
+                        .help(store.busy ? "Wait for the current operation to finish." :
+                              (!project.git ? "Only Git projects can commit selected files." :
+                               (project.changes.isEmpty ? "There are no changed files to commit." : "Review and commit selected files.")))
                         .accessibilityIdentifier("detail.commitSelectedFiles")
                     Button("Preserve…") { selectedMode = .preserve }
                         .help(project.git ? "Preserve this project; its checkout stays in place." : "Igloo can preserve Git projects only.")
@@ -67,6 +70,9 @@ struct LifecycleControls: View {
                     .accessibilityIdentifier("detail.connectRemote")
                 Button("Commit selected files…") { store.commitSetup = project }
                     .disabled(project.changes.isEmpty)
+                    .help(store.busy ? "Wait for the current operation to finish." :
+                          (!project.git ? "Only Git projects can commit selected files." :
+                           (project.changes.isEmpty ? "There are no changed files to commit." : "Review and commit selected files.")))
                     .accessibilityIdentifier("detail.commitSelectedFiles")
                 Button("Preserve…") { selectedMode = .preserve }
                     .help(project.git ? "Preserve this project; its checkout stays in place." : "Igloo can preserve Git projects only.")
@@ -125,22 +131,26 @@ struct RemoteSetupView: View {
             Toggle(mode == "Existing repository" ? "Connect this exact remote URL." : "Create this private GitHub repository and connect it.", isOn: $accepted)
             HStack {
                 Button("Cancel", role: .cancel) { if let onClose { onClose() } else { store.remoteSetup = nil } }
+                if store.busy { SheetProgressRow(text: store.status) }
                 Spacer()
                 Button(mode == "Existing repository" ? "Add remote" : "Create private repository") {
                     let args = mode == "Existing repository"
                         ? ["remote-add", project.path, remote, url.trimmingCharacters(in: .whitespacesAndNewlines)]
                         : ["github-create", project.path, owner + "/" + repository, remote]
-                    if let onClose { onClose() } else { store.remoteSetup = nil }
+                    // The demo refuses the action, so the sheet stays open to show the refusal.
+                    if !store.isDemo { if let onClose { onClose() } else { store.remoteSetup = nil } }
                     store.action(args)
-                }.buttonStyle(.borderedProminent)
+                }.buttonStyle(WizardPrimaryButtonStyle())
                     .disabled(store.busy || !accepted || remote.isEmpty ||
                               (mode == "Existing repository" ? url.isEmpty : owner.isEmpty || repository.isEmpty))
             }
         }.padding(24).frame(width: 720)
+            .sheetErrorAlert(store)
             .onAppear {
                 repository = project.name
                 remote = project.remotes.contains(where: { $0.name == "origin" }) ? "archive" : "origin"
-                store.invoke(["github-status"], as: GitHubStatus.self) { result in
+                store.invoke(["github-status"], as: GitHubStatus.self,
+                             failed: { _ in accountStatus = "The GitHub CLI status is unavailable." }) { result in
                     login = result.login
                     accountStatus = result.message + (result.login.isEmpty ? "" : " Signed in as " + result.login + ".")
                     if owner.isEmpty { owner = store.preferences.githubOwner.isEmpty ? result.login : store.preferences.githubOwner }
@@ -176,7 +186,7 @@ struct CommitSetupView: View {
                     Button("Commit selection") {
                         if let onClose { onClose() } else { store.commitSetup = nil }
                         store.action(["commit-execute", review.id, message])
-                    }.buttonStyle(.borderedProminent).disabled(store.busy || !accepted || message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }.buttonStyle(WizardPrimaryButtonStyle()).disabled(store.busy || !accepted || message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             } else {
                 if checkouts.isEmpty {
@@ -199,7 +209,7 @@ struct CommitSetupView: View {
                     Button("Review selection…") {
                         let files = changes.filter { selected.contains($0.id) }.map(\.path)
                         store.invoke(["commit-preview", checkout] + files, as: CommitReviewPlan.self) { plan = $0 }
-                    }.buttonStyle(.borderedProminent).disabled(store.busy || selected.isEmpty)
+                    }.buttonStyle(WizardPrimaryButtonStyle()).disabled(store.busy || selected.isEmpty)
                 }
             }
         }.padding(24).frame(width: 820, height: 580)
@@ -256,7 +266,12 @@ struct FreezeSetupView: View {
     @LocalState var fixingCommit = false
     @LocalState var refreshPending = false
     private var isShowingResult: Bool { result != nil || captureResult != nil }
-    private var freezeSheetHeight: CGFloat { isShowingResult ? 390 : 690 }
+    private var freezeSheetHeight: CGFloat {
+        if isShowingResult { return 390 }
+        guard let review = plan ?? captureReview else { return 690 }
+        return min(690, max(430, reviewSheetChromeHeight + reviewPaneHeight(review) + reviewOutcomeHeight(review.outcome)))
+    }
+    private var reviewSheetChromeHeight: CGFloat { 250 }
     var currentProject: Project { store.snapshot?.projects.first(where: { $0.id == project.id }) ?? project }
     var shownBlockers: [FreezeBlocker]? {
         let values = blockers ?? (store.isDemo ? DemoPreservationCatalog.load()?.projects.first(where: { $0.id == project.id })?.blockers : nil)
@@ -264,6 +279,29 @@ struct FreezeSetupView: View {
         return values.filter { $0.code == captureBlocker }
     }
     func close() { if let onClose { onClose() } else { store.freezeSetup = nil } }
+    private var demoFileActionReason: String { "Open in Finder and Open Terminal are unavailable in demo mode." }
+    // Names the first open requirement, so the disabled Build review button is never a dead end.
+    private var buildReviewBlockedReason: String? {
+        if store.busy { return "Wait for the current operation to finish." }
+        guard let values = shownBlockers else { return "Check the requirements first." }
+        if let first = values.first { return "Blocked by the requirement above: " + first.shortLabel + "." }
+        if remote.isEmpty { return "Connect a remote to choose a publish destination." }
+        return nil
+    }
+    @ViewBuilder private func reviewRows(_ values: [String], emptyMessage: String) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 8) {
+                if values.isEmpty {
+                    Text(emptyMessage).foregroundStyle(.secondary)
+                } else {
+                    ForEach(Array(values.enumerated()), id: \.offset) { _, value in
+                        Text(value).textSelection(.enabled)
+                    }
+                }
+            }.frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(height: reviewRowsPaneHeight(values, emptyMessage: emptyMessage), alignment: .top)
+    }
     func refreshBlockers() {
         guard !store.busy else { refreshPending = true; return }
         refreshPending = false
@@ -320,6 +358,86 @@ struct FreezeSetupView: View {
         return PreservationResult(state: preserved ? "ready" : "frozen",
             message: captureStage == "failure" ? "Demo only: Freeze stopped; the project is Preserved and its checkouts are still in place." : "Demo only: these results are simulated.",
             outcome: outcome)
+    }
+    private var reviewTextCharactersPerLine: Int {
+        max(32, Int((sheetWidth(900) - 48) / 7))
+    }
+    private func estimatedReviewLines(_ text: String) -> Int {
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false).reduce(0) { count, line in
+            count + max(1, Int(ceil(Double(line.count) / Double(reviewTextCharactersPerLine))))
+        }
+        return max(1, lines)
+    }
+    private func reviewPaneHeight(_ review: PreservationReview) -> CGFloat {
+        switch reviewTopic {
+        case "Local recovery":
+            return reviewRowsPaneHeight(review.localFiles, emptyMessage: "No local recovery files.")
+        case "Reinstall or rebuild":
+            return reviewRowsPaneHeight(review.excluded, emptyMessage: "No reinstall or rebuild exclusions.")
+        case "Checkouts":
+            return reviewRowsPaneHeight(review.checkouts.map { $0 == project.path ? project.name : $0 },
+                                        emptyMessage: "No checkouts to publish.")
+        default:
+            return reviewHistoryPaneHeight(review)
+        }
+    }
+    private func reviewHistoryPaneHeight(_ review: PreservationReview) -> CGFloat {
+        var itemHeights: [CGFloat] = [18]
+        itemHeights += review.publish.map { ref in
+            let hash = shortGitHash(ref.sha)
+            return CGFloat(estimatedReviewLines(ref.ref + (hash.isEmpty ? "" : "\n" + hash))) * 14
+        }
+        if !review.localRefs.isEmpty {
+            itemHeights.append(1)
+            itemHeights.append(18)
+            itemHeights += review.localRefs.map { CGFloat(estimatedReviewLines($0.ref)) * 14 }
+        }
+        let spacing = CGFloat(max(0, itemHeights.count - 1)) * 10
+        return min(210, max(28, itemHeights.reduce(0, +) + spacing))
+    }
+    private func reviewRowsPaneHeight(_ values: [String], emptyMessage: String) -> CGFloat {
+        let rows = values.isEmpty ? [emptyMessage] : values
+        let rowHeight = rows.reduce(CGFloat.zero) { $0 + CGFloat(estimatedReviewLines($1)) * 14 }
+        let spacing = CGFloat(max(0, rows.count - 1)) * 8
+        return min(210, max(24, rowHeight + spacing))
+    }
+    private func reviewOutcomeHeight(_ outcome: ReviewOutcome) -> CGFloat {
+        var rows = ["Expected outcome"]
+        if outcome.checkoutsRemoved.count > 0 {
+            rows.append("Checkouts removed: \(outcome.checkoutsRemoved.count) (estimate)")
+            rows += outcome.checkoutsRemoved.paths.map { "Checkout removed: " + $0 }
+        }
+        let estimateIsObserved = outcome.observed && outcome.observedSpace?.freedBytes.map {
+            bytes($0) == bytes(outcome.bytesFreedEstimate)
+        } == true
+        if !estimateIsObserved { rows.append("Estimate: about \(bytes(outcome.bytesFreedEstimate))") }
+        if let space = outcome.observedSpace {
+            if let value = space.freedBytes { rows.append("Freed from disk: \(bytes(value))") }
+            if let value = space.inTrashBytes { rows.append("In Trash: \(bytes(value))") }
+            if let value = space.restoredBytes { rows.append("Restored from Trash: \(bytes(value))") }
+            if outcome.observed, let freed = outcome.bytesFreed {
+                rows.append("Net space change after the archive copy: \(bytes(freed)) (observed)")
+            }
+        }
+        if outcome.bytesUsedEstimate > 0 {
+            rows.append("Additional space used: about \(bytes(outcome.bytesUsedEstimate)) (estimate)")
+        }
+        if outcome.archivesWritten.count > 0 {
+            rows.append("Archives written: \(outcome.archivesWritten.count) (estimate)")
+            if !outcome.archivesWritten.location.isEmpty { rows.append("Freezer: \(outcome.archivesWritten.location)") }
+            rows += outcome.archivesWritten.paths ?? []
+        }
+        if !outcome.refsPushed.isEmpty {
+            rows.append("Refs pushed: \(outcome.refsPushed.count) (estimate)")
+            rows += outcome.refsPushed.map { "Ref pushed: \($0.ref) · \(shortGitHash($0.sha)) → \($0.destination)" }
+        }
+        if outcome.movedToTrash > 0 { rows.append("Folders moved to Trash: \(outcome.movedToTrash) (estimate)") }
+        if !outcome.held.isEmpty {
+            rows.append("Not run: \(outcome.held.count) (estimate)")
+            rows += outcome.held.map { $0.path + " · " + $0.reason }
+        }
+        let lineCount = rows.reduce(0) { $0 + estimatedReviewLines($1) }
+        return min(180, max(32, CGFloat(lineCount) * 15 + CGFloat(max(0, rows.count - 1)) * 4))
     }
     func buildReview() {
         if store.isDemo { plan = demoReview(mode: mode, remote: remote); return }
@@ -396,16 +514,18 @@ struct FreezeSetupView: View {
                                 ForEach(review.localRefs) { ref in Text(ref.ref).textSelection(.enabled) }
                             }
                         }.frame(maxWidth: .infinity, alignment: .leading)
-                    }.frame(maxHeight: 210)
+                    }.frame(height: reviewHistoryPaneHeight(review), alignment: .top)
                     } else if reviewTopic == "Local recovery" {
-                        List(review.localFiles, id: \.self) { Text($0).textSelection(.enabled) }
+                        reviewRows(review.localFiles, emptyMessage: "No local recovery files.")
                     } else if reviewTopic == "Reinstall or rebuild" {
-                        List(review.excluded, id: \.self) { Text($0).textSelection(.enabled) }
+                        reviewRows(review.excluded, emptyMessage: "No reinstall or rebuild exclusions.")
                     } else {
-                        List(review.checkouts, id: \.self) { Text($0 == project.path ? project.name : $0).textSelection(.enabled) }
+                        reviewRows(review.checkouts.map { $0 == project.path ? project.name : $0 },
+                                   emptyMessage: "No checkouts to publish.")
                     }
-                }.font(.caption).frame(maxWidth: .infinity, maxHeight: .infinity)
-                    ScrollView { OutcomeSummaryView(outcome: review.outcome) }.frame(maxHeight: 180)
+                }.font(.caption).frame(maxWidth: .infinity, alignment: .topLeading)
+                    ScrollView { OutcomeSummaryView(outcome: review.outcome) }
+                        .frame(height: reviewOutcomeHeight(review.outcome), alignment: .top)
                 Text(review.message).font(.caption).foregroundStyle(.secondary)
                 HStack {
                     Button("Back") { plan = nil; refreshBlockers() }.disabled(store.busy)
@@ -432,21 +552,33 @@ struct FreezeSetupView: View {
                                 .accessibilityLabel(Text(blocker.message))
                             if blocker.code == "no-files" {
                                 Button("Open in Finder") { NSWorkspace.shared.open(URL(fileURLWithPath: project.path)) }
-                                    .disabled(store.isDemo).accessibilityIdentifier("freeze.openFinder")
+                                    .disabled(store.isDemo).help(store.isDemo ? demoFileActionReason : "Open the project folder in Finder.")
+                                    .accessibilityIdentifier("freeze.openFinder")
                                 Button("Open Terminal") { store.terminal(project.path) }
-                                    .disabled(store.isDemo).accessibilityIdentifier("freeze.openTerminal")
+                                    .disabled(store.isDemo).help(store.isDemo ? demoFileActionReason : "Open the project folder in Terminal.")
+                                    .accessibilityIdentifier("freeze.openTerminal")
                             }
                             if blocker.fix == "connect-remote" {
                                 Button("Connect remote…") { fixingRemote = true }
-                                    .disabled(store.isDemo).accessibilityIdentifier("freeze.fixRemote")
+                                    .accessibilityIdentifier("freeze.fixRemote")
                             }
                             if blocker.fix == "commit" {
                                 Button("Commit selected files…") { fixingCommit = true }
-                                    .disabled(store.isDemo).accessibilityIdentifier("freeze.fixCommit")
+                                    .accessibilityIdentifier("freeze.fixCommit")
+                            }
+                            if blocker.code == "open-processes" {
+                                Button("Show Active sessions") { store.filter = "Active sessions"; close() }
+                                    .help("Close this sheet and list the projects with open processes.")
+                                    .accessibilityIdentifier("freeze.showActiveSessions")
+                                Button("Check again") { refreshBlockers() }.disabled(store.busy)
+                                    .accessibilityIdentifier("freeze.checkAgain")
                             }
                         }.font(.callout)
                             .accessibilityElement(children: .contain)
                             .accessibilityLabel(Text("Requirement: " + blocker.message))
+                    }
+                    if store.isDemo, blockers.contains(where: { $0.code == "no-files" }) {
+                        Text(demoFileActionReason).font(.caption).foregroundStyle(.secondary)
                     }
                 } else if store.busy {
                     Text("Checking requirements…").foregroundStyle(.secondary)
@@ -466,9 +598,15 @@ struct FreezeSetupView: View {
                     Button("Cancel", role: .cancel) { close() }
                         .accessibilityIdentifier("freeze.cancel")
                     Spacer()
+                    if let reason = buildReviewBlockedReason {
+                        Text(reason).font(.caption).foregroundStyle(.secondary)
+                            .multilineTextAlignment(.trailing).fixedSize(horizontal: false, vertical: true)
+                            .accessibilityIdentifier("freeze.buildReviewReason")
+                    }
                     Button("Build review…") {
                         buildReview()
-                    }.buttonStyle(WizardPrimaryButtonStyle()).disabled(store.busy || shownBlockers == nil || !(shownBlockers?.isEmpty ?? false) || remote.isEmpty)
+                    }.buttonStyle(WizardPrimaryButtonStyle()).disabled(buildReviewBlockedReason != nil)
+                        .help(buildReviewBlockedReason ?? "Build the review for this project.")
                         .accessibilityIdentifier("freeze.buildReview")
                 }
             }
@@ -538,6 +676,25 @@ struct FrozenProjectsView: View {
         return try? JSONDecoder().decode(DemoBackupEnvelope.self, from: data).backupStatus
     }
     var recoverable: Bool { ["frozen", "retiring", "removing", "rehydrating"].contains(archive?.state ?? "") }
+    private var backupActionDisabledReason: String? {
+        if store.isDemo { return "Backup actions are unavailable in demo mode." }
+        if store.busy { return "Wait for the current operation to finish." }
+        if shownBackup?.configured != true { return "Choose a Freezer backup folder in Settings to enable backup actions." }
+        return nil
+    }
+    private var recoveryActionDisabledReason: String? {
+        if store.isDemo { return "Recovery actions are unavailable in demo mode." }
+        if store.busy { return "Wait for the current operation to finish." }
+        if !recoverable { return "Select a Frozen archive to enable recovery." }
+        return nil
+    }
+    private var freezeActionDisabledReason: String? {
+        if store.isDemo { return "Freeze is unavailable in demo mode." }
+        if store.busy { return "Wait for the current operation to finish." }
+        guard let archive else { return "Select a Preserved project to enable Freeze." }
+        if archive.state != "ready" { return "Freeze is available for Preserved projects." }
+        return nil
+    }
     private func loadBackup() {
         guard !store.busy else { refreshBackupWhenIdle = true; return }
         refreshBackupWhenIdle = false
@@ -556,16 +713,16 @@ struct FrozenProjectsView: View {
         store.invoke([command], as: FreezerBackupStatus.self) { backup = $0 }
     }
     @ViewBuilder private func archiveTable(_ archives: [FrozenArchive], emptyTitle: String, emptyDescription: String) -> some View {
-        if sheetWidth(1080) < 850 {
+        if archives.isEmpty {
+            emptyArchiveState(title: emptyTitle, description: emptyDescription)
+        } else if sheetWidth(1080) < 850 {
             Table(archives, selection: $selected) {
                 TableColumn("Project", value: \.name).width(min: 140)
                 TableColumn("State") { Text(archiveStateLabel($0.state)) }.width(90)
                 TableColumn("Backup") { archive in
                     backupCell(for: archive)
                 }.width(min: 150)
-            }.overlay {
-                if archives.isEmpty { emptyArchiveState(title: emptyTitle, description: emptyDescription) }
-            }
+            }.frame(height: archiveTableHeight(archives))
         } else {
             Table(archives, selection: $selected) {
                 TableColumn("Project", value: \.name).width(min: 170)
@@ -575,10 +732,19 @@ struct FrozenProjectsView: View {
                 }.width(min: 170)
                 TableColumn("Created") { Text(shortDate($0.created)) }.width(100)
                 TableColumn("Git destination") { Text($0.destination).lineLimit(1).truncationMode(.middle).help($0.destination) }.width(min: 250)
-            }.overlay {
-                if archives.isEmpty { emptyArchiveState(title: emptyTitle, description: emptyDescription) }
-            }
+            }.frame(height: archiveTableHeight(archives))
         }
+    }
+    private func archiveTableHeight(_ archives: [FrozenArchive]) -> CGFloat {
+        let rowsHeight = archives.reduce(CGFloat.zero) { height, archive in
+            height + archiveRowHeight(for: archive)
+        }
+        return min(240, 30 + rowsHeight)
+    }
+    private func archiveRowHeight(for archive: FrozenArchive) -> CGFloat {
+        guard let value = shownBackup?.archives.first(where: { $0.id == archive.id }), !value.backedUp,
+              value.description.count > 28 else { return 29 }
+        return 40
     }
     @ViewBuilder private func backupCell(for archive: FrozenArchive) -> some View {
         let value = shownBackup?.archives.first(where: { $0.id == archive.id })
@@ -586,7 +752,7 @@ struct FrozenProjectsView: View {
         if value?.backedUp != true {
             let reason = value?.reason ?? "Backup status unavailable"
             Label {
-                Text(description).lineLimit(1).truncationMode(.tail)
+                Text(description).lineLimit(2).fixedSize(horizontal: false, vertical: true)
             } icon: {
                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
             }
@@ -596,7 +762,11 @@ struct FrozenProjectsView: View {
         }
     }
     private func emptyArchiveState(title: String, description: String) -> some View {
-        ContentUnavailableView(title, systemImage: "snowflake", description: Text(description))
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title).font(.callout).foregroundStyle(.secondary)
+            if !description.isEmpty { Text(description).font(.caption).foregroundStyle(.secondary) }
+        }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .padding(.horizontal, 10)
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -636,22 +806,28 @@ struct FrozenProjectsView: View {
                             Spacer()
                             Button("Remove from backup…") { removeBackup = copy; confirmBackupRemove = true }
                                 .disabled(store.busy || store.isDemo)
+                                .help(store.isDemo ? "Removing backup copies is unavailable in demo mode." :
+                                      (store.busy ? "Wait for the current operation to finish." : "Remove this orphaned backup copy."))
                                 .accessibilityLabel(Text("Remove backup copy " + copy.copyID))
                                 .accessibilityIdentifier("shelf.removeBackupCopy")
                         }.font(.caption)
                     }
-                }.frame(maxHeight: 90)
+                }.frame(height: orphanRowsHeight(backup.orphans))
             }
+            Spacer(minLength: 0)
             HStack {
             Button("Back up now") { runBackup("backup-run") }.disabled(store.busy || store.isDemo || shownBackup?.configured != true)
+                .help(backupActionDisabledReason ?? "Back up Preserved and Frozen archives now.")
                 .accessibilityIdentifier("shelf.backUpNow")
             Button("Verify backup") { runBackup("backup-verify") }.disabled(store.busy || store.isDemo || shownBackup?.configured != true)
+                .help(backupActionDisabledReason ?? "Verify the configured Freezer backup copies.")
                 .accessibilityIdentifier("shelf.verifyBackup")
             }
             HStack {
                 Button("Done") { store.vaultShown = false }.keyboardShortcut(.cancelAction)
                     .accessibilityIdentifier("shelf.done")
                 Button("Show archive") { if let a = archive { store.reveal(a.archiveLocation) } }.disabled(archive == nil)
+                    .help(archive == nil ? "Select an archive to show its Freezer copy." : "Show the selected archive in Finder.")
                     .accessibilityIdentifier("shelf.showArchive")
                 if let leftovers = archive?.leftovers, !leftovers.isEmpty {
                     Button("Show recovery copies") {
@@ -662,12 +838,15 @@ struct FrozenProjectsView: View {
                 Spacer()
                 Button("Freeze…") { removeConfirm = true }
                     .disabled(store.busy || store.isDemo || archive?.state != "ready")
+                    .help(freezeActionDisabledReason ?? "Freeze this Preserved project.")
                     .accessibilityIdentifier("shelf.freeze")
                 Button("Offline recovery…") { offline = true; restoreConfirm = true }
                     .disabled(store.busy || store.isDemo || !recoverable)
+                    .help(recoveryActionDisabledReason ?? "Recover the selected Frozen project from Freezer.")
                     .accessibilityIdentifier("shelf.offlineRecovery")
                 Button("Thaw from remote…") { offline = false; restoreConfirm = true }
-                    .buttonStyle(.borderedProminent).disabled(store.busy || store.isDemo || !recoverable)
+                    .buttonStyle(WizardPrimaryButtonStyle()).disabled(store.busy || store.isDemo || !recoverable)
+                    .help(recoveryActionDisabledReason ?? "Restore the selected Frozen project from its remote and Freezer.")
                     .accessibilityIdentifier("shelf.thawRemote")
             }
         }.padding(24).frame(width: sheetWidth(1080), height: 650)
@@ -697,6 +876,9 @@ struct FrozenProjectsView: View {
             } message: {
                 Text((archive?.path ?? "") + "\nExisting files will never be overwritten. The original branches, worktrees and local settings will return.")
             }
+    }
+    private func orphanRowsHeight(_ orphans: [FreezerBackupRow]) -> CGFloat {
+        min(90, CGFloat(orphans.count) * 30)
     }
 }
 

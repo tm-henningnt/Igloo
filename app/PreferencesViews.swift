@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UserNotifications
 
 struct UserPreferences: Codable {
     var version = 1
@@ -10,6 +11,9 @@ struct UserPreferences: Codable {
     var freezerBackupRoot = ""
     var freezerBackupCloudAcceptedRoot = ""
     var quietDays = 60
+    var quietReminderEnabled = false
+    var quietReminderWeekday = 1
+    var quietReminderTime = "09:00"
     var githubOwner = ""
     var pythonExecutable: String
     var gitExecutable = "/usr/bin/git"
@@ -24,19 +28,30 @@ struct UserPreferences: Codable {
         let path = resources.appendingPathComponent("python/" + architecture + "/bin/python3").path
         return FileManager.default.isExecutableFile(atPath: path) ? path : nil
     }
-    static var file: URL {
-        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/igloo/config.json")
+    static let appIdentifier = ConfigRoot.appIdentifier(Bundle.main.bundleIdentifier)
+    /// The first read in Igloo Dev copies the release settings into the Dev folder once.
+    static let file: URL = {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let folder = ConfigRoot.folder(for: appIdentifier, home: home)
+        if appIdentifier != ConfigRoot.releaseIdentifier, !CommandLine.arguments.contains("--demo") {
+            ConfigRoot.seed(folder, from: ConfigRoot.folder(for: ConfigRoot.releaseIdentifier, home: home))
+        }
+        return folder.appendingPathComponent("config.json")
+    }()
+    static var backendEnvironment: [String: String] {
+        ProcessInfo.processInfo.environment.merging(["IGLOO_APP_ID": appIdentifier]) { $1 }
     }
     static func defaults() -> UserPreferences {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let root = home + "/Projects"
-        let python = bundledPython ?? ["/opt/homebrew/bin/python3", "/usr/local/bin/python3", "/usr/bin/python3"].first { FileManager.default.isExecutableFile(atPath: $0) } ?? "/usr/bin/python3"
+        // The bundled Python is a runtime choice. The saved default is a system Python.
+        let python = ["/opt/homebrew/bin/python3", "/usr/local/bin/python3", "/usr/bin/python3"].first { FileManager.default.isExecutableFile(atPath: $0) } ?? "/usr/bin/python3"
         let gh = ["/opt/homebrew/bin/gh", "/usr/local/bin/gh"].first { FileManager.default.isExecutableFile(atPath: $0) } ?? "/opt/homebrew/bin/gh"
         return UserPreferences(projectsRoot: root, archiveRoot: home + "/.igloo/vault",
                                stateRoot: home + "/.igloo", cloneRoot: root,
                                pythonExecutable: python, githubExecutable: gh)
     }
-    static func read() -> UserPreferences {
+    static func read(ownBundle: String = Bundle.main.bundlePath) -> UserPreferences {
         let base = defaults()
         guard let data = try? Data(contentsOf: file),
               let values = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -44,7 +59,11 @@ struct UserPreferences: Codable {
               var merged = try? JSONSerialization.jsonObject(with: baseData) as? [String: Any] else { return base }
         for (key, value) in values { merged[key] = value }
         guard let full = try? JSONSerialization.data(withJSONObject: merged),
-              let decoded = try? JSONDecoder().decode(UserPreferences.self, from: full) else { return base }
+              var decoded = try? JSONDecoder().decode(UserPreferences.self, from: full) else { return base }
+        // A bundled Python of another app copy is ignored. The file changes only when the user saves.
+        if ConfigRoot.isForeignBundlePath(decoded.pythonExecutable, ownBundle: ownBundle) {
+            decoded.pythonExecutable = base.pythonExecutable
+        }
         return decoded
     }
     func validated() throws -> UserPreferences {
@@ -59,7 +78,7 @@ struct UserPreferences: Codable {
                 throw NSError(domain: "Settings", code: 1, userInfo: [NSLocalizedDescriptionKey: "Use an absolute Freezer backup path without traversal."])
             }
         }
-        p.pythonExecutable = Self.bundledPython ?? expand(p.pythonExecutable); p.gitExecutable = expand(p.gitExecutable)
+        p.pythonExecutable = expand(p.pythonExecutable); p.gitExecutable = expand(p.gitExecutable)
         p.githubExecutable = expand(p.githubExecutable)
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let root = URL(fileURLWithPath: p.projectsRoot).standardizedFileURL.path
@@ -83,7 +102,11 @@ struct UserPreferences: Codable {
         guard p.cloneRoot == root || p.cloneRoot.hasPrefix(root + "/"), (1...3650).contains(p.quietDays) else {
             throw NSError(domain: "Settings", code: 1, userInfo: [NSLocalizedDescriptionKey: "The clone folder must be inside the Projects root, and quiet days must be between 1 and 3650."])
         }
-        guard FileManager.default.isExecutableFile(atPath: p.pythonExecutable),
+        guard (0...6).contains(p.quietReminderWeekday),
+              p.quietReminderTime.range(of: "^(?:[01]\\d|2[0-3]):[0-5]\\d$", options: .regularExpression) != nil else {
+            throw NSError(domain: "Settings", code: 1, userInfo: [NSLocalizedDescriptionKey: "Choose a weekday and a 24-hour reminder time in HH:MM format."])
+        }
+        guard Self.bundledPython != nil || FileManager.default.isExecutableFile(atPath: p.pythonExecutable),
               FileManager.default.isExecutableFile(atPath: p.gitExecutable) else {
             throw NSError(domain: "Settings", code: 1, userInfo: [NSLocalizedDescriptionKey: "Choose installed Python and Git executables."])
         }
@@ -100,6 +123,57 @@ struct UserPreferences: Codable {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(self).write(to: Self.file, options: .atomic)
         try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: Self.file.path)
+    }
+}
+
+/// The configuration folder of each build. The release keeps its 0.1.0 folder.
+/// Every other build, including an unbundled binary, uses the Dev folder.
+enum ConfigRoot {
+    static let releaseIdentifier = "local.igloo"
+    static let devIdentifier = "local.igloo.dev"
+    /// Files that the first Dev read copies from the release folder.
+    static let seededFiles = ["config.json", "wizard.json"]
+
+    static func appIdentifier(_ bundleIdentifier: String?) -> String {
+        bundleIdentifier == releaseIdentifier ? releaseIdentifier : devIdentifier
+    }
+    static func folder(for identifier: String, home: URL) -> URL {
+        home.appendingPathComponent(identifier == releaseIdentifier ? ".config/igloo" : ".config/igloo.dev")
+    }
+    static func displayPath(_ url: URL) -> String {
+        (url.path as NSString).abbreviatingWithTildeInPath
+    }
+    /// The .app folder that contains path, or nil.
+    static func appBundle(of path: String) -> String? {
+        let parts = URL(fileURLWithPath: (path as NSString).expandingTildeInPath).resolvingSymlinksInPath().pathComponents
+        guard let index = parts.indices.dropLast().first(where: { parts[$0].hasSuffix(".app") && parts[$0 + 1] == "Contents" })
+        else { return nil }
+        return NSString.path(withComponents: Array(parts[...index]))
+    }
+    static func isForeignBundlePath(_ path: String, ownBundle: String) -> Bool {
+        guard let bundle = appBundle(of: path) else { return false }
+        return bundle != URL(fileURLWithPath: ownBundle).resolvingSymlinksInPath().path
+    }
+    /// Copies the release settings once. A Dev folder that exists is never changed.
+    static func seed(_ folder: URL, from release: URL) {
+        let fm = FileManager.default
+        guard !fm.fileExists(atPath: folder.path) else { return }
+        do {
+            try fm.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            for name in seededFiles {
+                let source = release.appendingPathComponent(name), target = folder.appendingPathComponent(name)
+                guard var data = try? Data(contentsOf: source) else { continue }
+                if name == "config.json" {
+                    guard var values = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+                    values.removeValue(forKey: "pythonExecutable")
+                    data = try JSONSerialization.data(withJSONObject: values, options: [.prettyPrinted, .sortedKeys])
+                }
+                try data.write(to: target, options: .atomic)
+                try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: target.path)
+            }
+        } catch {
+            // A failed copy leaves the Dev folder with defaults. The release folder is only read.
+        }
     }
 }
 
@@ -180,6 +254,14 @@ struct AppSettingsView: View {
     @LocalState var backupLocations: [BackupLocation] = []
     @LocalState var pendingCloud: BackupLocation?
     @LocalState var confirmCloud = false
+    /// Igloo Dev names its own folder, so a tester can see that the release settings stay unchanged.
+    var settingsLocation: String {
+        if store.isDemo || UserPreferences.appIdentifier == ConfigRoot.releaseIdentifier {
+            return "Settings live in ~/.config/igloo/config.json."
+        }
+        return "Igloo Dev settings live in " + ConfigRoot.displayPath(UserPreferences.file)
+            + ". The installed Igloo keeps its settings in ~/.config/igloo."
+    }
     var backupTitle: String {
         if draft.freezerBackupRoot.isEmpty { return "None" }
         let url = URL(fileURLWithPath: draft.freezerBackupRoot)
@@ -204,6 +286,38 @@ struct AppSettingsView: View {
                 pathField("Runtime state", value: $draft.stateRoot)
                 pathField("Default clone folder", value: $draft.cloneRoot)
                 Stepper("Quiet project threshold: \(draft.quietDays) days", value: $draft.quietDays, in: 1...3650)
+                Section("Quiet-project reminder") {
+                    Toggle("Remind me about quiet projects", isOn: $draft.quietReminderEnabled)
+                        .onChange(of: draft.quietReminderEnabled) { _, enabled in
+                            guard enabled, !store.isDemo else { return }
+                            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, error in
+                                DispatchQueue.main.async {
+                                    if let error {
+                                        message = "Notification permission could not be requested: \(error.localizedDescription)"
+                                    } else if granted {
+                                        message = "Notification permission is ready. Save settings to enable the reminder."
+                                    } else {
+                                        message = "Notifications are disabled. You can allow them in System Settings."
+                                    }
+                                }
+                            }
+                        }
+                    if draft.quietReminderEnabled {
+                        Picker("Weekday", selection: $draft.quietReminderWeekday) {
+                            Text("Sunday").tag(0)
+                            Text("Monday").tag(1)
+                            Text("Tuesday").tag(2)
+                            Text("Wednesday").tag(3)
+                            Text("Thursday").tag(4)
+                            Text("Friday").tag(5)
+                            Text("Saturday").tag(6)
+                        }
+                        TextField("Time (24-hour HH:MM)", text: $draft.quietReminderTime)
+                        Text("Igloo checks the saved catalog and sends one notification when projects pass the Freeze age. It does not change project files.")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .frame(maxWidth: 420, alignment: .leading).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
                 TextField("GitHub owner default", text: $draft.githubOwner, prompt: Text("Blank uses your authenticated personal account"))
                 DisclosureGroup("Installed tools") {
                     if UserPreferences.bundledPython != nil { Text("Python is included with Igloo.").foregroundStyle(.secondary) }
@@ -212,7 +326,7 @@ struct AppSettingsView: View {
                     TextField("GitHub CLI executable", text: $draft.githubExecutable)
                 }
             }
-            Text("Settings live in ~/.config/igloo/config.json. Changing storage paths selects another store; existing data stays at its old location.")
+            Text(settingsLocation + " Changing storage paths selects another store; existing data stays at its old location.")
                 .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
             if !message.isEmpty { Text(message).font(.callout) }
             HStack {
@@ -223,10 +337,17 @@ struct AppSettingsView: View {
                         let valid = try draft.validated()
                         try valid.write()
                         draft = valid; store.preferences = valid; store.quietDays = valid.quietDays
-                        store.selection = nil; store.load()
-                        message = "Saved. Run Analyze Projects after changing workspaces."
+                        store.selection = nil
+                        store.syncReminderAgent { error in
+                            if let error {
+                                message = "Settings saved, but the reminder schedule could not be updated: \(error)"
+                            } else {
+                                store.load()
+                                message = "Saved. Run Analyze Projects after changing workspaces."
+                            }
+                        }
                     } catch { message = error.localizedDescription }
-                }.buttonStyle(.borderedProminent).disabled(store.busy || store.isDemo)
+                }.buttonStyle(WizardPrimaryButtonStyle()).disabled(store.busy || store.isDemo)
             }
         }.padding(24).frame(width: 760)
             .onAppear {
@@ -314,6 +435,8 @@ struct RemoteRepositoriesView: View {
     @LocalState var plan: CloneReview?
     @LocalState var confirmed = false
     @LocalState var results: [ActionResult] = []
+    @LocalState var progress = ""
+    var captureLoading = false
     var visible: [GitHubRepository] {
         repositories.filter {
             (!hideLocal || !$0.alreadyLocal) && (search.isEmpty || ($0.slug + " " + $0.description).localizedCaseInsensitiveContains(search))
@@ -333,6 +456,7 @@ struct RemoteRepositoriesView: View {
                 Toggle("Clone these repositories into the listed new folders.", isOn: $confirmed)
                 HStack {
                     Button("Back") { plan = nil; confirmed = false }
+                    if store.busy { SheetProgressRow(text: store.status) }
                     Spacer()
                     Button("Clone selected repositories") {
                         store.invoke(["clone-execute", review.id], as: CloneReply.self) { reply in
@@ -344,7 +468,7 @@ struct RemoteRepositoriesView: View {
                             }
                             store.load()
                         }
-                    }.buttonStyle(.borderedProminent).disabled(store.busy || !confirmed)
+                    }.buttonStyle(WizardPrimaryButtonStyle()).disabled(store.busy || !confirmed)
                 }
             } else {
                 VStack(alignment: .leading, spacing: 4) {
@@ -353,9 +477,13 @@ struct RemoteRepositoriesView: View {
                         if !owners.isEmpty {
                             Menu("My accounts") { ForEach(owners, id: \.self) { value in Button(value) { owner = value } } }
                         }
-                        Button("Load repositories") { loadRepositories() }.disabled(store.busy || owner.isEmpty)
+                        Button("Load repositories") { loadRepositories() }.disabled(store.busy || !progress.isEmpty || owner.isEmpty)
                     }
-                    Text("Choose an account or organization.").font(.caption).foregroundStyle(.secondary)
+                    if progress.isEmpty {
+                        Text("Choose an account or organization.").font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        SheetProgressRow(text: progress)
+                    }
                 }
                 HStack {
                     TextField("Search repositories", text: $search)
@@ -368,7 +496,9 @@ struct RemoteRepositoriesView: View {
                     TableColumn("Local state") { Text($0.alreadyLocal ? "Already cloned" : $0.archived ? "Archived remote" : "Not cloned here") }.width(130)
                     TableColumn("Description", value: \.description).width(min: 250)
                 }.overlay {
-                    if visible.isEmpty {
+                    if visible.isEmpty && !progress.isEmpty {
+                        ProgressView(progress).accessibilityIdentifier("repositories.loading")
+                    } else if visible.isEmpty {
                         ContentUnavailableView(emptyTitle, systemImage: "network",
                                                description: Text(emptyDescription))
                     }
@@ -390,20 +520,26 @@ struct RemoteRepositoriesView: View {
                 }
                 HStack {
                     Button("Done") { store.repositoriesShown = false }.keyboardShortcut(.cancelAction)
+                    if store.busy && progress.isEmpty { SheetProgressRow(text: store.status) }
                     Spacer()
                     Text("\(visible.count) shown · \(selected.count) selected").font(.caption)
                     Button("Review clones…") {
                         let slugs = visible.filter { selected.contains($0.id) }.map(\.slug)
                         store.invoke(["clone-preview", parent] + slugs, as: CloneReview.self) { plan = $0 }
-                    }.buttonStyle(.borderedProminent).disabled(store.busy || selected.isEmpty)
+                    }.buttonStyle(WizardPrimaryButtonStyle()).disabled(store.busy || selected.isEmpty)
                         .help("\(selected.count) selected. Select one or more repositories to enable this review.")
                 }
             }
         }.padding(24).frame(width: sheetWidth(1120), height: 720)
+            .sheetErrorAlert(store)
             .onAppear {
                 parent = store.preferences.cloneRoot
                 owner = store.preferences.githubOwner
-                store.invoke(["github-status"], as: GitHubStatus.self) { status in
+                if captureLoading { progress = "Loading repositories for \(owner)…"; return }
+                guard !store.busy else { return }
+                progress = "Checking the GitHub CLI…"
+                store.invoke(["github-status"], as: GitHubStatus.self, failed: { _ in progress = "" }) { status in
+                    progress = ""
                     owners = status.owners ?? [status.login]
                     if owner.isEmpty { owner = status.login }
                     message = status.message
@@ -426,7 +562,10 @@ struct RemoteRepositoriesView: View {
         return "Load repositories for another account or organization."
     }
     private func loadRepositories() {
-        store.invoke(["github-repos", owner], as: RepositoryListing.self) { listing in
+        guard !store.busy else { return }
+        progress = "Loading repositories for \(owner)…"
+        store.invoke(["github-repos", owner], as: RepositoryListing.self, failed: { _ in progress = "" }) { listing in
+            progress = ""
             repositories = listing.repositories; selected = []; results = []
             message = listing.message + (listing.truncated ? " Showing the first 1,000 repositories." : "")
         }

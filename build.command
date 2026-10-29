@@ -28,7 +28,7 @@ SDK_PATH="$(xcrun --sdk macosx --show-sdk-path)"
 SOURCES=(app/Igloo.swift app/LifecycleViews.swift app/ReviewViews.swift app/PreferencesViews.swift app/SpaceViews.swift app/WizardViews.swift app/AboutView.swift app/DetailViews.swift app/NavigationViews.swift app/TasksView.swift app/DemoCatalog.swift app/ScopeInspector.swift app/UpdateInstaller.swift app/Updates.swift)
 for TARGET_ARCH in arm64 x86_64; do
   if [[ "$BUILD_ARCH" == "$TARGET_ARCH" || "$BUILD_ARCH" == universal ]]; then
-    /usr/bin/swiftc -swift-version 5 -O -parse-as-library -sdk "$SDK_PATH" -target "$TARGET_ARCH-apple-macos14.0" "${SOURCES[@]}" -o "$BUILD_TMP/Igloo-$TARGET_ARCH" -framework SwiftUI -framework AppKit
+    /usr/bin/swiftc -swift-version 5 -O -parse-as-library -sdk "$SDK_PATH" -target "$TARGET_ARCH-apple-macos14.0" "${SOURCES[@]}" -o "$BUILD_TMP/Igloo-$TARGET_ARCH" -framework SwiftUI -framework AppKit -framework UserNotifications
   fi
 done
 if [[ "$BUILD_ARCH" == universal ]]; then
@@ -46,7 +46,8 @@ Path(sys.argv[1]).write_bytes(plistlib.dumps({
 "CFBundleName":name,"CFBundleDisplayName":name,"CFBundleIdentifier":identifier,
 "CFBundleVersion":str(r["build"]),"CFBundleShortVersionString":r["version"],
 "IglooRuntime":sys.argv[2],"CFBundleExecutable":"Igloo","CFBundleIconFile":"AppIcon.icns","CFBundlePackageType":"APPL",
-"LSMinimumSystemVersion":r["minimumSystemVersion"],"NSHighResolutionCapable":True
+"LSMinimumSystemVersion":r["minimumSystemVersion"],"NSHighResolutionCapable":True,
+"CFBundleURLTypes":[{"CFBundleURLName":identifier,"CFBundleURLSchemes":["igloo"]}]
 }))' "$APP_BUNDLE/Contents/Info.plist" "$BUILD_RUNTIME"
 # Sign nested Python executables and extension modules before the outer app.
 "$IGLOO_PYTHON" -c 'from pathlib import Path; import subprocess,sys

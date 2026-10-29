@@ -817,6 +817,7 @@ def execute_freeze(identifier, mode=None, run_id=None, run_kind=None):
                         message="Preserved. Recovery and published refs verified. Checkouts are still present.")
         O.save(location / "manifest.json", manifest)
         plan["executed"] = O.now()
+        plan["spaceRunID"] = run_id
         O.save(plan_location, plan)
     except Exception as e:
         manifest["state"] = "incomplete"

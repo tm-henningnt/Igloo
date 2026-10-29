@@ -20,6 +20,7 @@ TEST_NAMES = (
     "tests.test_organizer.GuardTests",
     "tests.test_lifecycle.LifecycleTests",
     "tests.test_preferences.PreferencesTests",
+    "tests.test_preferences.NativePreferencesTests",
     "tests.test_space.SpaceTests",
     "tests.test_planning.PlanningTests",
     "tests.test_classification.ClassificationTests",
@@ -45,6 +46,8 @@ def command_environment(root=None):
     # Hooks can inherit locations belonging to the repository being pushed.
     env = {name: value for name, value in os.environ.items() if not name.startswith("GIT_")}
     env["PYTHONDONTWRITEBYTECODE"] = "1"
+    # Tests choose the app identity themselves. A caller's Igloo Dev identity must not leak in.
+    env.pop("IGLOO_APP_ID", None)
     # Site staging rejects generated output below the source tree. Fall back
     # to OS temporary storage when the caller puts temporary files in source.
     if root is not None:
@@ -326,6 +329,7 @@ def public_content(root):
     ):
         raise ValueError("allowedLines must map file paths to lists of exact lines")
     violations = set()
+    drafts = set()
     for name in files:
         path = (root / name).resolve()
         if not path.is_relative_to(root) or not path.is_file():
@@ -333,6 +337,9 @@ def public_content(root):
         for number, line in enumerate(path.read_bytes().splitlines(), 1):
             lower = line.lower()
             decoded = line.decode("utf-8", errors="replace")
+            if fnmatchcase(name, "release-notes/*.md") and (
+                    decoded.lstrip().startswith("Draft") or re.search(r"\b(TODO|TBD|FIXME)\b", decoded)):
+                drafts.add(f"{name}:{number}")
             for term in terms:
                 if term.lower().encode("utf-8") not in lower:
                     continue
@@ -358,6 +365,8 @@ def public_content(root):
                     violations.add(f"{name}:{number}")
     if violations:
         raise ValueError("private references in public files: " + ", ".join(sorted(violations)))
+    if drafts:
+        raise ValueError("draft text in public release notes: " + ", ".join(sorted(drafts)))
     return f"checked {len(files)} public files and their documentation links"
 
 

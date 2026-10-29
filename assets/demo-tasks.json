@@ -307,83 +307,6 @@
     }
   },
   "demoWizardThaw": {
-    "archives": [
-      {
-        "id": "demo-harbor",
-        "name": "Harbor CLI",
-        "path": "/Users/demo/Projects/Harbor CLI",
-        "state": "frozen",
-        "created": "2026-10-20",
-        "destination": "https://example.com/harbor/cli.git",
-        "message": "Fictional Frozen project.",
-        "archiveLocation": "/Users/demo/Project Recovery/demo-harbor",
-        "checkouts": 1,
-        "paths": [
-          "/Users/demo/Projects/Harbor CLI"
-        ],
-        "leftovers": []
-      },
-      {
-        "id": "demo-signal",
-        "name": "Signal Lab",
-        "path": "/Users/demo/Projects/Signal Lab",
-        "state": "frozen",
-        "created": "2026-10-17",
-        "destination": "https://example.com/harbor/signal.git",
-        "message": "Fictional Frozen project.",
-        "archiveLocation": "/Users/demo/Project Recovery/demo-signal",
-        "checkouts": 1,
-        "paths": [
-          "/Users/demo/Projects/Signal Lab"
-        ],
-        "leftovers": []
-      },
-      {
-        "id": "demo-tidemark",
-        "name": "Tidemark Notes",
-        "path": "/Users/demo/Projects/Tidemark Notes",
-        "state": "frozen",
-        "created": "2026-10-12",
-        "destination": "https://example.com/harbor/tidemark.git",
-        "message": "Fictional Frozen project.",
-        "archiveLocation": "/Users/demo/Project Recovery/demo-tidemark",
-        "checkouts": 1,
-        "paths": [
-          "/Users/demo/Projects/Tidemark Notes"
-        ],
-        "leftovers": []
-      },
-      {
-        "id": "demo-cedar",
-        "name": "Cedar Notes",
-        "path": "/Users/demo/Projects/Cedar Notes",
-        "state": "frozen",
-        "created": "2026-10-08",
-        "destination": "https://example.com/harbor/cedar.git",
-        "message": "Fictional Frozen project.",
-        "archiveLocation": "/Users/demo/Project Recovery/demo-cedar",
-        "checkouts": 1,
-        "paths": [
-          "/Users/demo/Projects/Cedar Notes"
-        ],
-        "leftovers": []
-      },
-      {
-        "id": "demo-maproom",
-        "name": "Map Room",
-        "path": "/Users/demo/Projects/Map Room",
-        "state": "frozen",
-        "created": "2026-10-02",
-        "destination": "https://example.com/harbor/map-room.git",
-        "message": "Fictional Frozen project.",
-        "archiveLocation": "/Users/demo/Project Recovery/demo-maproom",
-        "checkouts": 1,
-        "paths": [
-          "/Users/demo/Projects/Map Room"
-        ],
-        "leftovers": []
-      }
-    ],
     "review": {
       "id": "demo-thaw-review",
       "created": "2026-10-27T10:00:00+00:00",
@@ -393,53 +316,53 @@
       "message": "Only ready projects will run. Blocked projects stay untouched.",
       "rows": [
         {
-          "id": "demo-harbor",
-          "archiveID": "demo-harbor",
-          "name": "Harbor CLI",
-          "path": "/Users/demo/Projects/Harbor CLI",
+          "id": "demo-icegarden",
+          "archiveID": "demo-icegarden",
+          "name": "Ice Garden",
+          "path": "/Users/demo/Projects/Ice Garden",
           "status": "ready",
           "message": "Ready. The remote is reachable; the Freezer archive supplies any Frozen refs missing from it.",
-          "destination": "https://example.com/harbor/cli.git",
+          "destination": "https://example.com/harbor/ice-garden.git",
           "refs": [
             {
-              "path": "/Users/demo/Projects/Harbor CLI",
+              "path": "/Users/demo/Projects/Ice Garden",
               "ref": "refs/heads/main",
               "sha": "abc1234"
             }
           ],
           "checkouts": [
-            "/Users/demo/Projects/Harbor CLI"
+            "/Users/demo/Projects/Ice Garden"
           ],
           "localFiles": [
-            "/Users/demo/Projects/Harbor CLI/settings.local"
+            "/Users/demo/Projects/Ice Garden/settings.local"
           ],
-          "archiveLocation": "/Users/demo/Project Recovery/demo-harbor",
+          "archiveLocation": "/Users/demo/Project Recovery/demo-icegarden",
           "checksums": {},
           "destinationStates": [],
           "state": "frozen"
         },
         {
-          "id": "demo-signal",
-          "archiveID": "demo-signal",
-          "name": "Signal Lab",
-          "path": "/Users/demo/Projects/Signal Lab",
+          "id": "demo-beacon",
+          "archiveID": "demo-beacon",
+          "name": "Beacon Lab",
+          "path": "/Users/demo/Projects/Beacon Lab",
           "status": "blocked",
           "message": "The original path is occupied. Inspect its contents in Finder before Thaw.",
-          "destination": "https://example.com/harbor/signal.git",
+          "destination": "https://example.com/harbor/beacon.git",
           "refs": [
             {
-              "path": "/Users/demo/Projects/Signal Lab",
+              "path": "/Users/demo/Projects/Beacon Lab",
               "ref": "refs/heads/main",
               "sha": "abc1234"
             }
           ],
           "checkouts": [
-            "/Users/demo/Projects/Signal Lab"
+            "/Users/demo/Projects/Beacon Lab"
           ],
           "localFiles": [
-            "/Users/demo/Projects/Signal Lab/settings.local"
+            "/Users/demo/Projects/Beacon Lab/settings.local"
           ],
-          "archiveLocation": "/Users/demo/Project Recovery/demo-signal",
+          "archiveLocation": "/Users/demo/Project Recovery/demo-beacon",
           "checksums": {},
           "destinationStates": [],
           "state": "frozen"
@@ -554,7 +477,7 @@
       ],
       "held": [
         {
-          "path": "/Users/demo/Projects/Signal Lab",
+          "path": "/Users/demo/Projects/Beacon Lab",
           "reason": "The original path is occupied. Inspect its contents in Finder before Thaw."
         },
         {
@@ -591,7 +514,7 @@
         "movedToTrash": 0,
         "held": [
           {
-            "path": "/Users/demo/Projects/Signal Lab",
+            "path": "/Users/demo/Projects/Beacon Lab",
             "reason": "The original path is occupied. Inspect its contents in Finder before Thaw."
           },
           {
@@ -615,14 +538,14 @@
         "checkoutsRestored": {
           "count": 1,
           "paths": [
-            "/Users/demo/Projects/Harbor CLI"
+            "/Users/demo/Projects/Ice Garden"
           ]
         },
         "archivesUsed": {
           "count": 1,
           "location": "/Users/demo/Project Recovery",
           "paths": [
-            "/Users/demo/Project Recovery/demo-harbor"
+            "/Users/demo/Project Recovery/demo-icegarden"
           ]
         }
       }
@@ -636,53 +559,53 @@
       "message": "Thaw completed. Inspect each project result; completed projects remain restored.",
       "rows": [
         {
-          "id": "demo-harbor",
-          "archiveID": "demo-harbor",
-          "name": "Harbor CLI",
-          "path": "/Users/demo/Projects/Harbor CLI",
+          "id": "demo-icegarden",
+          "archiveID": "demo-icegarden",
+          "name": "Ice Garden",
+          "path": "/Users/demo/Projects/Ice Garden",
           "status": "done",
           "message": "Project thawed to its preserved state. Checkout and remote refs were restored. Dependencies remain uninstalled.",
-          "destination": "https://example.com/harbor/cli.git",
+          "destination": "https://example.com/harbor/ice-garden.git",
           "refs": [
             {
-              "path": "/Users/demo/Projects/Harbor CLI",
+              "path": "/Users/demo/Projects/Ice Garden",
               "ref": "refs/heads/main",
               "sha": "abc1234"
             }
           ],
           "checkouts": [
-            "/Users/demo/Projects/Harbor CLI"
+            "/Users/demo/Projects/Ice Garden"
           ],
           "localFiles": [
-            "/Users/demo/Projects/Harbor CLI/settings.local"
+            "/Users/demo/Projects/Ice Garden/settings.local"
           ],
-          "archiveLocation": "/Users/demo/Project Recovery/demo-harbor",
+          "archiveLocation": "/Users/demo/Project Recovery/demo-icegarden",
           "checksums": {},
           "destinationStates": [],
           "state": "frozen"
         },
         {
-          "id": "demo-signal",
-          "archiveID": "demo-signal",
-          "name": "Signal Lab",
-          "path": "/Users/demo/Projects/Signal Lab",
+          "id": "demo-beacon",
+          "archiveID": "demo-beacon",
+          "name": "Beacon Lab",
+          "path": "/Users/demo/Projects/Beacon Lab",
           "status": "blocked",
           "message": "The original path is occupied. Inspect its contents in Finder before Thaw. No files were changed.",
-          "destination": "https://example.com/harbor/signal.git",
+          "destination": "https://example.com/harbor/beacon.git",
           "refs": [
             {
-              "path": "/Users/demo/Projects/Signal Lab",
+              "path": "/Users/demo/Projects/Beacon Lab",
               "ref": "refs/heads/main",
               "sha": "abc1234"
             }
           ],
           "checkouts": [
-            "/Users/demo/Projects/Signal Lab"
+            "/Users/demo/Projects/Beacon Lab"
           ],
           "localFiles": [
-            "/Users/demo/Projects/Signal Lab/settings.local"
+            "/Users/demo/Projects/Beacon Lab/settings.local"
           ],
-          "archiveLocation": "/Users/demo/Project Recovery/demo-signal",
+          "archiveLocation": "/Users/demo/Project Recovery/demo-beacon",
           "checksums": {},
           "destinationStates": [],
           "state": "frozen"
@@ -797,7 +720,7 @@
       ],
       "held": [
         {
-          "path": "/Users/demo/Projects/Signal Lab",
+          "path": "/Users/demo/Projects/Beacon Lab",
           "reason": "The original path is occupied. Inspect its contents in Finder before Thaw."
         },
         {
@@ -834,7 +757,7 @@
         "movedToTrash": 0,
         "held": [
           {
-            "path": "/Users/demo/Projects/Signal Lab",
+            "path": "/Users/demo/Projects/Beacon Lab",
             "reason": "The original path is occupied. Inspect its contents in Finder before Thaw."
           },
           {
@@ -858,19 +781,19 @@
         "checkoutsRestored": {
           "count": 1,
           "paths": [
-            "/Users/demo/Projects/Harbor CLI"
+            "/Users/demo/Projects/Ice Garden"
           ]
         },
         "archivesUsed": {
           "count": 1,
           "location": "/Users/demo/Project Recovery",
           "paths": [
-            "/Users/demo/Project Recovery/demo-harbor"
+            "/Users/demo/Project Recovery/demo-icegarden"
           ]
         },
         "refsRestored": [
           {
-            "path": "/Users/demo/Projects/Harbor CLI",
+            "path": "/Users/demo/Projects/Ice Garden",
             "ref": "refs/heads/main",
             "sha": "abc1234"
           }

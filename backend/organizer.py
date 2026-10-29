@@ -339,6 +339,9 @@ def space_report():
         value = load(path)
         if not isinstance(value, dict) or not isinstance(value.get("id"), str) or value["id"] in rows:
             continue
+        # A review that ran inside a wizard or task run is counted in that run's row only.
+        if value.get("spaceRunID") not in (None, value["id"]):
+            continue
         outcome = value.get("outcome") if isinstance(value.get("outcome"), dict) else {}
         if path.name.startswith("freeze-") and value.get("executed"):
             kind = "freeze"
@@ -1083,17 +1086,22 @@ def categorize(path, kind):
     return {"message": "Project type saved locally."}
 
 
+def command_waits_for_backend_lock(command):
+    return command == "remind-check"
+
+
 def main():
     parser = argparse.ArgumentParser()
-    commands = ["snapshot", "scan", "refresh", "fetch", "preview", "trash", "restore", "hold", "note", "push", "categorize", "space-report"] + sorted(lifecycle_module().COMMANDS) + ["wizard-state", "wizard-scan", "wizard-prepare", "wizard-execute", "wizard-thaw-prepare", "wizard-thaw-execute", "task-list", "task-save", "task-delete", "task-run", "task-apply", "task-history", "task-install-cli", "task-schedule", "task-unschedule", "task-plan"]
+    commands = ["snapshot", "scan", "refresh", "fetch", "preview", "trash", "restore", "hold", "note", "push", "categorize", "space-report"] + sorted(lifecycle_module().COMMANDS) + ["wizard-state", "wizard-scan", "wizard-prepare", "wizard-execute", "wizard-thaw-prepare", "wizard-thaw-execute", "task-list", "task-save", "task-delete", "task-run", "task-apply", "task-history", "task-install-cli", "task-schedule", "task-unschedule", "task-plan", "remind-check", "remind-agent"]
     parser.add_argument("command", choices=commands, metavar="{" + ",".join(commands) + "}")
     parser.add_argument("args", nargs="*")
     args = parser.parse_args()
     STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
-    # Serialize all application commands across multiple windows/processes.
+    # Reminder requests wait behind active catalog work instead of being dropped.
     with open(STATE / "backend.lock", "a") as lock:
         try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            lock_mode = fcntl.LOCK_EX if command_waits_for_backend_lock(args.command) else fcntl.LOCK_EX | fcntl.LOCK_NB
+            fcntl.flock(lock, lock_mode)
         except BlockingIOError:
             print(json.dumps({"error": "Another analysis or action is running. Wait for it to finish."}))
             return 1
@@ -1110,7 +1118,7 @@ def main():
             elif args.command == "note": result = set_note(*args.args)
             elif args.command == "push": result = push_branch(*args.args)
             elif args.command == "categorize": result = categorize(*args.args)
-            elif args.command.startswith("task-"):
+            elif args.command.startswith(("task-", "remind-")):
                 import automation
                 automation.configure(sys.modules[__name__])
                 result = automation.dispatch(args.command, args.args)

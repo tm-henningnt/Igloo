@@ -1,5 +1,6 @@
 """Saved cache-maintenance tasks, durable runs and user LaunchAgents."""
 import hashlib
+import datetime as dt
 import json
 import os
 from pathlib import Path
@@ -16,7 +17,8 @@ import classification
 
 O = None
 COMMANDS = {"task-list", "task-save", "task-delete", "task-run", "task-apply", "task-history",
-            "task-install-cli", "task-schedule", "task-unschedule", "task-plan"}
+            "task-install-cli", "task-schedule", "task-unschedule", "task-plan",
+            "remind-check", "remind-agent"}
 MODULES = ("organizer.py", "preferences.py", "lifecycle.py", "planning.py", "classification.py", "automation.py", "task_cli.py", "LICENSE")
 
 def configure(organizer):
@@ -95,11 +97,21 @@ def save(value):
     O.save(task_path(), catalog)
     return {"message": "Task saved. Changed rules invalidate an existing schedule until it is enabled again."}
 
+def build_name(name):
+    """Igloo Dev keeps its schedules, logs and CLI apart from the release in the shared state root."""
+    return name + ".dev" if O.preferences.is_dev() else name
+
+def schedules_path():
+    return O.STATE / (build_name("task-schedules") + ".json")
+
 def schedules():
-    return O.load(O.STATE / "task-schedules.json", {})
+    return O.load(schedules_path(), {})
 
 def label(task_id):
-    return "local.igloo.task." + identifier(task_id)
+    return O.preferences.app_id() + ".task." + identifier(task_id)
+
+def cli_path():
+    return Path.home() / ".local/bin" / build_name("igloo")
 
 def loaded(task_id):
     try:
@@ -143,7 +155,7 @@ def listing():
         tasks.append({"definition": task, "schedule": schedule,
                       "lastRun": next((r for r in all_runs if r["taskID"] == task["id"]), None),
                       "compatible": task.get("root") == str(O.ROOT) and task.get("vault") == str(O.VAULT)})
-    cli = Path.home() / ".local/bin/igloo"
+    cli = cli_path()
     return {"tasks": sorted(tasks, key=lambda t:t["definition"]["name"].casefold()), "cliPath": str(cli),
             "cliInstalled": our_cli(cli)}
 
@@ -303,12 +315,13 @@ def install_cli():
             os.replace(temporary,target)
         if target.read_bytes() != data:
             fail("The installed task runtime changed. Remove that runtime version before reinstalling.")
-    cli = Path.home()/".local/bin/igloo"
+    cli = cli_path()
     cli.parent.mkdir(parents=True, exist_ok=True)
     if cli.is_symlink() or cli.exists() and not our_cli(cli):
-        fail("A different igloo executable already exists; it was not replaced.")
-    script = "#!/bin/sh\n# Igloo CLI\nexec " + shlex.quote(str(python)) + " -E -s -B " + shlex.quote(str(runtime/"task_cli.py")) + ' "$@"\n'
-    fd, temporary = tempfile.mkstemp(prefix=".igloo-", dir=cli.parent)
+        fail("A different " + cli.name + " executable already exists; it was not replaced.")
+    identity = "export IGLOO_APP_ID=" + O.preferences.DEV_ID + "\n" if O.preferences.is_dev() else ""
+    script = "#!/bin/sh\n# Igloo CLI\n" + identity + "exec " + shlex.quote(str(python)) + " -E -s -B " + shlex.quote(str(runtime/"task_cli.py")) + ' "$@"\n'
+    fd, temporary = tempfile.mkstemp(prefix="." + cli.name + "-", dir=cli.parent)
     with os.fdopen(fd, "w") as f: f.write(script)
     os.chmod(temporary, 0o700)
     os.replace(temporary, cli)
@@ -336,7 +349,7 @@ def schedule_task(task_id, value):
     folder=Path.home()/"Library/LaunchAgents";folder.mkdir(parents=True,exist_ok=True)
     plist=folder/(label(task_id)+".plist")
     if plist.is_symlink():fail("The LaunchAgent path is a symbolic link.")
-    logs=O.STATE/"task-logs";logs.mkdir(mode=0o700,parents=True,exist_ok=True)
+    logs=O.STATE/build_name("task-logs");logs.mkdir(mode=0o700,parents=True,exist_ok=True)
     out,err=logs/(task_id+".out.log"),logs/(task_id+".err.log")
     for path in (out,err):
         if path.is_symlink():fail("The task log path is a symbolic link.")
@@ -348,12 +361,12 @@ def schedule_task(task_id, value):
     with os.fdopen(fd,"wb") as f:f.write(plistlib.dumps(definition))
     subprocess.run(["/bin/launchctl","bootout",f"gui/{os.getuid()}/"+label(task_id)],capture_output=True)
     os.replace(tmp,plist)
-    registered=schedules();registered.pop(task_id,None);O.save(O.STATE/"task-schedules.json",registered)
+    registered=schedules();registered.pop(task_id,None);O.save(schedules_path(),registered)
     result=subprocess.run(["/bin/launchctl","bootstrap",f"gui/{os.getuid()}",str(plist)],capture_output=True)
     if result.returncode:fail("The LaunchAgent could not load. Its file is saved; check the current GUI login session.")
     registered[task_id]={"frequency":value["frequency"],"time":value["time"],"weekday":value.get("weekday",0),
                          "policyHash":policy_hash(task),"label":label(task_id),"plist":str(plist)}
-    O.save(O.STATE/"task-schedules.json",registered)
+    O.save(schedules_path(),registered)
     return {"message":"Schedule enabled. It runs while this user is logged in; no task was started now."}
 
 def unschedule(task_id):
@@ -364,8 +377,186 @@ def unschedule(task_id):
     plist=Path.home()/"Library/LaunchAgents"/(label(task_id)+".plist")
     if plist.is_symlink():fail("The LaunchAgent path is a symbolic link.")
     if plist.exists():plist.unlink()
-    value=schedules();value.pop(task_id,None);O.save(O.STATE/"task-schedules.json",value)
+    value=schedules();value.pop(task_id,None);O.save(schedules_path(),value)
     return {"message":"Schedule disabled. Run history and task definition were preserved."}
+
+def reminder_history_path():
+    return O.STATE / "reminder-history.json"
+
+def reminder_datetime(value):
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=dt.timezone.utc)
+        return parsed.astimezone(dt.timezone.utc)
+    except ValueError:
+        return None
+
+def reminder_age_days(timestamp, checked):
+    earlier = reminder_datetime(timestamp)
+    if earlier is None or checked is None:
+        return None
+    return max(0, (checked - earlier).days)
+
+def reminder_projects(snapshot, policy, checked):
+    """Refresh the age used by reminders without scanning or writing the catalog."""
+    projects = []
+    for original in snapshot.get("projects", []):
+        if not isinstance(original, dict):
+            continue
+        project = dict(original)
+        if policy["ageBasis"] == "git":
+            path = project.get("path")
+            if project.get("git") is True and isinstance(path, str) and path:
+                result, output = O.run_git(path, "log", "--all", "-1", "--format=%ct", timeout=10)
+                commit = output.strip()
+                if result == 0 and re.fullmatch(r"\d+", commit):
+                    project["ageDays"] = max(0, int((checked.timestamp() - int(commit)) // 86400)) if checked else None
+                else:
+                    project["ageDays"] = None
+            else:
+                project["ageDays"] = None
+        else:
+            scanned_at = project.get("verifiedAt") or snapshot.get("generated")
+            elapsed = reminder_age_days(scanned_at, checked)
+            age = project.get("fileAgeDays")
+            project["fileAgeDays"] = age + elapsed if type(age) is int and age >= 0 and elapsed is not None else None
+        projects.append(project)
+    return projects
+
+def reminder_size(size):
+    if size == 0:
+        return "0 bytes"
+    units = ("bytes", "KB", "MB", "GB", "TB", "PB")
+    value, unit = float(size), 0
+    while value >= 1024 and unit < len(units) - 1:
+        value /= 1024
+        unit += 1
+    if unit == 0:
+        whole = int(value)
+        return f"{whole} byte" if whole == 1 else f"{whole} bytes"
+    return f"{value:.1f} {units[unit]}"
+
+def reminder_notification_text(count, freeze_days, size):
+    noun, verb = ("project", "has") if count == 1 else ("projects", "have")
+    return f"{count} {noun} {verb} been quiet for more than {freeze_days} days ({reminder_size(size)})"
+
+def remind_check():
+    """Read the saved catalog and record one reminder check without changing projects."""
+    snapshot = O.snapshot()
+    policy = planning.state()["rules"]
+    checked = reminder_datetime(O.now())
+    frozen = {row.get("path") for row in snapshot.get("archives", [])
+              if row.get("state") in {"frozen", "retiring", "removing", "rehydrating"}}
+    fresh_snapshot = dict(snapshot, projects=reminder_projects(snapshot, policy, checked))
+    proposals = planning.suggest(fresh_snapshot, policy)
+    candidate_paths = {row["path"] for row in proposals if row["action"] == "freeze" and not row.get("held")
+                       and type(row.get("ageDays")) is int and row["ageDays"] > policy["freezeDays"]}
+    projects = {row["path"]: row for row in snapshot.get("projects", [])
+                if isinstance(row, dict) and isinstance(row.get("path"), str)}
+    ids = sorted(path for path in candidate_paths if path not in frozen and path in projects
+                 and not projects[path].get("hold", False))
+    size = sum(projects[path]["size"] for path in ids
+               if type(projects[path].get("size")) is int and projects[path]["size"] >= 0)
+    entry = {"checked": O.now(), "count": len(ids), "size": size, "ids": ids,
+             "freezeDays": policy["freezeDays"],
+             "message": reminder_notification_text(len(ids), policy["freezeDays"], size)}
+    history_path = reminder_history_path()
+    history = O.load(history_path, [])
+    if not isinstance(history, list) or any(not isinstance(row, dict) for row in history):
+        fail("The reminder history is invalid; existing data was preserved.")
+    history.append(entry)
+    O.save(history_path, history[-52:])
+    return entry
+
+def reminder_program_arguments(app_path):
+    # launchd starts the app executable itself, so Background activity names the app.
+    return [str(Path(app_path) / "Contents/MacOS/Igloo"), "--remind"]
+
+def reminder_label(bundle_id):
+    if bundle_id == "local.igloo":
+        return "local.igloo.remind"
+    if bundle_id == "local.igloo.dev":
+        return "local.igloo.dev.remind"
+    fail("The reminder belongs to an installed Igloo or Igloo Dev app.")
+
+def reminder_loaded(agent_label):
+    try:
+        result = subprocess.run(["/bin/launchctl", "print", f"gui/{os.getuid()}/{agent_label}"],
+                                capture_output=True, timeout=10)
+        return result.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+def configure_reminder(value):
+    if not isinstance(value, dict) or type(value.get("enabled")) is not bool:
+        fail("Choose whether the quiet-project reminder is enabled.")
+    weekday, clock = value.get("weekday"), value.get("time")
+    if type(weekday) is not int or not 0 <= weekday <= 6 or not isinstance(clock, str) or not re.fullmatch(
+            r"(?:[01]\d|2[0-3]):[0-5]\d", clock):
+        fail("Choose a weekday and a 24-hour HH:MM time.")
+    raw_path = value.get("appPath")
+    if not isinstance(raw_path, str) or not raw_path:
+        fail("The installed Igloo app path is missing.")
+    app_path = Path(raw_path).expanduser()
+    info_path = app_path / "Contents/Info.plist"
+    if not app_path.is_absolute() or app_path.suffix != ".app" or app_path.is_symlink() \
+            or not app_path.is_dir() or info_path.is_symlink() or not info_path.is_file():
+        fail("Choose the installed Igloo app bundle.")
+    try:
+        with info_path.open("rb") as stream:
+            bundle_id = plistlib.load(stream).get("CFBundleIdentifier")
+    except (OSError, ValueError, plistlib.InvalidFileException):
+        fail("The installed app identity could not be read.")
+    agent_label = reminder_label(bundle_id)
+    executable = Path(reminder_program_arguments(app_path)[0])
+    if value["enabled"] and (executable.is_symlink() or not executable.is_file()):
+        fail("The installed Igloo app has no executable.")
+    folder = Path.home() / "Library/LaunchAgents"
+    plist = folder / (agent_label + ".plist")
+    if folder.is_symlink() or plist.is_symlink():
+        fail("The reminder LaunchAgent location is a symbolic link.")
+    if not value["enabled"] and not plist.exists():
+        return {"message": "Quiet-project reminder disabled."}
+
+    stopped = subprocess.run(["/bin/launchctl", "bootout", f"gui/{os.getuid()}/{agent_label}"],
+                             capture_output=True)
+    if not value["enabled"]:
+        if stopped.returncode and reminder_loaded(agent_label):
+            fail("The reminder LaunchAgent is still loaded; it was not removed.")
+        if plist.exists():
+            plist.unlink()
+        return {"message": "Quiet-project reminder disabled."}
+    if stopped.returncode and reminder_loaded(agent_label):
+        fail("The reminder LaunchAgent is still loaded; its app path was not changed.")
+
+    folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+    definition = {
+        "Label": agent_label,
+        "ProgramArguments": reminder_program_arguments(app_path),
+        "StartCalendarInterval": {"Weekday": weekday, "Hour": int(clock[:2]), "Minute": int(clock[3:])},
+        "RunAtLoad": False,
+        "ProcessType": "Background",
+        "AssociatedBundleIdentifiers": [bundle_id],
+    }
+    fd, temporary = tempfile.mkstemp(prefix=".igloo-remind-", dir=folder)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(plistlib.dumps(definition))
+        os.replace(temporary, plist)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+    result = subprocess.run(["/bin/launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist)],
+                           capture_output=True)
+    if result.returncode:
+        fail("The reminder LaunchAgent could not load. Its file is saved; check the current GUI login session.")
+    return {"message": "Quiet-project reminder enabled."}
 
 def delete(task_id):
     get(task_id)
@@ -385,6 +576,8 @@ def dispatch(command,args):
     if command=="task-install-cli":return install_cli()
     if command=="task-schedule":return schedule_task(args[0],json.loads(args[1]))
     if command=="task-unschedule":return unschedule(args[0])
+    if command=="remind-check":return remind_check()
+    if command=="remind-agent":return configure_reminder(json.loads(args[0]))
     if command=="task-run":return run_task(args[0],apply=len(args)>1 and args[1]=="apply")
     if command=="task-apply":return apply_plan(args[0])
     fail("Unknown task command.")

@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct OrganizerNavigation: View {
     @EnvironmentObject var store: OrganizerStore
@@ -81,26 +82,24 @@ struct OrganizerNavigation: View {
 
 // ProjectRow supplies the blockers decoded from the catalog and the project's Hold state.
 struct ProjectBlockerBadges: View {
+    @Environment(\.colorScheme) private var colorScheme
+    // Increased only on an accent-colored selection; an unfocused list shows a grey selection.
+    @Environment(\.backgroundProminence) private var backgroundProminence
     let blockers: [FreezeBlocker]
     let held: Bool
-    private func label(_ code: String) -> String {
-        switch code {
-        case "no-remote": return "connect a remote"
-        case "no-files": return "add files"
-        case "no-commit": return "make an initial commit"
-        case "changed-source": return "commit changes"
-        case "open-processes": return "close open processes"
-        case "own-source": return "Igloo source is protected"
-        default: return "review requirements"
-        }
+    var selected = false
+    private var blockerColor: Color {
+        if selected && backgroundProminence == .increased { return Color(nsColor: .selectedMenuItemTextColor) }
+        return colorScheme == .light ? Color(red: 0.55, green: 0.23, blue: 0.00) : .orange
     }
     var body: some View {
         HStack(spacing: 5) {
             if let first = blockers.first {
                 HStack(spacing: 4) {
-                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange).accessibilityHidden(true)
-                    Text("Blocked: " + label(first.code) + (blockers.count > 1 ? " +\(blockers.count - 1)" : ""))
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(blockerColor).accessibilityHidden(true)
+                    Text("Blocked: " + first.shortLabel + (blockers.count > 1 ? " +\(blockers.count - 1)" : ""))
                         .lineLimit(1).truncationMode(.tail)
+                        .foregroundStyle(blockerColor)
                         .help(blockers.map(\.message).joined(separator: "\n"))
                 }
                 .accessibilityElement(children: .combine)

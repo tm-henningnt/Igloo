@@ -58,7 +58,11 @@ Set a daily or weekly schedule in the app or CLI. Start with a review task, then
 
 ## Updates
 
-Choose **Igloo → Check for Updates** to check published releases and download a verified update. If a check fails, the window explains the problem and links to the releases page; a rate-limit message includes the reset time when available. A smaller system-Python build is also supported for people who maintain Python 3.11 or later themselves. Updates keep your chosen variant.
+Choose **Igloo → Check for Updates** to check published releases and download a verified update. Then choose **Install and relaunch**. Igloo checks the download, replaces the app in place and opens the new version. If a step fails, the old app stays in place.
+
+Igloo 0.2.x and older cannot install an update. To update one of these versions, open the new DMG and drag Igloo to Applications. Replace the old app when the Finder asks. If the `igloo` command stops working after an update, open **Tasks** and choose **Reinstall CLI**.
+
+If a check fails, the window explains the problem and links to the releases page; a rate-limit message includes the reset time when available. A smaller system-Python build is also supported for people who maintain Python 3.11 or later themselves. Updates keep your chosen variant.
 
 ## Keep your recovery files safe
 

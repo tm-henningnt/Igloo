@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import Combine
+import UserNotifications
 
 // macOS 27 also exports a State macro; use the established property wrapper without its macro plugin.
 typealias LocalState<Value> = SwiftUI.State<Value>
@@ -46,6 +47,32 @@ struct Candidate: Decodable, Identifiable {
 struct FreezeBlocker: Decodable, Identifiable {
     var code: String; var message: String; var fix: String?
     var id: String { code }
+    var shortLabel: String {
+        switch code {
+        case "no-remote": return "connect a remote"
+        case "no-files": return "add files"
+        case "no-commit": return "make an initial commit"
+        case "changed-source": return "commit changes"
+        case "open-processes": return "close open processes"
+        case "own-source": return "Igloo source is protected"
+        default: return "review requirements"
+        }
+    }
+}
+
+extension Project {
+    // The Overview heading reads the same blockers as the list badge, so the two never disagree.
+    var overviewSummary: (title: String, detail: String) {
+        let open = blockers ?? []
+        if active { return ("Project in use", "Close project shells, agents and applications before cleanup or freezing.") }
+        if !activityKnown { return ("Activity needs verification", "Refresh the project to check running sessions before making changes.") }
+        if let first = open.first {
+            let more = open.count > 1 ? " \(open.count - 1) more on the Preservation tab." : ""
+            return ("Blocked: " + first.shortLabel, first.message + more)
+        }
+        if needsPreservation { return ("Local work to preserve", "Review the items below before removing a checkout.") }
+        return ("Ready for a closer review", "The catalog found no immediate preservation flags. Review ignored files before removing anything.")
+    }
 }
 
 struct Project: Decodable, Identifiable {
@@ -89,6 +116,217 @@ struct CleanupPlan: Decodable, Identifiable {
 }
 struct Reply: Decodable {
     var message: String?; var error: String?; var results: [ActionResult]?; var outcome: ReviewOutcome?
+}
+struct ReminderCheck: Decodable {
+    var checked: String
+    var count: Int
+    var size: Int64
+    var ids: [String]
+    var message: String
+}
+
+enum ReminderRoute {
+    static func isReminderLaunch(arguments: [String]) -> Bool {
+        arguments.contains("--remind")
+    }
+
+    static func isReminderURL(_ url: URL) -> Bool {
+        url.scheme == "igloo" && url.host == "remind"
+    }
+
+    static func shouldFinishAfterURL(arguments: [String], secondsSinceLaunch: TimeInterval) -> Bool {
+        isReminderLaunch(arguments: arguments) || secondsSinceLaunch < 3
+    }
+
+    static func shouldSyncAgent(enabled: Bool, agentExists: Bool) -> Bool {
+        enabled || agentExists
+    }
+
+    static func agentExists(bundleIdentifier: String?, fileManager: FileManager = .default) -> Bool {
+        guard let bundleIdentifier else { return false }
+        let path = NSHomeDirectory() + "/Library/LaunchAgents/\(bundleIdentifier).remind.plist"
+        return fileManager.fileExists(atPath: path)
+    }
+
+    struct RunningCopy: Equatable {
+        var processIdentifier: Int32
+        var bundleIdentifier: String?
+        var bundlePath: String?
+    }
+
+    /// The running copy of this app that takes the reminder, or nil when this process posts it.
+    /// Only the same bundle ID qualifies; a copy at the same bundle path comes first.
+    static func handoffTarget(among copies: [RunningCopy], ownProcess: Int32,
+                              bundleIdentifier: String?, bundlePath: String?) -> RunningCopy? {
+        guard let bundleIdentifier else { return nil }
+        let others = copies.filter {
+            $0.processIdentifier != ownProcess && $0.bundleIdentifier == bundleIdentifier && $0.bundlePath != nil
+        }
+        let ownPath = bundlePath.map { URL(fileURLWithPath: $0).standardizedFileURL.path }
+        return others.first { URL(fileURLWithPath: $0.bundlePath!).standardizedFileURL.path == ownPath }
+            ?? others.first
+    }
+}
+
+enum ReminderHandoff {
+    /// The LaunchAgent starts the app executable directly with --remind. When another copy of
+    /// this bundle runs, it gets igloo://remind and this process exits before NSApplication starts,
+    /// so it never registers as a second app and never opens a window.
+    static func toRunningCopy() -> Bool {
+        let own = NSRunningApplication.current
+        let copies = NSWorkspace.shared.runningApplications.filter { !$0.isTerminated }.map {
+            ReminderRoute.RunningCopy(processIdentifier: $0.processIdentifier,
+                                      bundleIdentifier: $0.bundleIdentifier, bundlePath: $0.bundleURL?.path)
+        }
+        guard let target = ReminderRoute.handoffTarget(among: copies, ownProcess: own.processIdentifier,
+                                                       bundleIdentifier: Bundle.main.bundleIdentifier,
+                                                       bundlePath: Bundle.main.bundlePath),
+              let path = target.bundlePath,
+              let url = URL(string: "igloo://remind") else { return false }
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = false
+        configuration.addsToRecentItems = false
+        let done = DispatchSemaphore(value: 0)
+        var delivered = false
+        NSWorkspace.shared.open([url], withApplicationAt: URL(fileURLWithPath: path),
+                                configuration: configuration) { application, error in
+            delivered = error == nil && application != nil
+            done.signal()
+        }
+        // A failed or slow hand-off falls back to a local check, so the reminder is not lost.
+        return done.wait(timeout: .now() + 10) == .success && delivered
+    }
+}
+
+enum ReminderBackend {
+    static func runCheck(completion: @escaping (ReminderCheck?) -> Void) {
+        let preferences = UserPreferences.read()
+        guard let resources = Bundle.main.resourceURL else { completion(nil); return }
+        let script = resources.appendingPathComponent("backend").appendingPathComponent("organizer.py")
+        let python = UserPreferences.bundledPython
+            ?? (preferences.pythonExecutable as NSString).expandingTildeInPath
+        let root = URL(fileURLWithPath: (preferences.projectsRoot as NSString).expandingTildeInPath)
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: python)
+            process.arguments = ["-E", "-s", "-B", script.path, "remind-check"]
+            process.currentDirectoryURL = root
+            process.environment = UserPreferences.backendEnvironment
+            let output = Pipe()
+            process.standardOutput = output
+            process.standardError = FileHandle.nullDevice
+            do {
+                try process.run()
+                let data = output.fileHandleForReading.readDataToEndOfFile()
+                process.waitUntilExit()
+                let result = process.terminationStatus == 0
+                    ? try? JSONDecoder().decode(ReminderCheck.self, from: data) : nil
+                DispatchQueue.main.async { completion(result) }
+            } catch {
+                DispatchQueue.main.async { completion(nil) }
+            }
+        }
+    }
+}
+
+@MainActor final class ReminderRouter: ObservableObject {
+    static let shared = ReminderRouter()
+    @Published var makeSpaceRequested = false
+}
+
+final class ReminderAppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
+    private let processStartUptime = ProcessInfo.processInfo.systemUptime
+    private var reminderCheckRunning = false
+    private var pendingReminderChecks = 0
+    private var terminateAfterReminder = false
+    private var reminderLaunchHandled = false
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        // Igloo has one catalog window; macOS window tabs only add an empty tab bar and View menu items.
+        NSWindow.allowsAutomaticWindowTabbing = false
+        if ReminderRoute.isReminderLaunch(arguments: CommandLine.arguments) {
+            NSApp.setActivationPolicy(.accessory)
+        }
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        UNUserNotificationCenter.current().delegate = self
+        if ReminderRoute.isReminderLaunch(arguments: CommandLine.arguments), !reminderLaunchHandled {
+            reminderLaunchHandled = true
+            startReminderCheck(terminateAfter: true)
+        }
+    }
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        guard !CommandLine.arguments.contains("--demo"),
+              urls.contains(where: ReminderRoute.isReminderURL) else { return }
+        if ReminderRoute.isReminderLaunch(arguments: CommandLine.arguments) {
+            guard !reminderLaunchHandled else { return }
+            reminderLaunchHandled = true
+            startReminderCheck(terminateAfter: true)
+            return
+        }
+        let elapsed = ProcessInfo.processInfo.systemUptime - processStartUptime
+        let finishWhenDone = ReminderRoute.shouldFinishAfterURL(arguments: CommandLine.arguments,
+                                                                secondsSinceLaunch: elapsed)
+        if finishWhenDone {
+            application.setActivationPolicy(.accessory)
+            application.windows.filter(\.isVisible).forEach { $0.close() }
+        }
+        startReminderCheck(terminateAfter: finishWhenDone)
+    }
+
+    private func startReminderCheck(terminateAfter: Bool) {
+        terminateAfterReminder = terminateAfterReminder || terminateAfter
+        pendingReminderChecks += 1
+        guard !reminderCheckRunning else { return }
+        runNextReminderCheck()
+    }
+
+    private func runNextReminderCheck() {
+        guard pendingReminderChecks > 0 else {
+            reminderCheckRunning = false
+            if terminateAfterReminder { NSApp.terminate(nil) }
+            return
+        }
+        pendingReminderChecks -= 1
+        reminderCheckRunning = true
+        ReminderBackend.runCheck { [weak self] result in
+            guard let self else { return }
+            guard let result, result.count > 0 else {
+                self.reminderCheckRunning = false
+                self.runNextReminderCheck()
+                return
+            }
+            let content = UNMutableNotificationContent()
+            content.title = "Quiet projects are ready for review"
+            content.body = result.message
+            content.sound = .default
+            content.userInfo = ["route": "make-space", "projectIDs": result.ids]
+            let request = UNNotificationRequest(identifier: "quiet-reminder-\(UUID().uuidString)",
+                                                content: content, trigger: nil)
+            UNUserNotificationCenter.current().add(request) { _ in
+                DispatchQueue.main.async {
+                    self.reminderCheckRunning = false
+                    self.runNextReminderCheck()
+                }
+            }
+        }
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
+                                withCompletionHandler completionHandler: @escaping () -> Void) {
+        if response.notification.request.content.userInfo["route"] as? String == "make-space" {
+            DispatchQueue.main.async { ReminderRouter.shared.makeSpaceRequested = true }
+        }
+        completionHandler()
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
+                                withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        completionHandler([.banner, .list, .sound])
+    }
 }
 struct ActionResult: Decodable {
     var path: String
@@ -169,10 +407,13 @@ final class OrganizerStore: ObservableObject {
     @Published var spaceShown = false
     @Published var explorerProjectIDs: Set<String>?
     @Published var wizardShown = false
+    @Published var wizardMakeSpace = false
     @Published var tasksShown = false
+    @Published var sheetErrorHosts: [UUID] = []
     var isDemo: Bool { CommandLine.arguments.contains("--demo") }
     var progressTimer: Timer?
     var smokeStarted = false
+    var reminderAgentSynced = false
 
     init() {
         if isDemo {
@@ -184,6 +425,10 @@ final class OrganizerStore: ObservableObject {
             preferences.projectsRoot = "/Users/demo/Projects"
             preferences.archiveRoot = "/Users/demo/Project Recovery"
             preferences.stateRoot = "/Users/demo/Library/Igloo"
+            let reminder = DemoCatalog.reminderSettings()
+            preferences.quietReminderEnabled = reminder.enabled
+            preferences.quietReminderWeekday = reminder.weekday
+            preferences.quietReminderTime = reminder.time
             return
         }
         quietDays = preferences.quietDays
@@ -222,15 +467,23 @@ final class OrganizerStore: ObservableObject {
             }
         }
     }
-    func invoke<T: Decodable>(_ args: [String], as type: T.Type, done: @escaping (T) -> Void) {
+    func invoke<T: Decodable>(_ args: [String], as type: T.Type,
+                              failed: ((Error) -> Void)? = nil, done: @escaping (T) -> Void) {
         if isDemo {
             if let value: T = DemoCatalog.reply(args, as: type) { done(value) }
-            else { error = "The example catalog is read-only." }
+            else {
+                // The refusal waits one turn, so a sheet that acts on appear is open and can show it.
+                DispatchQueue.main.async {
+                    self.error = "The example catalog is read-only."
+                    failed?(NSError(domain: "Organizer", code: 1, userInfo: [NSLocalizedDescriptionKey: "The example catalog is read-only."]))
+                }
+            }
             return
         }
         guard !busy else { return }
         busy = true
-        status = args.first == "scan" ? "Discovering projects, measuring folders and checking remotes…" : "Checking local state…"
+        status = args.first == "scan" ? "Discovering projects, measuring folders and checking remotes…"
+            : (args.first == "remind-agent" ? "Updating the reminder schedule…" : "Checking local state…")
         progressTimer?.invalidate()
         if ["scan", "freeze-preview", "freeze-execute", "freeze-retire", "rehydrate", "wizard-scan", "wizard-prepare", "wizard-execute", "wizard-thaw-prepare", "wizard-thaw-execute", "task-run", "task-apply"].contains(args.first ?? "") {
             progressTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
@@ -249,6 +502,7 @@ final class OrganizerStore: ObservableObject {
             process.executableURL = URL(fileURLWithPath: python)
             process.arguments = ["-E", "-s", "-B", script.path] + args
             process.currentDirectoryURL = cwd
+            process.environment = UserPreferences.backendEnvironment
             let output = Pipe()
             process.standardOutput = output
             process.standardError = FileHandle.nullDevice
@@ -274,9 +528,36 @@ final class OrganizerStore: ObservableObject {
                     self.progressTimer?.invalidate()
                     self.status = "Action stopped"
                     self.error = error.localizedDescription
+                    failed?(error)
                 }
             }
         }
+    }
+    func syncReminderAgent(done: @escaping (String?) -> Void = { _ in }) {
+        guard !isDemo,
+              ReminderRoute.shouldSyncAgent(
+                enabled: preferences.quietReminderEnabled,
+                agentExists: ReminderRoute.agentExists(bundleIdentifier: Bundle.main.bundleIdentifier)) else {
+            done(nil)
+            return
+        }
+        let value: [String: Any] = [
+            "enabled": preferences.quietReminderEnabled,
+            "weekday": preferences.quietReminderWeekday,
+            "time": preferences.quietReminderTime,
+            "appPath": Bundle.main.bundleURL.path,
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: value),
+              let json = String(data: data, encoding: .utf8) else {
+            done("The reminder settings could not be encoded.")
+            return
+        }
+        invoke(["remind-agent", json], as: Reply.self,
+               failed: { done($0.localizedDescription) }) { _ in done(nil) }
+    }
+    func openMakeSpaceWizard() {
+        wizardMakeSpace = true
+        wizardShown = true
     }
     func load() {
         if isDemo {
@@ -304,6 +585,13 @@ final class OrganizerStore: ObservableObject {
             if self.selection == nil { self.selection = value.projects.max(by: { $0.size < $1.size })?.id }
             self.status = "\(value.projects.count) catalog entries · \(value.source)"
             self.smokeIfRequested()
+            if !self.reminderAgentSynced,
+               ReminderRoute.shouldSyncAgent(
+                    enabled: self.preferences.quietReminderEnabled,
+                    agentExists: ReminderRoute.agentExists(bundleIdentifier: Bundle.main.bundleIdentifier)) {
+                self.reminderAgentSynced = true
+                self.syncReminderAgent()
+            }
         }
     }
     func analyze() {
@@ -410,9 +698,39 @@ final class OrganizerStore: ObservableObject {
     }
 }
 
+// A sheet with this modifier shows store errors itself. The main window alert waits while such a sheet is open,
+// so a refusal shows where the user acted and no alert is left for after the sheet closes.
+struct SheetErrorAlert: ViewModifier {
+    @ObservedObject var store: OrganizerStore
+    @LocalState private var host = UUID()
+    func body(content: Content) -> some View {
+        content
+            .alert("Action stopped", isPresented: Binding(get: { store.error != nil && store.sheetErrorHosts.last == host },
+                                                          set: { if !$0 { store.error = nil } })) {
+                Button("OK") { store.error = nil }
+            } message: { Text(store.error ?? "") }
+            .onAppear { store.sheetErrorHosts.append(host) }
+            .onDisappear { store.sheetErrorHosts.removeAll { $0 == host } }
+    }
+}
+extension View {
+    func sheetErrorAlert(_ store: OrganizerStore) -> some View { modifier(SheetErrorAlert(store: store)) }
+}
+struct SheetProgressRow: View {
+    let text: String
+    var body: some View {
+        HStack(spacing: 6) {
+            ProgressView().controlSize(.small)
+            Text(text).font(.caption).foregroundStyle(.secondary)
+        }.accessibilityElement(children: .combine)
+            .accessibilityIdentifier("sheet.progress")
+    }
+}
+
 struct OrganizerView: View {
     @EnvironmentObject var store: OrganizerStore
     @EnvironmentObject var updater: AppUpdater
+    @ObservedObject private var reminderRouter = ReminderRouter.shared
     @Environment(\.openWindow) private var openWindow
     @AppStorage("compactSidebar") private var compactSidebarPreference = false
     @AppStorage("scopeInspectorShown") private var scopeInspectorPreference = true
@@ -502,6 +820,7 @@ struct OrganizerView: View {
             }
             ToolbarItem(placement: .primaryAction) {
                 Button { store.analyze() } label: { Label("Analyze Projects", systemImage: "arrow.triangle.2.circlepath") }
+                    .help("Analyze Projects (Shift-Command-R)").accessibilityLabel("Analyze Projects")
                     .keyboardShortcut("r", modifiers: [.command, .shift]).disabled(store.busy)
             }
         }
@@ -547,10 +866,13 @@ struct OrganizerView: View {
         .sheet(isPresented: $store.vaultShown) { FrozenProjectsView().environmentObject(store) }
         .sheet(isPresented: $store.helpShown) { AppHelpView().environmentObject(store) }
         .sheet(isPresented: $store.tasksShown) { TasksView().environmentObject(store) }
-        .sheet(isPresented: $store.wizardShown) { CleanupWizardView().environmentObject(store) }
+        .sheet(isPresented: $store.wizardShown) {
+            CleanupWizardView(startMakeSpace: store.wizardMakeSpace).environmentObject(store)
+        }
         .sheet(isPresented: $store.spaceShown) { SpaceView(initialProjectIDs: store.explorerProjectIDs).environmentObject(store) }
         .sheet(isPresented: $store.repositoriesShown) { RemoteRepositoriesView().environmentObject(store) }
-        .alert("Action stopped", isPresented: Binding(get: { store.error != nil }, set: { if !$0 { store.error = nil } })) {
+        .alert("Action stopped", isPresented: Binding(get: { store.error != nil && store.sheetErrorHosts.isEmpty },
+                                                      set: { if !$0 { store.error = nil } })) {
             Button("OK") { store.error = nil }
         } message: { Text(store.error ?? "") }
         .onChange(of: store.typeFilter) {
@@ -559,18 +881,31 @@ struct OrganizerView: View {
         .onChange(of: store.filter) {
             if !store.visible.contains(where: { $0.id == store.selection }) { store.selection = store.visible.first?.id }
         }
+        .onChange(of: reminderRouter.makeSpaceRequested) {
+            openReminderWizardIfRequested()
+        }
         .onAppear {
             store.load()
+            openReminderWizardIfRequested()
             if CommandLine.arguments.contains("--update-install-failed") || updater.failed {
                 openWindow(id: "updates")
             }
         }
+    }
+    private func openReminderWizardIfRequested() {
+        guard reminderRouter.makeSpaceRequested else { return }
+        reminderRouter.makeSpaceRequested = false
+        NSApp.unhide(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        if !NSApp.windows.contains(where: \.isVisible) { openWindow(id: "catalog") }
+        store.openMakeSpaceWizard()
     }
 }
 
 struct ProjectRow: View {
     @EnvironmentObject var store: OrganizerStore
     let project: Project
+    private var isSelected: Bool { store.selection == project.id }
     private var duplicateName: Bool {
         (store.snapshot?.projects.filter { $0.name == project.name }.count ?? 0) > 1
     }
@@ -616,7 +951,8 @@ struct ProjectRow: View {
                 }
                 Spacer(minLength: 0)
             }.font(.caption).lineLimit(1)
-            ProjectBlockerBadges(blockers: project.blockers ?? [], held: project.hold == true)
+            ProjectBlockerBadges(blockers: project.blockers ?? [], held: project.hold == true,
+                                 selected: isSelected)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }.padding(.vertical, 6).help(project.path)
     }
@@ -708,9 +1044,10 @@ struct ProjectDetail: View {
 
 }
 
-@main struct IglooApp: App {
+struct IglooApp: App {
     @StateObject var store = OrganizerStore()
     @StateObject var updater = AppUpdater()
+    @NSApplicationDelegateAdaptor(ReminderAppDelegate.self) var reminderDelegate
     var body: some Scene {
         WindowGroup("Igloo", id: "catalog") {
             OrganizerView().environmentObject(store).environmentObject(updater)
@@ -722,7 +1059,11 @@ struct ProjectDetail: View {
                         NSApp.appearance = NSAppearance(named: .darkAqua)
                     }
                 }
+                // An open catalog window takes the reminder URL, so SwiftUI does not open another window.
+                .handlesExternalEvents(preferring: ["remind"], allowing: ["*"])
         }
+        // The app delegate handles igloo://remind; the URL never creates a catalog window.
+        .handlesExternalEvents(matching: [])
         .defaultSize(width: 1440, height: 900)
         .windowResizability(.contentMinSize)
         .commands {
@@ -746,6 +1087,24 @@ struct ProjectDetail: View {
             UpdatesView().environmentObject(updater)
         }.windowResizability(.contentSize).defaultPosition(.center)
         Settings { AppSettingsView().environmentObject(store) }
+    }
+}
+
+struct ReminderRunnerApp: App {
+    @NSApplicationDelegateAdaptor(ReminderAppDelegate.self) var reminderDelegate
+    var body: some Scene {
+        Settings { EmptyView() }
+    }
+}
+
+@main enum IglooMain {
+    static func main() {
+        if ReminderRoute.isReminderLaunch(arguments: CommandLine.arguments) {
+            if ReminderHandoff.toRunningCopy() { exit(0) }
+            ReminderRunnerApp.main()
+        } else {
+            IglooApp.main()
+        }
     }
 }
 
@@ -788,9 +1147,9 @@ struct AppHelpView: View {
                 if topic == "Getting started" {
 
                     VStack(alignment: .leading, spacing: 18) {
-                        helpSection("Analyze your projects", "Analyze Projects discovers repositories and linked worktrees, measures folders and checks configured remotes. It reads project metadata and filenames without changing checkouts. Source dates and observed process activity are estimates of use.")
-                        helpSection("Settings and installation", "The app bundles its backend and can be copied to Applications. Settings lets you choose the workspace root, archive and state locations, clone folder, quiet threshold, GitHub owner default and installed tool paths. Python, Git and gh remain local prerequisites.")
-                        helpSection("Tasks and schedules", "Tasks save reusable cleanup rules for selected projects. Start with a Review that lists the exact folders before anything changes. You can run a reviewed cache cleanup or schedule one after giving permission. Past the freeze threshold, the wizard suggests Freeze and waits for your Review. Tasks do not commit or push source, Freeze projects, or remove their checkouts. If you change the rules, enable the schedule again. Daily and weekly schedules run while you are logged in; busy runs are skipped and recorded. Install the optional Terminal tool from Tasks if you want to run a saved task from Terminal.")
+                        helpSection("Analyze your projects", "Analyze Projects is the circular arrows button in the toolbar (Shift-Command-R). It discovers repositories and linked worktrees, measures folders and checks configured remotes. It reads project metadata and filenames without changing checkouts. Source dates and observed process activity are estimates of use.")
+                        helpSection("Settings and installation", "The app bundles its backend and can be copied to Applications. Settings lets you choose the workspace root, archive and state locations, clone folder, quiet threshold, quiet-project reminder day and time, GitHub owner default and installed tool paths. The reminder refreshes age from local Git history or elapsed time since the file-age scan, without fetching. It skips Hold and Frozen projects and asks for notification permission when you turn it on. Python, Git and gh remain local prerequisites.")
+                        helpSection("Tasks and schedules", "Tasks save reusable cleanup rules for selected projects. Start with a Review that lists the exact folders before anything changes. You can run a reviewed cache cleanup or schedule one after giving permission. Past the freeze threshold, the wizard suggests Freeze and waits for your Review. Tasks do not commit or push source, Freeze projects, or remove their checkouts. If you change the rules, enable the schedule again. Daily and weekly schedules run while you are logged in; busy runs are skipped and recorded. To run a saved task from Terminal, choose Install CLI in Tasks. When the CLI is installed, the button is Reinstall CLI.")
                         helpSection("Cleanup wizard", "Choose Make space to set Git activity or source-file age rules, suggest cleanup and Freeze actions, and review them before one acceptance. Choose Thaw projects to select several Frozen projects and review each remote ref, original path, local-only files and blockers. One acceptance restores every ready row; a failure in one row does not stop the others. The remote supplies available refs, and the Freezer archive supplies Frozen refs missing from it. Wizard Thaw does not install dependencies or run project code, and says to reinstall dependencies for each restored project. Offline recovery remains available per project in Freezer.")
                         helpSection("Explore space", "Space explorer offers sunburst, icicle and Marimekko views of project sizes and measured dependency/build types. Filter projects by age, detected activity or type, and color by type, activity or age. Select a segment to focus a project; Open project returns to its cleanup and preservation tools. Other project files is the unclassified remainder, not a claim that data is safe to delete.")
                         helpSection("Browse GitHub", "GitHub repositories lets you browse your account or an organization, search, hide existing local clones, select several repositories and clone them into a chosen project folder. Existing paths are never overwritten. Run Analyze Projects afterward to index them.")
@@ -814,10 +1173,10 @@ struct AppHelpView: View {
                 } else if topic == "Safety & storage" {
 
                     VStack(alignment: .leading, spacing: 18) {
-                        helpSection("Local archive storage", "The Freezer location is configurable in Settings; the default is ~/.igloo/vault. It contains local-only data and Git metadata and is not encrypted. You can choose a backup folder, including cloud storage after confirming unencrypted upload. A missing backup never blocks Preserve.")
+                        helpSection("Local archive storage", "Settings → Freezer sets the Freezer location. The current location is " + displayPath(store.preferences.archiveRoot) + ". It contains local-only data and Git metadata and is not encrypted. You can choose a backup folder, including cloud storage after confirming unencrypted upload. A missing backup never blocks Preserve.")
                         helpSection("Freezer backup", "When a backup folder is configured, Igloo copies recovery there after Preserve and checks its checksums. In Freezer, Back up now retries missing copies and Verify backup checks existing copies. Backups are only added automatically; use Remove from backup for copies no longer in the Freezer.")
                         helpSection("Updates", "Check for Updates shows release notes and downloads a verified update for your runtime. Choose Install and relaunch to verify the downloaded app signature, replace the app, and reopen it. The previous app stays in its backup until the new process remains open briefly. Installation requires a writable, non-translocated app location and never asks for an administrator password. If installation fails, Igloo restores and reopens the previous app and shows the failure in the update window. Close any dialog that blocks termination, then try again. macOS privacy permissions may need approval again after an ad-hoc-signed update. If a check or download fails, the window explains the problem and links to releases. For a request limit, wait until the displayed UTC reset time when available.")
-                        helpSection("App state", "Runtime state is stored in the configured state folder, normally ~/.igloo. Preferences live in ~/.config/igloo/config.json. Keep the Trash journal while you may need restoration. The app’s own source can use Git setup and commits; it is protected from cache cleanup and freezing.")
+                        helpSection("App state", "Settings → Runtime state sets the state folder. The current folder is " + displayPath(store.preferences.stateRoot) + ". Preferences live in " + displayPath(UserPreferences.file.path) + ". Keep the Trash journal while you may need restoration. The app’s own source can use Git setup and commits; it is protected from cache cleanup and freezing.")
                         helpSection("What is omitted", "Only reviewed ignored dependency and rebuild folders without tracked content are omitted. Igloo preserves recognized local configuration inside those folders. Custom dependency edits need your review. External symlink targets remain external; the archive preserves the link, not its target.")
                         helpSection("What checks mean", "Unverified branch coverage may need Fetch & verify to download current remote metadata. Fetch does not switch branches or prune refs. Hash checks and recovery tests protect against changed or corrupt archives; they do not certify that committed history is free of private data.")
                         helpSection("When an action stops", "Leave source and archive copies in place. Resolve the reported active process, changed files, remote access or destination conflict, then create a fresh review or resume recovery. The app never empties Trash or force-pushes.")
@@ -830,6 +1189,7 @@ struct AppHelpView: View {
             }
         }.padding(24).frame(width: sheetWidth(860), height: 700)
     }
+    private func displayPath(_ path: String) -> String { (path as NSString).abbreviatingWithTildeInPath }
     private func helpSection(_ title: String, _ text: String) -> some View {
         VStack(alignment: .leading, spacing: 7) {
             Text(title).font(.headline)

@@ -132,12 +132,13 @@ struct OutcomeSummaryView: View {
     let netSpaceLabel: String
     let heading: String?
     let spaceExplanation: String?
+    let estimateLabel: String?
 
     init(outcome: ReviewOutcome, includeThaw: Bool = false, showSpace: Bool = true,
          showEstimate: Bool = true, showFreedSpace: Bool = true, showInTrash: Bool = true,
          inTrashQualifier: String? = nil, showRestoredSpace: Bool = true,
          showNetSpaceChange: Bool = true, netSpaceLabel: String = "Net space change after recovery",
-         heading: String? = nil, spaceExplanation: String? = nil) {
+         heading: String? = nil, spaceExplanation: String? = nil, estimateLabel: String? = nil) {
         self.outcome = outcome
         self.includeThaw = includeThaw
         self.showSpace = showSpace
@@ -150,6 +151,7 @@ struct OutcomeSummaryView: View {
         self.netSpaceLabel = netSpaceLabel
         self.heading = heading
         self.spaceExplanation = spaceExplanation
+        self.estimateLabel = estimateLabel
     }
 
     private var countQualifier: String { outcome.observed ? "observed" : "estimate" }
@@ -191,7 +193,7 @@ struct OutcomeSummaryView: View {
             }
             if showSpace {
                 if showEstimate && !estimateIsAlreadyObserved {
-                    OutcomeSummaryRow(label: "Estimate: about \(bytes(outcome.bytesFreedEstimate))")
+                    OutcomeSummaryRow(label: estimateLabel ?? "Estimate: about \(bytes(outcome.bytesFreedEstimate))")
                 }
                 if let space = outcome.observedSpace {
                     if showFreedSpace, let value = space.freedBytes {
@@ -313,7 +315,13 @@ struct CleanupReview: View {
             if plan.held == true { Text("This project is on Hold").foregroundStyle(.orange) }
             Text("Review cleanup · " + URL(fileURLWithPath: plan.items.first?.owner ?? plan.items.first?.path ?? "Project").lastPathComponent)
                 .font(.title2).fontWeight(.semibold)
-            if let outcome = plan.outcome { ScrollView { OutcomeSummaryView(outcome: outcome) }.frame(maxHeight: 120) }
+            // Moving to Trash frees no disk space yet, so the estimate is the review total that moves to Trash.
+            if let outcome = plan.outcome {
+                ScrollView {
+                    OutcomeSummaryView(outcome: outcome,
+                                       estimateLabel: "Estimate: about \(bytes(plan.totalSize)) to move to Trash")
+                }.frame(maxHeight: 120)
+            }
             Text(noun(plan.items.count, "directory", "directories") + " · \(bytes(plan.totalSize)) to move to Trash")
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
@@ -345,7 +353,7 @@ struct CleanupReview: View {
                     let id = plan.id
                     store.plan = nil
                     store.action(["trash", id])
-                }.buttonStyle(.borderedProminent).disabled(plan.items.isEmpty || !reviewed || store.busy || store.isDemo)
+                }.buttonStyle(WizardPrimaryButtonStyle()).disabled(plan.items.isEmpty || !reviewed || store.busy || store.isDemo)
             }
         }.padding(24).frame(width: 700, height: 550)
     }
@@ -355,19 +363,19 @@ struct PushReview: View {
     @EnvironmentObject var store: OrganizerStore
     let request: PushRequest
     @LocalState var reviewed = false
+    private var commit: String { shortGitHash(request.branch.sha) }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Push one branch").font(.title2).fontWeight(.semibold)
             Text(request.branch.name).font(.headline).textSelection(.enabled)
             VStack(alignment: .leading, spacing: 4) {
-                Text("Destination: \(request.remote.pushURL)\nRef: refs/heads/\(request.branch.name)")
-                HStack(spacing: 4) {
-                    Text("Commit:")
-                    Text(String(request.branch.sha.prefix(7))).help(request.branch.sha)
-                }
-            }.font(.callout).textSelection(.enabled)
+                Text("Destination: " + request.remote.pushURL)
+                Text("Ref: refs/heads/" + request.branch.name)
+                Text("Commit: " + (commit.isEmpty ? "Not available. Analyze Projects again." : commit))
+                    .help(request.branch.sha)
+            }.font(.callout).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
             Text("A push makes this branch visible on the remote. Igloo cannot undo it, and the local checkout stays unchanged. Review the committed history for private data first. Other branches, tags, stashes and uncommitted files are excluded. A rejected push stops; Igloo never force-pushes.")
-                .font(.callout).foregroundStyle(.secondary)
+                .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Toggle("I reviewed this branch and remote destination.", isOn: $reviewed)
             Text("Select this checkbox to enable Push this branch.").font(.caption).foregroundStyle(.secondary)
             HStack {
@@ -377,7 +385,7 @@ struct PushReview: View {
                     let r = request
                     store.pushRequest = nil
                     store.action(["push", r.project.path, r.branch.name, r.branch.sha, r.remote.name, r.remote.pushURL])
-                }.buttonStyle(.borderedProminent).disabled(!reviewed || store.busy)
+                }.buttonStyle(WizardPrimaryButtonStyle()).disabled(!reviewed || store.busy || commit.isEmpty)
             }
         }.padding(24).frame(width: 660)
     }

@@ -7,11 +7,33 @@ enum DemoCatalog {
     static func snapshot() -> Snapshot {
         try! JSONDecoder().decode(Snapshot.self, from: resource("demo-catalog"))
     }
+    static func reminderSettings() -> (enabled: Bool, weekday: Int, time: String) {
+        let object = try! JSONSerialization.jsonObject(with: resource("demo-catalog")) as! [String: Any]
+        let settings = object["quietReminder"] as? [String: Any] ?? [:]
+        return (settings["enabled"] as? Bool ?? false,
+                settings["weekday"] as? Int ?? 1,
+                settings["time"] as? String ?? "09:00")
+    }
     static func reply<T: Decodable>(_ args: [String], as type: T.Type) -> T? {
         var data: Data
         switch args.first {
         case "snapshot": data = resource("demo-catalog")
         case "task-list": data = resource("demo-tasks")
+        // A read-only check: the Remote sheet and the GitHub browser run it when they open.
+        case "github-status":
+            data = try! JSONSerialization.data(withJSONObject: ["authenticated": true, "login": "example", "owners": ["example"],
+                                                                "message": "Example account. The example catalog is read-only."])
+        case "github-repos":
+            func repository(_ name: String, _ description: String, pushed: String, local: String? = nil) -> [String: Any] {
+                ["id": "example/" + name, "name": name, "owner": "example", "slug": "example/" + name,
+                 "url": "https://github.com/example/\(name).git", "isPrivate": true, "archived": false,
+                 "description": description, "pushedAt": pushed, "alreadyLocal": local != nil, "localPaths": local.map { [$0] } ?? []]
+            }
+            data = try! JSONSerialization.data(withJSONObject: [
+                "repositories": [repository("aurora-notes", "Example notes app", pushed: "2026-10-14T09:00:00Z", local: "/Users/demo/Projects/Aurora Notes"),
+                                 repository("orbit-maps", "Example map viewer", pushed: "2026-09-02T09:00:00Z"),
+                                 repository("quartz-docs", "Example documentation site", pushed: "2026-06-21T09:00:00Z")],
+                "owner": "example", "truncated": false, "message": "Example repositories. The example catalog is read-only."])
         case "wizard-state":
             let object = try! JSONSerialization.jsonObject(with: resource("demo-tasks")) as! [String: Any]
             let review = object["demoWizardReview"] as! [String: Any]
@@ -21,11 +43,14 @@ enum DemoCatalog {
         case "wizard-thaw-prepare":
             let object = try! JSONSerialization.jsonObject(with: resource("demo-tasks")) as! [String: Any]
             let thaw = object["demoWizardThaw"] as! [String: Any]
-            data = try! JSONSerialization.data(withJSONObject: thaw["review"]!)
+            // A capture passes its view name; an interactive Thaw passes the selected archive IDs.
+            thawSelection = args.dropFirst().first.flatMap { $0.data(using: .utf8) }
+                .flatMap { try? JSONDecoder().decode([String].self, from: $0) }
+            data = try! JSONSerialization.data(withJSONObject: thawPlan(thaw["review"] as! [String: Any], ids: thawSelection))
         case "wizard-thaw-execute":
             let object = try! JSONSerialization.jsonObject(with: resource("demo-tasks")) as! [String: Any]
             let thaw = object["demoWizardThaw"] as! [String: Any]
-            data = try! JSONSerialization.data(withJSONObject: thaw["result"]!)
+            data = try! JSONSerialization.data(withJSONObject: thawPlan(thaw["result"] as! [String: Any], ids: thawSelection))
         case "task-plan":
             let object = try! JSONSerialization.jsonObject(with: resource("demo-tasks")) as! [String: Any]
             data = try! JSONSerialization.data(withJSONObject: object["demoTaskReview"]!)
@@ -71,11 +96,37 @@ enum DemoCatalog {
         }
         return try? JSONDecoder().decode(type, from: data)
     }
+    private static var thawSelection: [String]?
+    // Like the backend, a Thaw plan holds one row per selected archive, in selection order.
+    private static func thawPlan(_ plan: [String: Any], ids: [String]?) -> [String: Any] {
+        guard let ids else { return plan }
+        var plan = plan
+        let all = plan["rows"] as! [[String: Any]]
+        let rows = ids.compactMap { id in all.first { ($0["id"] as? String) == id } }
+        let paths = Set(rows.flatMap { [$0["path"] as? String ?? ""] + ($0["checkouts"] as? [String] ?? []) })
+        let locations = Set(rows.compactMap { $0["archiveLocation"] as? String })
+        func keep(_ items: Any?) -> [[String: Any]] {
+            (items as? [[String: Any]] ?? []).filter { paths.contains($0["path"] as? String ?? "") }
+        }
+        plan["rows"] = rows
+        plan["held"] = keep(plan["held"])
+        if var outcome = plan["outcome"] as? [String: Any] {
+            outcome["held"] = keep(outcome["held"])
+            if outcome["refsRestored"] != nil { outcome["refsRestored"] = keep(outcome["refsRestored"]) }
+            for (key, allowed) in [("checkoutsRestored", paths), ("archivesUsed", locations)] {
+                guard var entry = outcome[key] as? [String: Any] else { continue }
+                let kept = (entry["paths"] as? [String] ?? []).filter { allowed.contains($0) }
+                entry["paths"] = kept
+                entry["count"] = kept.count
+                outcome[key] = entry
+            }
+            plan["outcome"] = outcome
+        }
+        return plan
+    }
+    // The Thaw wizard selects from the same Frozen archives that the Freezer lists.
     static func wizardThawArchives() -> [FrozenArchive] {
-        let object = try! JSONSerialization.jsonObject(with: resource("demo-tasks")) as! [String: Any]
-        let thaw = object["demoWizardThaw"] as! [String: Any]
-        let data = try! JSONSerialization.data(withJSONObject: thaw["archives"]!)
-        return (try? JSONDecoder().decode([FrozenArchive].self, from: data)) ?? []
+        (snapshot().archives ?? []).filter { $0.state == "frozen" }
     }
 }
 
@@ -106,7 +157,7 @@ enum DemoCapture {
         "wizard-start", "wizard-thaw-selection", "wizard-thaw-review", "wizard-thaw-ready", "wizard-thaw-result",
         "wizard-thaw-occupied", "wizard-thaw-remote", "wizard-thaw-corrupt", "wizard-thaw-not-frozen",
         "wizard-thaw-rehydrating",
-        "task-review", "task-history", "settings", "settings-cloud"]
+        "task-review", "task-history", "settings", "settings-cloud", "repositories-loading"]
     static let updateViews = AppUpdater.demoFailureNames.map { "update-" + $0 } + ["update-markdown", "update-ready"]
     static let sheetViews = extraSheetViews.union(["freeze", "shelf"]).union(updateViews)
     struct Options {
@@ -117,12 +168,14 @@ enum DemoCapture {
         let rail: String
         let data: String
         let windowServer: Bool
+        let orcaCapture: Bool
     }
 
     static let options: Options? = {
         let args = CommandLine.arguments
         guard args.contains("--demo") else { return nil }
-        let flags = ["--demo-capture", "--demo-size", "--demo-view", "--demo-scope", "--demo-rail", "--demo-data", "--demo-window-server"]
+        let flags = ["--demo-capture", "--demo-size", "--demo-view", "--demo-scope", "--demo-rail", "--demo-data",
+                     "--demo-window-server", "--demo-orca"]
         guard flags.contains(where: args.contains) else { return nil }
         func value(_ flag: String, default fallback: String) -> String {
             guard let i = args.firstIndex(of: flag) else { return fallback }
@@ -151,8 +204,11 @@ enum DemoCapture {
         }
         let folder = folderText.isEmpty ? nil : URL(fileURLWithPath: folderText, isDirectory: true)
         let windowServer = args.contains("--demo-window-server")
+        let orcaCapture = args.contains("--demo-orca")
         if windowServer && folder == nil { fail("--demo-window-server requires --demo-capture") }
-        return Options(folder: folder, size: size, view: view, scope: scope, rail: rail, data: data, windowServer: windowServer)
+        if orcaCapture && (!windowServer || folder == nil) { fail("--demo-orca requires --demo-window-server and --demo-capture") }
+        return Options(folder: folder, size: size, view: view, scope: scope, rail: rail, data: data,
+                       windowServer: windowServer, orcaCapture: orcaCapture)
     }()
 
     static var tab: String? {
@@ -178,6 +234,8 @@ enum DemoCapture {
             return AnyView(HistoryView().environmentObject(store))
         case "task-history":
             return AnyView(TaskHistoryCaptureView().environmentObject(store))
+        case "repositories-loading":
+            return AnyView(RemoteRepositoriesView(captureLoading: true).environmentObject(store))
         case "cleanup-result":
             guard let outcome = DemoPreservationCatalog.load()?.demoResults?.cleanup else {
                 return AnyView(Text("Demo cleanup result unavailable"))
@@ -250,7 +308,7 @@ enum DemoCapture {
         }
         if CommandLine.arguments.contains("--demo-light") { NSApp.appearance = NSAppearance(named: .aqua) }
         if CommandLine.arguments.contains("--demo-dark") { NSApp.appearance = NSAppearance(named: .darkAqua) }
-        let timeout: TimeInterval = options.windowServer ? 60 : 15
+        let timeout: TimeInterval = options.orcaCapture ? 900 : (options.windowServer ? 60 : 15)
         let deadline = Date().addingTimeInterval(timeout)
         if options.folder != nil {
             DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { fail("Capture timed out") }
@@ -292,7 +350,12 @@ enum DemoCapture {
                 NSApp.activate(ignoringOtherApps: true)
                 window.makeKeyAndOrderFront(nil)
                 target.makeKeyAndOrderFront(nil)
-                captureWindowActivated = true
+                // The settings-cloud dialog is a sheet on the target and takes the key status.
+                captureWindowActivated = NSApp.isActive && (target.isKeyWindow || window.isKeyWindow || target.attachedSheet?.isKeyWindow == true)
+            }
+            guard options.folder == nil || captureWindowActivated else {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { poll() }
+                return
             }
             view.layoutSubtreeIfNeeded()
             let size = view.bounds.size
@@ -359,8 +422,10 @@ enum DemoCapture {
                 var windows = [windowMetadata(window, kind: "window")]
                 if let sheet = window.attachedSheet { windows.append(windowMetadata(sheet, kind: "sheet")) }
                 let windowJSON = try JSONSerialization.data(withJSONObject: ["pid": ProcessInfo.processInfo.processIdentifier, "windows": windows], options: [.prettyPrinted, .sortedKeys])
-                try writePrivate(png, to: folder.appendingPathComponent("window.png"))
-                if let sheetPNG { try writePrivate(sheetPNG, to: folder.appendingPathComponent("sheet.png")) }
+                let renderFolder = folder.appendingPathComponent("render", isDirectory: true)
+                try createPrivateDirectory(renderFolder)
+                try writePrivate(png, to: renderFolder.appendingPathComponent("window-render.png"))
+                if let sheetPNG { try writePrivate(sheetPNG, to: renderFolder.appendingPathComponent("sheet-render.png")) }
                 try writePrivate(json, to: folder.appendingPathComponent("accessibility.json"))
                 // This file is the readiness signal for the window-server launcher.
                 try writePrivate(windowJSON, to: folder.appendingPathComponent("windows.json"))
@@ -444,16 +509,17 @@ enum DemoCapture {
         case "wizard-start": expectedLabels = ["Make space", "Thaw projects"]
         case "wizard-thaw-selection": expectedLabels = ["Frozen projects", "Create Thaw plan"]
         case "wizard-thaw-review": expectedLabels = ["Thaw plan", "Expected outcome"]
-        case "wizard-thaw-ready": expectedLabels = ["Only ready projects will run", "Harbor CLI", "I reviewed the remote refs"]
+        case "wizard-thaw-ready": expectedLabels = ["Only ready projects will run", "Ice Garden", "I reviewed the remote refs"]
         case "wizard-thaw-occupied": expectedLabels = ["Thaw plan", "Path occupied", "Show path in Finder"]
         case "wizard-thaw-remote": expectedLabels = ["Thaw plan", "Remote unavailable", "Check remote again"]
         case "wizard-thaw-corrupt": expectedLabels = ["Thaw plan", "Archive needs attention", "Open Freezer"]
         case "wizard-thaw-not-frozen": expectedLabels = ["Thaw plan", "No longer Frozen", "Open Freezer"]
-        case "wizard-thaw-rehydrating": expectedLabels = ["Thawing Harbor CLI"]
+        case "wizard-thaw-rehydrating": expectedLabels = ["Thawing Ice Garden"]
         case "wizard-thaw-result": expectedLabels = ["Checkouts restored", "Remote refs restored", "Start a new Thaw plan", "Done"]
         case "task-review": expectedLabels = ["Review task actions", "Expected outcome"]
         case "settings": expectedLabels = ["Igloo Settings", "Freezer backup folder"]
         case "settings-cloud": expectedLabels = ["Confirm cloud backup"]
+        case "repositories-loading": expectedLabels = ["GitHub repositories", "Loading repositories for example"]
         case "shelf": expectedLabels = ["Done", "Show archive", "Thaw from remote"]
         case "update-markdown": expectedLabels = []
         case "update-ready": expectedLabels = ["Install and relaunch"]
@@ -470,11 +536,11 @@ enum DemoCapture {
             expectedIdentifiers = ["shelf.backUpNow", "shelf.verifyBackup", "shelf.done", "shelf.showArchive",
                                    "shelf.freeze", "shelf.offlineRecovery", "shelf.thawRemote"]
         case "wizard-start": expectedIdentifiers = ["wizard.start.makeSpace", "wizard.start.thaw"]
-        case "wizard-thaw-selection": expectedIdentifiers = ["wizard.thaw.back", "wizard.thaw.prepare"]
+        case "wizard-thaw-selection": expectedIdentifiers = ["wizard.thaw.back", "wizard.thaw.prepare", "wizard.thaw.archive.demo-icegarden"]
         case "wizard-thaw-review":
-            expectedIdentifiers = ["wizard.thaw.acceptance", "wizard.thaw.execute"]
+            expectedIdentifiers = ["wizard.thaw.acceptance", "wizard.thaw.execute", "wizard.thaw.row.demo-icegarden"]
         case "wizard-thaw-ready":
-            expectedIdentifiers = ["wizard.thaw.acceptance", "wizard.thaw.execute"]
+            expectedIdentifiers = ["wizard.thaw.acceptance", "wizard.thaw.execute", "wizard.thaw.row.demo-icegarden"]
         case "wizard-thaw-occupied": expectedIdentifiers = ["wizard.thaw.showPath"]
         case "wizard-thaw-remote": expectedIdentifiers = ["wizard.thaw.checkRemote"]
         case "wizard-thaw-corrupt", "wizard-thaw-not-frozen": expectedIdentifiers = ["wizard.thaw.openFreezer"]

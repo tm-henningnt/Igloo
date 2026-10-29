@@ -10,6 +10,8 @@ The current release is not notarized or signed with Apple Developer ID. Open the
 
 The project list can show quiet projects, active sessions, cleanup opportunities, or projects with work to preserve. Search by name or technology, filter by project type, and sort by size or age. A blocker badge appears when a quick check finds a missing requirement; open the project's Preservation tab to resolve it.
 
+In Settings, turn on **Remind me about quiet projects** and choose a weekday and local time. Igloo asks for notification permission when you turn the setting on. At the chosen time it checks the saved catalog and refreshes age from local Git history or the elapsed time since the file-age scan, without fetching. It sends one notification with the number and combined size of projects more than the Freeze age. Hold and Frozen projects are left out. Clicking the notification opens the Cleanup wizard on **Make space**. The check does not clean, Preserve, or Freeze projects; it adds an entry to reminder history. A user LaunchAgent starts the Igloo app at the chosen time without a window, and macOS lists Igloo under background activity. When Igloo is already open, the open copy runs the check.
+
 Select a project to see its overview. The Git, Worktrees, Local files, and Cleanup tabs let you look more closely at anything that needs attention. Igloo suggests project types from their files; you can correct a suggestion in Overview.
 
 The scope panel on the right follows your current filters. Open **Space Explorer** for a larger view with sunburst, icicle, and Marimekko charts. Warm age colors mean recent Git activity, cold colors mean older work, and gray means unknown. Disk figures are estimates, so the amount reclaimed may differ.

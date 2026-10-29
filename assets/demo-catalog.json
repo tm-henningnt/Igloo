@@ -51,7 +51,7 @@
         },
         {
           "name": "feature/search",
-          "sha": "",
+          "sha": "a7b8c9d",
           "upstream": "",
           "tracking": "",
           "date": "2026-09-20",
@@ -157,8 +157,8 @@
       "ageDays": 110,
       "fileAgeDays": 110,
       "lastCommit": "2026-09-20",
-      "remoteStatus": "Verified",
-      "verifiedAt": "2026-09-21",
+      "remoteStatus": "No remote",
+      "verifiedAt": "",
       "remotes": [],
       "active": false,
       "activityKnown": true,
@@ -167,10 +167,10 @@
         {
           "name": "main",
           "sha": "b2c3d4e",
-          "upstream": "origin/main",
+          "upstream": "",
           "tracking": "",
           "date": "2026-09-20",
-          "uncovered": 0,
+          "uncovered": null,
           "privateHistory": false
         }
       ],
@@ -222,7 +222,7 @@
         "Local configuration to preserve"
       ],
       "uncovered": 0,
-      "unknown": 0,
+      "unknown": 1,
       "note": "",
       "blockers": [
         {
@@ -707,6 +707,26 @@
       "runID": "demo-cleanup-run",
       "at": "2026-10-01T10:00:00+00:00",
       "status": "trashed"
+    },
+    {
+      "id": "demo-wizard-item-1",
+      "original": "/Users/demo/Projects/Harbor CLI Copy/node_modules",
+      "destination": "/Users/demo/.Trash/node_modules — Harbor CLI Copy — 00000003",
+      "owner": "/Users/demo/Projects/Harbor CLI Copy",
+      "size": 1073741824,
+      "runID": "demo-wizard-run",
+      "at": "2026-10-01T10:00:00+00:00",
+      "status": "trashed"
+    },
+    {
+      "id": "demo-wizard-item-2",
+      "original": "/Users/demo/Projects/Harbor CLI Copy/.cache",
+      "destination": "/Users/demo/.Trash/.cache — Harbor CLI Copy — 00000004",
+      "owner": "/Users/demo/Projects/Harbor CLI Copy",
+      "size": 536870912,
+      "runID": "demo-wizard-run",
+      "at": "2026-10-01T10:00:00+00:00",
+      "status": "trashed"
     }
   ],
   "archives": [
@@ -741,17 +761,77 @@
       "leftovers": []
     },
     {
-      "id": "demo-changed",
+      "id": "demo-icegarden",
       "name": "Ice Garden",
       "path": "/Users/demo/Projects/Ice Garden",
       "state": "frozen",
-      "created": "2026-10-01T10:00:00+00:00",
-      "destination": "Example remote",
+      "created": "2026-10-20",
+      "destination": "https://example.com/harbor/ice-garden.git",
       "message": "Fictional demo archive.",
-      "archiveLocation": "/Users/demo/Project Recovery/demo-changed",
+      "archiveLocation": "/Users/demo/Project Recovery/demo-icegarden",
       "checkouts": 1,
       "paths": [
         "/Users/demo/Projects/Ice Garden"
+      ],
+      "leftovers": []
+    },
+    {
+      "id": "demo-beacon",
+      "name": "Beacon Lab",
+      "path": "/Users/demo/Projects/Beacon Lab",
+      "state": "frozen",
+      "created": "2026-10-17",
+      "destination": "https://example.com/harbor/beacon.git",
+      "message": "Fictional demo archive.",
+      "archiveLocation": "/Users/demo/Project Recovery/demo-beacon",
+      "checkouts": 1,
+      "paths": [
+        "/Users/demo/Projects/Beacon Lab"
+      ],
+      "leftovers": []
+    },
+    {
+      "id": "demo-tidemark",
+      "name": "Tidemark Notes",
+      "path": "/Users/demo/Projects/Tidemark Notes",
+      "state": "frozen",
+      "created": "2026-10-12",
+      "destination": "https://example.com/harbor/tidemark.git",
+      "message": "Fictional demo archive.",
+      "archiveLocation": "/Users/demo/Project Recovery/demo-tidemark",
+      "checkouts": 1,
+      "paths": [
+        "/Users/demo/Projects/Tidemark Notes"
+      ],
+      "leftovers": []
+    },
+    {
+      "id": "demo-cedar",
+      "name": "Cedar Notes",
+      "path": "/Users/demo/Projects/Cedar Notes",
+      "state": "frozen",
+      "created": "2026-10-08",
+      "destination": "https://example.com/harbor/cedar.git",
+      "message": "Fictional demo archive.",
+      "archiveLocation": "/Users/demo/Project Recovery/demo-cedar",
+      "checkouts": 1,
+      "paths": [
+        "/Users/demo/Projects/Cedar Notes"
+      ],
+      "leftovers": []
+    },
+    {
+      "id": "demo-maproom",
+      "name": "Map Room",
+      "path": "/Users/demo/Projects/Map Room",
+      "state": "frozen",
+      "created": "2026-10-02",
+      "destination": "https://example.com/harbor/map-room.git",
+      "message": "Fictional demo archive.",
+      "archiveLocation": "/Users/demo/Project Recovery/demo-maproom",
+      "checkouts": 1,
+      "paths": [
+        "/Users/demo/Projects/Map Room"
       ],
       "leftovers": []
     }
@@ -929,12 +1009,12 @@
       {
         "id": "demo-freeze-run",
         "kind": "freeze",
-        "label": "Paper Trail",
+        "label": "Ice Garden",
         "started": "2026-10-01T10:00:00+00:00",
         "status": "completed",
-        "estimateBytes": 1717986918,
+        "estimateBytes": 858993459,
         "observed": {
-          "freedBytes": 1717986918,
+          "freedBytes": 858993459,
           "inTrashBytes": 0,
           "restoredBytes": 0
         }
@@ -942,7 +1022,7 @@
       {
         "id": "demo-cleanup-run",
         "kind": "cleanup",
-        "label": "Harbor CLI cleanup",
+        "label": "Cleanup",
         "started": "2026-10-01T10:00:00+00:00",
         "status": "completed",
         "estimateBytes": 0,
@@ -955,26 +1035,31 @@
     ],
     "totals": {
       "last30Days": {
-        "estimateBytes": 3435973836,
+        "estimateBytes": 2576980377,
         "observed": {
-          "freedBytes": 3435973836,
-          "inTrashBytes": 4294967296,
-          "restoredBytes": 2147483648
+          "freedBytes": 2576980377,
+          "inTrashBytes": 3758096384,
+          "restoredBytes": 1073741824
         },
         "measuredRuns": 3,
         "unmeasuredRuns": 0
       },
       "allTime": {
-        "estimateBytes": 3435973836,
+        "estimateBytes": 2576980377,
         "observed": {
-          "freedBytes": 3435973836,
-          "inTrashBytes": 4294967296,
-          "restoredBytes": 2147483648
+          "freedBytes": 2576980377,
+          "inTrashBytes": 3758096384,
+          "restoredBytes": 1073741824
         },
         "measuredRuns": 3,
         "unmeasuredRuns": 0
       }
     }
+  },
+  "quietReminder": {
+    "enabled": true,
+    "weekday": 1,
+    "time": "09:00"
   },
   "backupStatus": {
     "configured": true,
@@ -1003,13 +1088,49 @@
         "reason": "The backup folder is disconnected."
       },
       {
-        "id": "demo-changed",
-        "copyID": "demo-changed",
+        "id": "demo-icegarden",
+        "copyID": "demo-icegarden",
         "backedUp": false,
         "lastVerified": null,
         "missing": true,
         "status": "Not backed up",
         "reason": "The backup copy does not match the Freezer archive."
+      },
+      {
+        "id": "demo-beacon",
+        "copyID": "demo-beacon",
+        "backedUp": true,
+        "lastVerified": "2026-10-20T10:00:00+00:00",
+        "missing": false,
+        "status": "Backed up",
+        "reason": ""
+      },
+      {
+        "id": "demo-tidemark",
+        "copyID": "demo-tidemark",
+        "backedUp": true,
+        "lastVerified": "2026-10-20T10:00:00+00:00",
+        "missing": false,
+        "status": "Backed up",
+        "reason": ""
+      },
+      {
+        "id": "demo-cedar",
+        "copyID": "demo-cedar",
+        "backedUp": true,
+        "lastVerified": "2026-10-20T10:00:00+00:00",
+        "missing": false,
+        "status": "Backed up",
+        "reason": ""
+      },
+      {
+        "id": "demo-maproom",
+        "copyID": "demo-maproom",
+        "backedUp": true,
+        "lastVerified": "2026-10-20T10:00:00+00:00",
+        "missing": false,
+        "status": "Backed up",
+        "reason": ""
       }
     ],
     "orphans": [

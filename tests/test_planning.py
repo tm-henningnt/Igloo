@@ -1,5 +1,6 @@
 """Wizard tests operate only on disposable checkouts and local bare remotes."""
 import copy
+import json
 import os
 from pathlib import Path
 import shutil
@@ -310,6 +311,21 @@ class PlanningTests(unittest.TestCase):
         self.assertIsNone(result["outcome"]["bytesFreed"])
         with self.assertRaisesRegex(o.Refusal, "already accepted"):
             wizard.execute_thaw(review["id"])
+
+    def test_thaw_prepare_returns_rows_for_exactly_the_selected_archives(self):
+        identifiers = self.freeze_for_thaw(3)
+        selected = [identifiers[2], identifiers[0]]
+
+        review = wizard.dispatch("wizard-thaw-prepare", [json.dumps(selected)])
+
+        self.assertEqual([row["id"] for row in review["rows"]], selected)
+        self.assertEqual([row["archiveID"] for row in review["rows"]], selected)
+        paths = {row["path"] for row in review["rows"]}
+        self.assertEqual(len(paths), 2)
+        self.assertEqual(set(review["outcome"]["checkoutsRestored"]["paths"]), paths)
+        self.assertEqual(review["outcome"]["archivesUsed"]["paths"],
+                         [row["archiveLocation"] for row in review["rows"]])
+        self.assertNotIn(str(self.root / "second-1"), paths)
 
     def test_batch_thaw_blocks_an_occupied_destination(self):
         identifier = self.freeze_for_thaw()[0]

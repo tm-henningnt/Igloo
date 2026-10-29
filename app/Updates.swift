@@ -530,6 +530,7 @@ extension ProcessInfo {
 struct UpdatesView: View {
     @EnvironmentObject var updater: AppUpdater
     @Environment(\.dismiss) private var dismiss
+    @FocusState private var defaultActionFocused: Bool
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text("Igloo updates").font(.title2).fontWeight(.semibold)
@@ -556,7 +557,7 @@ struct UpdatesView: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxHeight: 180)
                 .accessibilityIdentifier("updates.releaseNotes")
-                Link("Release on GitHub", destination: update.releaseURL)
+                Link("Release on GitHub", destination: update.releaseURL).focusable(false)
                 Text("Project files, settings, and local archives stay in place.")
                     .font(.caption).foregroundStyle(.secondary)
             }
@@ -581,11 +582,15 @@ struct UpdatesView: View {
                     }
                         .buttonStyle(WizardPrimaryButtonStyle())
                         .keyboardShortcut(.defaultAction)
+                        .focused($defaultActionFocused)
+                        .defaultFocus($defaultActionFocused, true)
                         .disabled(updater.demo || updater.installing || updater.installProcess != nil)
                         .accessibilityIdentifier("updates.install")
                 } else if updater.available != nil {
                     Button("Download update") { updater.download() }.buttonStyle(WizardPrimaryButtonStyle())
                         .keyboardShortcut(.defaultAction)
+                        .focused($defaultActionFocused)
+                        .defaultFocus($defaultActionFocused, true)
                         .disabled(updater.demo)
                         .accessibilityIdentifier("updates.download")
                 }

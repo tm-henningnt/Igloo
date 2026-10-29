@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct WizardRules: Codable, Equatable {
     var cacheDays = 30
@@ -58,7 +59,7 @@ struct WizardPrimaryButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .fontWeight(.semibold)
-            .foregroundStyle(isEnabled ? Color.white : Color.primary.opacity(0.38))
+            .foregroundStyle(isEnabled ? Color.white : Color.primary.opacity(0.28))
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
             .frame(minHeight: 30)
@@ -66,7 +67,7 @@ struct WizardPrimaryButtonStyle: ButtonStyle {
                         in: RoundedRectangle(cornerRadius: 7, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .stroke(Color.primary.opacity(isEnabled ? 0 : 0.14), lineWidth: 1)
+                    .stroke(Color.primary.opacity(isEnabled ? 0 : 0.08), lineWidth: 1)
             }
             .opacity(isEnabled && configuration.isPressed ? 0.86 : 1)
     }
@@ -75,6 +76,7 @@ struct WizardPrimaryButtonStyle: ButtonStyle {
 struct CleanupWizardView: View {
     @EnvironmentObject var store: OrganizerStore
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.controlActiveState) private var controlActiveState
     var captureReview = false
     var captureResult = false
     var captureView: String?
@@ -87,6 +89,7 @@ struct CleanupWizardView: View {
     @LocalState var selected: String?
     @LocalState var approved = false
     @LocalState var scanIssues = 0
+    @LocalState var scanning = false
     @LocalState var taskEditorShown = false
     @LocalState var reviewTopic = "Summary"
     @LocalState var mode = "start"
@@ -98,7 +101,8 @@ struct CleanupWizardView: View {
     @LocalState var selectedThawID: String?
     @LocalState var approvedThawRows: Set<String> = []
     let actions = ["keep", "cleanup", "archive", "freeze"]
-    init(captureReview: Bool = false, captureResult: Bool = false, captureView: String? = nil) {
+    init(captureReview: Bool = false, captureResult: Bool = false, captureView: String? = nil,
+         startMakeSpace: Bool = false) {
         self.captureReview = captureReview
         self.captureResult = captureResult
         self.captureView = captureView
@@ -110,11 +114,12 @@ struct CleanupWizardView: View {
         let thawCapture = captureView?.hasPrefix("wizard-thaw-") == true && !selection && !start
         let exampleThaw: WizardThawPlan? = thawCapture ? DemoCatalog.reply(
             [thawResult ? "wizard-thaw-execute" : "wizard-thaw-prepare", captureView ?? ""], as: WizardThawPlan.self) : nil
-        let focusID = ["wizard-thaw-occupied": "demo-signal", "wizard-thaw-remote": "demo-tidemark",
+        let focusID = ["wizard-thaw-occupied": "demo-beacon", "wizard-thaw-remote": "demo-tidemark",
                        "wizard-thaw-corrupt": "demo-cedar", "wizard-thaw-not-frozen": "demo-maproom",
-                       "wizard-thaw-rehydrating": "demo-harbor", "wizard-thaw-ready": "demo-harbor"][captureView ?? ""]
+                       "wizard-thaw-rehydrating": "demo-icegarden", "wizard-thaw-ready": "demo-icegarden"][captureView ?? ""]
         _phase = LocalState(initialValue: captureResult ? 3 : (captureReview ? 2 : 0))
-        _mode = LocalState(initialValue: (captureReview || captureResult) ? "make-space" : (start ? "start" : ((thawCapture || selection) ? "thaw" : "start")))
+        _mode = LocalState(initialValue: startMakeSpace ? "make-space"
+            : ((captureReview || captureResult) ? "make-space" : (start ? "start" : ((thawCapture || selection) ? "thaw" : "start"))))
         _plan = LocalState(initialValue: example)
         _selected = LocalState(initialValue: example?.rows.first?.id)
         _thawPhase = LocalState(initialValue: thawResult ? 2 : (thawCapture ? 1 : 0))
@@ -152,6 +157,13 @@ struct CleanupWizardView: View {
         return outcome.actionLabel(preservedProjects: preserved)
     }
     private var compactReview: Bool { sheetWidth(1120) < 1000 }
+    // The backend refuses a freeze age at or below the cleanup age.
+    private var ruleSummary: String {
+        let cache = rules.cacheDays, freeze = rules.freezeDays
+        if freeze <= cache { return "The freeze threshold must be later than the cleanup threshold." }
+        let range = freeze - 1 == cache ? "At \(cache) days" : "From \(cache) to \(freeze - 1) days"
+        return "Under \(cache) days: leave unchanged. \(range): clean selected cache types. At \(freeze) days and older: propose freezing instead."
+    }
     private var wizardSheetHeight: CGFloat {
         if mode == "thaw" { return compactReview ? 660 : 700 }
         if finishedWizard { return compactReview ? 500 : 560 }
@@ -169,8 +181,9 @@ struct CleanupWizardView: View {
         return !readyIDs.isEmpty && readyIDs.isSubset(of: approvedThawRows)
     }
     private var thawBlockedReasonColor: Color {
-        colorScheme == .dark ? .orange : Color(red: 0.60, green: 0.27, blue: 0.00)
+        colorScheme == .dark ? .orange : Color(red: 0.55, green: 0.23, blue: 0.00)
     }
+    private var selectedRowTextColor: Color { Color(nsColor: .selectedMenuItemTextColor) }
     private var finishedThaw: Bool { mode == "thaw" && thawPhase == 2 }
     private var isThawExecuting: Bool {
         store.busy || (store.isDemo && captureView == "wizard-thaw-rehydrating")
@@ -186,6 +199,7 @@ struct CleanupWizardView: View {
     private var closeButton: some View {
         Button(finishedWizard || finishedThaw ? "Done" : "Close") {
             store.wizardShown = false
+            store.wizardMakeSpace = false
             store.load()
         }.disabled(isThawExecuting).keyboardShortcut(.cancelAction)
     }
@@ -216,13 +230,31 @@ struct CleanupWizardView: View {
             .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .stroke(Color.primary.opacity(0.16), lineWidth: 1))
             .interactiveDismissDisabled(isThawExecuting)
+            .sheetErrorAlert(store)
             .sheet(isPresented: $taskEditorShown) { TasksView(initialRules: rules).environmentObject(store) }
-            .onAppear {
-                store.invoke(["wizard-state"], as: WizardState.self) { value in
-                    rules = value.rules; kinds = value.cacheKinds; last = value.last; thawLast = value.thawLast
-                    if captureReview, let review = value.last { plan = review; selected = review.rows.first?.id; phase = 2 }
-                }
+            .onChange(of: store.wizardMakeSpace) {
+                guard store.wizardMakeSpace else { return }
+                mode = "make-space"
+                phase = 0
+                plan = nil
+                thawPhase = 0
+                thawPlan = nil
+                store.wizardMakeSpace = false
             }
+            .onAppear {
+                store.wizardMakeSpace = false
+                loadWizardState()
+            }
+            // A wizard opened during the launch catalog load waits for that load, then reads the saved rules.
+            .onChange(of: store.busy) {
+                if !store.busy && kinds.isEmpty { loadWizardState() }
+            }
+    }
+    private func loadWizardState() {
+        store.invoke(["wizard-state"], as: WizardState.self) { value in
+            rules = value.rules; kinds = value.cacheKinds; last = value.last; thawLast = value.thawLast
+            if captureReview, let review = value.last { plan = review; selected = review.rows.first?.id; phase = 2 }
+        }
     }
     var startStep: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -316,6 +348,7 @@ struct CleanupWizardView: View {
                             .tint(colorScheme == .dark ? Color(red: 0.42, green: 0.72, blue: 1) : .accentColor)
                             .accessibilityLabel("\(archive.name), Frozen \(shortDate(archive.created)), remote \(archive.destination), original path \(archive.path)")
                             .accessibilityHint("Select this Frozen project for the Thaw plan.")
+                            .accessibilityIdentifier("wizard.thaw.archive.\(archive.id)")
                     }
                 }.listStyle(.inset)
                     .scrollIndicators(.visible)
@@ -425,17 +458,21 @@ struct CleanupWizardView: View {
                     } else if row.status == "ready" && thawPlan?.status == "review" {
                         Label(approvedThawRows.contains(row.id) ? "Reviewed" : "Review details",
                               systemImage: approvedThawRows.contains(row.id) ? "checkmark.circle.fill" : "circle")
-                            .font(.caption).foregroundStyle(approvedThawRows.contains(row.id) ? Color.accentColor : Color.secondary)
+                            .font(.caption).foregroundStyle(row.id == selectedThawID && controlActiveState == .key ? selectedRowTextColor :
+                                (approvedThawRows.contains(row.id) ? Color.accentColor : Color.secondary))
                     } else if row.status == "blocked" {
                         Text("Blocked · \(shortThawReason(row.message))").font(.caption).lineLimit(1).truncationMode(.tail)
+                            .foregroundStyle(row.id == selectedThawID && controlActiveState == .key ? selectedRowTextColor : thawBlockedReasonColor)
                     } else {
                         Label(row.status.capitalized, systemImage: statusSymbol(row.status)).font(.caption)
                     }
                 }.padding(.vertical, 5).tag(row.id)
+                    .accessibilityIdentifier("wizard.thaw.row.\(row.id)")
             }.frame(minWidth: 150, idealWidth: 205, maxWidth: 260)
             ScrollView {
+                // Selectable text keeps its old string when only the row changes, so each row gets its own detail view.
                 if let row = selectedThawRow {
-                    thawDetails(row).frame(maxWidth: .infinity, alignment: .leading)
+                    thawDetails(row).frame(maxWidth: .infinity, alignment: .leading).id(row.id)
                 } else {
                     ContentUnavailableView("Choose a project", systemImage: "list.bullet.clipboard")
                 }
@@ -571,8 +608,7 @@ struct CleanupWizardView: View {
                     Stepper("Freeze age", value: $rules.freezeDays, in: 2...3650).labelsHidden().fixedSize()
                 }
             }.frame(maxWidth: .infinity, alignment: .leading)
-            Text("Under \(rules.cacheDays) days: leave unchanged. From \(rules.cacheDays) to \(max(rules.cacheDays, rules.freezeDays - 1)) days: clean selected cache types. At \(rules.freezeDays) days and older: propose freezing instead.")
-                .font(.callout)
+            Text(ruleSummary).font(.callout)
             Text("Cache types to clean").font(.headline)
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 200), alignment: .leading)], alignment: .leading, spacing: 12) {
                 ForEach(kinds, id: \.self) { kind in
@@ -594,12 +630,16 @@ struct CleanupWizardView: View {
                 }
                 Button("Save rules as a task…") { taskEditorShown = true }.disabled(store.busy || store.isDemo)
                 Spacer()
+                if scanning || store.busy { SheetProgressRow(text: store.busy ? store.status : "Scanning projects…") }
                 Button("Scan projects & suggest actions") {
-                    store.invoke(["wizard-scan", encoded(rules)], as: WizardScan.self) { value in
+                    guard !store.busy else { return }
+                    scanning = true
+                    store.invoke(["wizard-scan", encoded(rules)], as: WizardScan.self, failed: { _ in scanning = false }) { value in
+                        scanning = false
                         proposals = value.rows; scanIssues = value.scanIssues; phase = 1
                         store.load()
                     }
-                }.buttonStyle(WizardPrimaryButtonStyle()).disabled(store.busy || rules.freezeDays <= rules.cacheDays || rules.cacheDays < 1 || rules.freezeDays > 3650)
+                }.buttonStyle(WizardPrimaryButtonStyle()).disabled(store.busy || scanning || rules.freezeDays <= rules.cacheDays || rules.cacheDays < 1 || rules.freezeDays > 3650)
                 closeButton
             }
         }
@@ -703,7 +743,8 @@ struct CleanupWizardView: View {
                                            ? "Freed from disk is the total change on the drive. In Trash is the size of folders that can be restored."
                                            : nil)
                 }
-                    .frame(maxHeight: finishedWizard ? (compactReview ? 125 : 155) : (compactReview ? 150 : 220))
+                    // Fill the fixed sheet height so the footer stays at the bottom.
+                    .frame(maxHeight: .infinity)
             }
             if phase == 2 {
                 Text("Acceptance covers every ready row. Cache folders move to Trash. Freeze archives local files and Git metadata, pushes only the listed ordinary refs, verifies recovery and the remote, then removes the listed checkouts. Private recovery stays on this Mac and is not encrypted. Blocked rows will not run. Review expires after ten minutes.")
