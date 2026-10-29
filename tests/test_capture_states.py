@@ -330,7 +330,7 @@ class CaptureStatesTests(unittest.TestCase):
 
     def test_ready_update_view_is_in_the_swift_capture_allow_list(self):
         source = (ROOT / "app/DemoCatalog.swift").read_text()
-        self.assertIn('static let updateViews = AppUpdater.demoFailureNames.map { "update-" + $0 } + ["update-markdown", "update-ready"]', source)
+        self.assertIn('static let updateViews = AppUpdater.demoFailureNames.map { "update-" + $0 } + ["update-markdown", "update-ready", "update-install-failed"]', source)
         self.assertIn('updateViews).union(extraSheetViews)).contains(view)', source)
         shadows_shared_views = 'let updateViews = AppUpdater.demoFailureNames.map { "update-" + $0 } + ["update-markdown"]' in source
         self.assertFalse(shadows_shared_views, "capture options must use the shared update view set")
@@ -786,7 +786,7 @@ class CaptureStatesTests(unittest.TestCase):
     def test_update_failure_scenarios_cover_both_appearances(self):
         expected = {"quota", "quota-no-reset", "forbidden", "offline", "timeout", "server", "malformed", "cancelled-download", "digest-mismatch"}
         captures = [row for row in capture.scenarios()
-                    if row["view"].startswith("update-") and row["view"] not in {"update-markdown", "update-ready"}]
+                    if row["view"].startswith("update-") and row["view"] not in {"update-markdown", "update-ready", "update-install-failed"}]
         self.assertEqual({row["view"].removeprefix("update-") for row in captures}, expected)
         for failure in expected:
             states = [row for row in captures if row["view"] == "update-" + failure]
@@ -795,6 +795,12 @@ class CaptureStatesTests(unittest.TestCase):
 
     def test_markdown_update_sheet_covers_minimum_and_default_sizes(self):
         captures = [row for row in capture.scenarios() if row["view"] == "update-markdown"]
+        self.assertEqual({(row["appearance"], row["size"]) for row in captures},
+                         {(appearance, size) for appearance in ("light", "dark")
+                          for size in ("850x700", "1440x900")})
+
+    def test_install_failed_update_sheet_covers_minimum_and_default_sizes(self):
+        captures = [row for row in capture.scenarios() if row["view"] == "update-install-failed"]
         self.assertEqual({(row["appearance"], row["size"]) for row in captures},
                          {(appearance, size) for appearance in ("light", "dark")
                           for size in ("850x700", "1440x900")})

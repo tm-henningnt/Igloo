@@ -35,7 +35,7 @@ SHEET_VIEWS = {"freeze", "shelf", "freeze-review", "preserve-review", "freeze-re
 UPDATE_FAILURES = ("quota", "quota-no-reset", "forbidden", "offline", "timeout", "server", "malformed",
                    "cancelled-download", "digest-mismatch")
 SHEET_VIEWS.update("update-" + name for name in UPDATE_FAILURES)
-SHEET_VIEWS.update({"update-markdown", "update-ready"})
+SHEET_VIEWS.update({"update-markdown", "update-ready", "update-install-failed"})
 
 INTERACTIVE_FLOWS = {
     "wizard-thaw": [
@@ -157,6 +157,7 @@ def scenarios():
         cases += [("update-markdown", size, "hidden", "compact", "normal")
                   for size in ("850x700", "1440x900")]
         cases.append(("update-ready", "1440x900", "shown", "full", "normal"))
+        cases += [("update-install-failed", size, "hidden", "compact", "normal") for size in ("850x700", "1440x900")]
         cases += [("overview", "850x700", "hidden", "compact", "normal"),
                   ("plan", "850x700", "hidden", "compact", "normal"),
                   ("overview", "1100x700", "hidden", "full", "normal"),

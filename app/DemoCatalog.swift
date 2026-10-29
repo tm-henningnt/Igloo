@@ -143,6 +143,28 @@ extension AppUpdater {
         updater.downloaded = URL(fileURLWithPath: "/fixture/Igloo-update.zip")
         return updater
     }
+    static func demoInstallFailedUpdate() -> AppUpdater {
+        let updater = demoReadyUpdate()
+        updater.failed = true
+        updater.status = "The update archive contains an unexpected item."
+        updater.available?.notes = """
+        # Igloo 0.3.1
+
+        This release adds a weekly reminder for quiet projects and fixes the space totals in the history.
+
+        - A weekly reminder can tell you when projects have been quiet for longer than the freeze age. Turn it on in Settings. Click the notification to open the cleanup wizard. The reminder only reports; it never changes a project.
+        - Trash & restore history no longer counts a run twice, and freed space never includes items that are still in the Trash.
+        - When a requirement blocks a Freeze, the sheet shows the action that fixes it.
+
+        After an update, macOS can ask again for permissions that you gave to Igloo.
+
+        Requires macOS 14 or later.
+        Choose the standard DMG with Python included, or the smaller system-Python build for Python 3.11 or later.
+
+        This release is not notarized or signed with Apple Developer ID.
+        """
+        return updater
+    }
 }
 
 struct DemoCaptureSheet: Identifiable {
@@ -158,7 +180,7 @@ enum DemoCapture {
         "wizard-thaw-occupied", "wizard-thaw-remote", "wizard-thaw-corrupt", "wizard-thaw-not-frozen",
         "wizard-thaw-rehydrating",
         "task-review", "task-history", "settings", "settings-cloud", "repositories-loading"]
-    static let updateViews = AppUpdater.demoFailureNames.map { "update-" + $0 } + ["update-markdown", "update-ready"]
+    static let updateViews = AppUpdater.demoFailureNames.map { "update-" + $0 } + ["update-markdown", "update-ready", "update-install-failed"]
     static let sheetViews = extraSheetViews.union(["freeze", "shelf"]).union(updateViews)
     struct Options {
         let folder: URL?
@@ -282,6 +304,8 @@ enum DemoCapture {
             return AnyView(UpdatesView().environmentObject(AppUpdater.demoMarkdownUpdate()))
         case "update-ready":
             return AnyView(UpdatesView().environmentObject(AppUpdater.demoReadyUpdate()))
+        case "update-install-failed":
+            return AnyView(UpdatesView().environmentObject(AppUpdater.demoInstallFailedUpdate()))
         case let updateView where updateView.hasPrefix("update-"):
             guard let updater = AppUpdater.demoFailure(String(updateView.dropFirst("update-".count))) else {
                 return AnyView(Text("Demo update state unavailable"))
@@ -523,6 +547,7 @@ enum DemoCapture {
         case "shelf": expectedLabels = ["Done", "Show archive", "Thaw from remote"]
         case "update-markdown": expectedLabels = []
         case "update-ready": expectedLabels = ["Install and relaunch"]
+        case "update-install-failed": expectedLabels = ["Install and relaunch"]
         default: return true
         }
         let expectedIdentifiers: [String]
@@ -547,6 +572,7 @@ enum DemoCapture {
         case "wizard-thaw-result": expectedIdentifiers = ["wizard.thaw.newPlan"]
         case "update-markdown": expectedIdentifiers = ["updates.releaseNotes"]
         case "update-ready": expectedIdentifiers = ["updates.install", "updates.releaseNotes"]
+        case "update-install-failed": expectedIdentifiers = ["updates.install", "updates.releaseNotes"]
         default: expectedIdentifiers = []
         }
         func labels(_ node: [String: Any]) -> [String] {

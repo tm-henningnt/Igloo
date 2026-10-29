@@ -205,6 +205,20 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(asset["size"], len(b"fixture archive"))
         self.assertEqual(asset["url"], "https://github.com/tm-henningnt/Igloo/releases/download/v0.1.0/Igloo-0.1.0-universal.zip")
         self.assertEqual(release.validate_prepared(folder)[0], self.info)
+    @unittest.skipUnless(sys.platform == "darwin", "zip_app uses ditto")
+    def test_zip_app_writes_no_bare_macosx_entry(self):
+        import zipfile
+        with tempfile.TemporaryDirectory(prefix="igloo-zip-app-") as temporary:
+            app = Path(temporary) / "Igloo.app"
+            (app / "Contents").mkdir(parents=True)
+            (app / "Contents/Info.plist").write_bytes(b"plist")
+            subprocess.run(["/usr/bin/xattr", "-w", "com.apple.test", "x", app / "Contents/Info.plist"], check=True)
+            archive = Path(temporary) / "Igloo.zip"
+            release.zip_app(app, archive)
+            names = zipfile.ZipFile(archive).namelist()
+        self.assertIn("Igloo.app/Contents/Info.plist", names)
+        self.assertNotIn("__MACOSX/", names)
+        self.assertNotIn("__MACOSX", names)
     def test_changed_source_notes_zip_or_dmg_invalidate_review(self):
         for name in ["source/README.md", "notes.md", "assets/Igloo-0.1.0-universal.zip", "assets/Igloo-0.1.0-universal.dmg"]:
             with self.subTest(name=name):

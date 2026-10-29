@@ -266,6 +266,10 @@ def manifest_for(release, architecture, archive, runtime="bundled"):
 
 def zip_app(app, archive):
     run(["/usr/bin/ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", app, archive])
+    # Igloo 0.3.0 and 0.3.1 reject the bare __MACOSX/ directory entry that ditto writes.
+    # Exit code 12 means the archive has no such entry.
+    if run(["/usr/bin/zip", "-q", "-d", archive, "__MACOSX/"], check=False).returncode not in (0, 12):
+        raise ValueError("Command failed: zip. Review its result in Terminal before continuing.")
 
 def build_dmg(app, destination, source):
     try:

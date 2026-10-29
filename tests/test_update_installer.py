@@ -409,6 +409,23 @@ class UpdateInstallerTests(unittest.TestCase):
                 with self.assertRaises(installer.InstallError):
                     installer._validate_zip(archive)
 
+    def test_archive_accepts_bare_macosx_directory_entry(self):
+        info = (self.target / "Contents" / "Info.plist").read_bytes()
+        archive = self.root / "sequestered.zip"
+        with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
+            zip_entry(bundle, "__MACOSX/", b"", stat.S_IFDIR | 0o755)
+            zip_entry(bundle, "__MACOSX/Igloo.app/._Contents", b"x", stat.S_IFREG | 0o644)
+            zip_entry(bundle, "Igloo.app/Contents/Info.plist", info, stat.S_IFREG | 0o644)
+        installer._validate_zip(archive)
+        staging = self.root / "sequestered-staging"
+        staging.mkdir()
+        installer._extract_archive(archive, staging)
+        self.assertFalse((staging / "__MACOSX").exists())
+        bare_file = self.root / "bare-file.zip"
+        write_entries(bare_file, [("__MACOSX", b"x", stat.S_IFREG | 0o644)])
+        with self.assertRaises(installer.InstallError):
+            installer._validate_zip(bare_file)
+
     def test_archive_declared_and_streamed_size_caps(self):
         archive = self.root / "large.zip"
         write_entries(archive, [("Igloo.app/Contents/Info.plist", b"x" * 40, stat.S_IFREG | 0o644)])

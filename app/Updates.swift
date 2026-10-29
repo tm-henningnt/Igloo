@@ -554,8 +554,8 @@ struct UpdatesView: View {
                     ReleaseNotesView(markdown: update.notes.isEmpty ? "No release notes were provided." : update.notes)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                .fixedSize(horizontal: false, vertical: true)
                 .frame(maxHeight: 180)
+                .fixedSize(horizontal: false, vertical: true)
                 .accessibilityIdentifier("updates.releaseNotes")
                 Link("Release on GitHub", destination: update.releaseURL).focusable(false)
                 Text("Project files, settings, and local archives stay in place.")

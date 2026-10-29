@@ -176,7 +176,7 @@ def _validate_zip(archive: Path) -> None:
                 top = raw_parts[0]
                 if top != "Igloo.app" and top != "__MACOSX":
                     raise InstallError("The update archive contains an unexpected item.")
-                if top == "__MACOSX" and len(raw_parts) < 2:
+                if top == "__MACOSX" and len(raw_parts) < 2 and not entry.is_dir():
                     raise InstallError("The update archive contains an unexpected item.")
                 normalized = "/".join(raw_parts).casefold()
                 if normalized in names:
